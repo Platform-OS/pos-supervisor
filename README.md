@@ -18,47 +18,24 @@ npm install
 
 ## Configuration
 
-The server needs to know your platformOS project directory. Set it via the `POS_SUPERVISOR_PROJECT_DIR` environment variable, or it defaults to the current working directory.
+The server uses the current working directory as the platformOS project root. When launched by an AI coding tool from within your project, it works automatically with no extra configuration.
 
 ### Claude Code
 
-Add to your project's `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "pos-supervisor": {
-      "command": "node",
-      "args": ["/path/to/pos-supervisor/bin/pos-supervisor.js"],
-      "env": {
-        "POS_SUPERVISOR_PROJECT_DIR": "/path/to/your/platformos-project"
-      }
-    }
-  }
-}
-```
-
-Or use the CLI:
-
 ```bash
-claude mcp add pos-supervisor \
-  -e POS_SUPERVISOR_PROJECT_DIR=/path/to/your/platformos-project \
-  -- node /path/to/pos-supervisor/bin/pos-supervisor.js
+claude mcp add pos-supervisor -- node /path/to/pos-supervisor/bin/pos-supervisor.js
 ```
 
 ### OpenCode
 
-Add to your `opencode.json`:
+Add to `~/.config/opencode/opencode.json`:
 
 ```json
 {
   "mcp": {
     "pos-supervisor": {
-      "command": "node",
-      "args": ["/path/to/pos-supervisor/bin/pos-supervisor.js"],
-      "env": {
-        "POS_SUPERVISOR_PROJECT_DIR": "/path/to/your/platformos-project"
-      }
+      "type": "local",
+      "command": ["node", "/path/to/pos-supervisor/bin/pos-supervisor.js"]
     }
   }
 }
