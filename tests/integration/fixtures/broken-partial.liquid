@@ -1,0 +1,10 @@
+{% comment %}
+  @prompt: Renders a product card with title and price.
+{% endcomment %}
+
+<div class="product-card">
+  <h3>{{ product.title }}</h3>
+  <p>{{ product.price | moneyy }}</p>
+  {% graphql g = 'products/details' %}
+  {{ params.id }}
+</div>

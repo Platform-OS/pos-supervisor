@@ -1,0 +1,13 @@
+query search($limit: Int = 20) {
+  records(
+    per_page: $limit
+    filter: {
+      table: { value: "products" }
+    }
+  ) {
+    results {
+      id
+      properties
+    }
+  }
+}

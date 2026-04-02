@@ -1,0 +1,5 @@
+/bkp
+node_modules/
+*.log
+*.jsonl
+.mcp.json

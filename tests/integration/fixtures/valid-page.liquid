@@ -1,0 +1,8 @@
+---
+slug: products
+---
+{% graphql g = 'products/search' %}
+
+{% for product in g.records.results %}
+  {% render 'products/card', product: product %}
+{% endfor %}

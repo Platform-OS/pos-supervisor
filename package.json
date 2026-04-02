@@ -1,0 +1,24 @@
+{
+  "name": "@platformos/pos-supervisor",
+  "version": "0.1.0",
+  "description": "platformOS domain-specific MCP server for LLM agents",
+  "type": "module",
+  "bin": {
+    "pos-supervisor": "./bin/pos-supervisor.js"
+  },
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node bin/pos-supervisor.js",
+    "test": "bun test tests/"
+  },
+  "dependencies": {
+    "@platformos/liquid-html-parser": "^0.0.11",
+    "js-yaml": "^4.1.1"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
