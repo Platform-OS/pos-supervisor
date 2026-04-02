@@ -11,7 +11,7 @@ Domain-specific MCP server for platformOS projects. Gives LLM agents deep unders
 ## Installation
 
 ```bash
-git clone <repo-url> pos-supervisor
+git clone https://github.com/Platform-OS/pos-supervisor.git
 cd pos-supervisor
 npm install
 ```
