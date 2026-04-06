@@ -22,8 +22,16 @@ The server uses the current working directory as the platformOS project root. Wh
 
 ### Claude Code
 
+## per project
+
 ```bash
 claude mcp add pos-supervisor -- node /path/to/pos-supervisor/bin/pos-supervisor.js
+```
+
+## global
+
+```bash
+claude mcp add pos-supervisor -- node /path/to/pos-supervisor/bin/pos-supervisor.js --scope user
 ```
 
 ### OpenCode

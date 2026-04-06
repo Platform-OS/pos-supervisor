@@ -2,7 +2,9 @@ Required @param '{{missing_param}}' is not passed to '{{partial_name}}'.
 
 STEP 1 — Open the partial and read its {% doc %} block.
   File: app/views/partials/{{partial_name}}.liquid
-  Check which @param declarations are required (no default value).
+  A parameter is required when its name has no square brackets:
+    @param name {string} — required (must be passed)
+    @param [name] {string} — optional (may be omitted)
 
 STEP 2 — Fix the calling tag in THIS file.
   Add the missing argument:
