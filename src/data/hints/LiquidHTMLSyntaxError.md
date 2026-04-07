@@ -18,8 +18,7 @@
        The parser does NOT support inline array `[]` or hash `{}` literals as tag arguments.
        WRONG: `{% render 'partial', items: [] %}`
        WRONG: `{% render 'partial', config: { "key": "value" } %}`
-       RIGHT: `{% assign items = '[]' | parse_json %}` then `{% render 'partial', items: items %}`
-       RIGHT: `{% assign config = '{"key":"value"}' | parse_json %}` then `{% render 'partial', config: config %}`
-       Or use the modern syntax: `{% assign items = [] %}` then `{% render 'partial', items: items %}`
+       RIGHT: `{% assign items = [] %}` then `{% render 'partial', items: items %}`
+       RIGHT: `{% assign config = { "key": "value" } %}` then `{% render 'partial', config: config %}`
   Fix the EXACT line reported. Do NOT rewrite surrounding code to work around it.
   If multiple syntax errors: fix the FIRST one — later errors often cascade from it.

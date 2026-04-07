@@ -148,7 +148,7 @@
     "MetadataParamsCheck": {
       "summary": "Render call parameters don't match partial's declared metadata",
       "hint": {
-        "default": "Read the target partial's metadata/doc block. Pass all required parameters with matching types. Note: null/nil is compatible with any @param type — passing null to a typed parameter is valid."
+        "default": "Read the target partial's metadata/doc block. Pass all required parameters with matching types. NEVER pass null for a typed parameter — use the matching empty value: '' for {string}, 0 for {number}, false for {boolean}, {} for {object}, [] for {array}. A parameter is required when declared without brackets: @param {string} name. Optional when wrapped: @param {string} [name]."
       }
     },
 
@@ -177,12 +177,12 @@
       "summary": "Parameter documentation block for partials, commands, and queries",
       "syntax": "{% doc %}\n  @param {type} name - description\n  @prompt what this partial does\n  @example {% render 'partial', name: 'value' %}\n{% enddoc %}",
       "annotations": {
-        "@param": "{type} name - description. Types (MUST be lowercase): string, number, boolean, object, array, untyped. WRONG: {String}, {Object}. RIGHT: {string}, {object}. null/nil is compatible with any @param type.",
+        "@param": "{type} name - description. Types (MUST be lowercase): string, number, boolean, object, array, untyped. WRONG: {String}, {Object}. RIGHT: {string}, {object}. NEVER pass null for a typed parameter — use the matching empty value. Required: @param {string} name. Optional: @param {string} [name].",
         "@prompt": "Natural language description of the partial's purpose (used by AI agents for discovery).",
         "@example": "Usage example showing how to render/call this partial.",
         "@description": "Detailed description of behavior and side effects."
       },
-      "notes": "null/nil values are compatible with any @param type — passing null to a {string} param is valid and won't trigger MissingRenderPartialArguments."
+      "notes": "NEVER pass null for a typed parameter — use the matching empty value: '' for {string}, 0 for {number}, false for {boolean}, {} for {object}, [] for {array}. Required param: @param {string} name. Optional param: @param {string} [name]."
     },
     "graphql_field_completions": {
       "summary": "GraphQL field completions and hover docs in .graphql files",
@@ -343,7 +343,7 @@
         {
           "id": "partials_null_param",
           "trigger": "always",
-          "message": "null/nil is compatible with any @param type. Passing null to a {string} param is valid — no need to provide empty strings as defaults.",
+          "message": "NEVER pass null for a typed parameter — use the matching empty value: '' for {string}, 0 for {number}, false for {boolean}, {} for {object}, [] for {array}.",
           "severity": "architecture"
         },
         {

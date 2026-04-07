@@ -78,10 +78,10 @@ export const validateCodeTool = {
 
       // Input validation
       if (!file_path || typeof file_path !== 'string') {
-        return { valid: false, errors: [{ check: 'InputError', severity: 'error', message: 'file_path is required' }], warnings: [], infos: [] };
+        return { status: 'error', errors: [{ check: 'InputError', severity: 'error', message: 'file_path is required' }], warnings: [], infos: [] };
       }
       if (typeof content !== 'string') {
-        return { valid: false, errors: [{ check: 'InputError', severity: 'error', message: 'content is required and must be a string' }], warnings: [], infos: [] };
+        return { status: 'error', errors: [{ check: 'InputError', severity: 'error', message: 'content is required and must be a string' }], warnings: [], infos: [] };
       }
       // Catch agent mistakes: empty content, or passing a file path instead of file text
       const contentTrimmed = content.trim();
@@ -91,7 +91,7 @@ export const validateCodeTool = {
         /^(app|modules)\/[^\n]+\.(liquid|graphql|yml)$/.test(contentTrimmed)
       ) {
         return {
-          valid: false,
+          status: 'error',
           errors: [{
             check: 'InputError',
             severity: 'error',
@@ -108,7 +108,7 @@ export const validateCodeTool = {
       try {
         absPath = sanitizePath(ctx.directory, file_path);
       } catch (e) {
-        return { valid: false, errors: [{ check: 'InputError', severity: 'error', message: e.message }], warnings: [], infos: [] };
+        return { status: 'error', errors: [{ check: 'InputError', severity: 'error', message: e.message }], warnings: [], infos: [] };
       }
       const fileExists = existsSync(absPath);
       const isPreWrite = !fileExists;
@@ -118,7 +118,6 @@ export const validateCodeTool = {
       const isSchema = file_path.endsWith('.yml') && /(?:^|\/)app\/schema\//.test(file_path);
 
       const result = {
-        valid: true,
         errors: [],
         warnings: [],
         infos: [],
@@ -294,7 +293,7 @@ export const validateCodeTool = {
 
         // Elevate Shopify contamination from warning to error
         // When the linter flags UndefinedObject and the enricher identifies it as Shopify,
-        // move it from warnings to errors so it blocks valid=true.
+        // move it from warnings to errors so it blocks status:"ok".
         {
           const shopifyWarnings = result.warnings.filter(d =>
             d.check === 'UndefinedObject' && d.suggestion && /shopify/i.test(d.suggestion)
@@ -426,8 +425,6 @@ export const validateCodeTool = {
         }
       }
 
-      result.valid = result.errors.length === 0;
-
       // MissingAsset: downgrade to info when the referenced asset actually exists on disk.
       // The LSP builds its file index at startup and doesn't track newly created files
       // during the session. Assets created mid-session are invisible to the LSP but
@@ -447,7 +444,6 @@ export const validateCodeTool = {
             const verifiedSet = new Set(verified);
             result.errors = result.errors.filter(d => !verifiedSet.has(d));
             result.warnings = result.warnings.filter(d => !verifiedSet.has(d));
-            result.valid = result.errors.length === 0;
             result.infos.push({
               check: 'pos-supervisor:MissingAssetSuppressed',
               severity: 'info',
@@ -463,7 +459,7 @@ export const validateCodeTool = {
           const schemaResult = validateSchema(content, file_path);
           result.errors.push(...schemaResult.errors);
           result.warnings.push(...schemaResult.warnings);
-          if (schemaResult.errors.length > 0) result.valid = false;
+          // schema errors flow into result.errors — status derived at the end
         } catch (e) {
           result.infos.push({ check: 'schema-validator', severity: 'info', message: `Schema validation failed: ${e.message}` });
         }
@@ -498,9 +494,7 @@ export const validateCodeTool = {
               result.warnings.push(s);
             }
           }
-          if (structResults.some(s => s.severity === 'error')) {
-            result.valid = false;
-          }
+          // structural errors flow into result.errors — status derived at the end
         } catch {
           // Structural warnings are best-effort
         }
@@ -724,9 +718,18 @@ export const validateCodeTool = {
         }
       }
 
-      // 9. Next step guidance
-      if (result.valid) {
+      // 9. Derive status — single source of truth, computed once after all mutations
+      result.status = result.errors.length > 0
+        ? 'error'
+        : result.warnings.length > 0
+          ? 'warning'
+          : 'ok';
+
+      // 10. Next step guidance
+      if (result.status === 'ok') {
         result.next_step = 'File validated. Write it to disk now.';
+      } else if (result.status === 'warning') {
+        result.next_step = 'File has warnings — fix them before writing. Re-validate with validate_code (mode: "quick") after fixing.';
       } else {
         const parts = [
           `Fix every ERROR above. Apply proposed_fixes where available.`,
@@ -739,7 +742,7 @@ export const validateCodeTool = {
         result.next_step = parts.join('\n');
       }
 
-      // 10. Convert 0-based line numbers to 1-based for agent consumption
+      // 11. Convert 0-based line numbers to 1-based for agent consumption
       // LSP and pos-cli check both use 0-based lines internally.
       // Agents and editors use 1-based (cat -n, Read tool, IDE line numbers).
       // Without this conversion, "line 7, column 11" points at {% liquid %}
@@ -749,7 +752,7 @@ export const validateCodeTool = {
         if (d.endLine != null) d.endLine += 1;
       }
 
-      // 11. Strip null hint fields — diagnostics without hints should omit the field
+      // 12. Strip null hint fields — diagnostics without hints should omit the field
       // entirely rather than returning hint: null which looks like a bug in the output.
       for (const d of [...result.errors, ...result.warnings, ...result.infos]) {
         if (d.hint === null || d.hint === undefined) delete d.hint;

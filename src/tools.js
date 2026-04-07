@@ -138,8 +138,8 @@ function updateSession(session, toolName, args, result) {
       });
     }
 
-    // Mark file as validated in current plan
-    if (session.validatedPlan) {
+    // Mark file as validated in current plan — only if validation passed
+    if (session.validatedPlan && result?.status === 'ok') {
       session.validatedPlan.validatedFiles.add(fp);
     }
   }

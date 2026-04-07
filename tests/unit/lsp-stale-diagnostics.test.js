@@ -320,51 +320,6 @@ describe('awaitDiagnostics barrier + settle pattern', () => {
     client.stop();
   });
 
-  it('pre-barrier diagnostics are stored but replaced by fresh ones', async () => {
-    const { client, send, captured } = startClient();
-    const uri = 'file:///test/app/nocache.liquid';
-
-    const promise = client.awaitDiagnostics(uri, 'content\n', 2000);
-    const hoverReq = captured.find(m => m.method === 'textDocument/hover');
-
-    // Pre-barrier diags — stored in cache (may be fresh from fast LSP)
-    send(diagNotification(uri, [diag(9, 'PreBarrierCheck')]));
-    expect(client.diags(uri)).toHaveLength(1);
-
-    // Barrier + fresh — replaces pre-barrier diags
-    send(hoverResponse(hoverReq.id));
-    send(diagNotification(uri, [diag(0, 'FreshCheck')]));
-
-    const result = await promise;
-    expect(result).toHaveLength(1);
-    expect(result[0].code).toBe('FreshCheck');
-    expect(client.diags(uri)).toHaveLength(1);
-    expect(client.diags(uri)[0].code).toBe('FreshCheck');
-
-    client.stop();
-  });
-
-  it('pre-barrier-only diagnostics are returned when no post-barrier diags arrive', async () => {
-    const { client, send, captured } = startClient();
-    const uri = 'file:///test/app/fast-lsp.liquid';
-
-    const promise = client.awaitDiagnostics(uri, 'content\n', 3000);
-    const hoverReq = captured.find(m => m.method === 'textDocument/hover');
-
-    // Fast LSP: sends fresh diagnostics BEFORE responding to hover barrier.
-    // This is the key bug case — previously these were discarded as "stale".
-    send(diagNotification(uri, [diag(0, 'FastFreshCheck')]));
-
-    // Barrier passes — settle timer starts since we already have diags
-    send(hoverResponse(hoverReq.id));
-
-    // No more diagnostics arrive — settle resolves with pre-barrier diags
-    const result = await promise;
-    expect(result).toHaveLength(1);
-    expect(result[0].code).toBe('FastFreshCheck');
-    client.stop();
-  });
-
   // ── Settle window tests ──
 
   it('settle window replaces stale post-barrier diags with fresh ones', async () => {

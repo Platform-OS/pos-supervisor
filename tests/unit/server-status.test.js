@@ -62,7 +62,7 @@ describe('server_status tool', () => {
 describe('input validation', () => {
   it('validate_code rejects missing file_path', async () => {
     const result = await callTool('validate_code', { content: 'hello' });
-    expect(result.valid).toBe(false);
+    expect(result.status).toBe('error');
     expect(result.errors[0].check).toBe('InputError');
   });
 
@@ -71,7 +71,7 @@ describe('input validation', () => {
       file_path: '../../../etc/passwd',
       content: 'hello',
     });
-    expect(result.valid).toBe(false);
+    expect(result.status).toBe('error');
     expect(result.errors[0].check).toBe('InputError');
     expect(result.errors[0].message).toContain('within the project directory');
   });

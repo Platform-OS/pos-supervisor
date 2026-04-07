@@ -41,7 +41,7 @@ describePosCli('Shopify contamination — elevation to errors', () => {
       content,
       mode: 'full',
     });
-    expect(result.valid).toBe(false);
+    expect(result.status).toBe('error');
   });
 
   it('Shopify objects appear in errors array, not just warnings', async () => {

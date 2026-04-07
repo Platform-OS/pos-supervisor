@@ -207,7 +207,7 @@ describe('knowledge-loader: language features', () => {
     const f = getLanguageFeature('liquid_doc');
     expect(f).not.toBeNull();
     expect(f.annotations).toBeDefined();
-    expect(f.annotations['@param']).toContain('null/nil');
+    expect(f.annotations['@param']).toContain('NEVER pass null');
     expect(f.annotations['@prompt']).toBeTruthy();
     expect(f.annotations['@example']).toBeTruthy();
     expect(f.annotations['@description']).toBeTruthy();

@@ -43,7 +43,7 @@ describePosCli('AddedParam — cross-file caller detection', () => {
     });
 
     console.log('--- AddedParam full mode ---');
-    console.log(`  valid: ${result.valid}`);
+    console.log(`  status: ${result.status}`);
     console.log(`  errors: ${result.errors.length}, warnings: ${result.warnings.length}`);
     console.log('  warning checks:', result.warnings.map(w => w.check));
     console.log('  warnings:', result.warnings.map(w => `[${w.check}] ${w.message}`));
@@ -67,7 +67,7 @@ describePosCli('AddedParam — cross-file caller detection', () => {
     });
 
     console.log('--- AddedParam quick mode ---');
-    console.log(`  valid: ${result.valid}`);
+    console.log(`  status: ${result.status}`);
     console.log(`  warnings:`, result.warnings.map(w => `[${w.check}] ${w.message}`));
 
     const addedParam = result.warnings.filter(w => w.check === 'pos-supervisor:AddedParam');
@@ -93,7 +93,7 @@ describePosCli('AddedParam — cross-file caller detection', () => {
     });
 
     console.log('--- New partial with callers (pre-write) ---');
-    console.log(`  valid: ${result.valid}`);
+    console.log(`  status: ${result.status}`);
     console.log('  warnings:', result.warnings.map(w => `[${w.check}] ${w.message}`));
 
     const callerWarning = result.warnings.filter(w => w.check === 'pos-supervisor:NewPartialParams');

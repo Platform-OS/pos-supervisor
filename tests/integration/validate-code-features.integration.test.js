@@ -29,13 +29,13 @@ slug: test_valid
       mode: 'quick',
     });
     // In quick mode, a simple valid file should pass
-    if (result.valid) {
+    if (result.status === 'ok') {
       expect(result.next_step).toBeDefined();
       expect(result.next_step).toContain('Write it to disk');
     }
   });
 
-  it('invalid file returns next_step with MUST/MUST NOT instructions', async () => {
+  it('invalid file returns next_step with fix instructions', async () => {
     // Empty content triggers InputError
     const result = await server.callTool('validate_code', {
       file_path: 'app/views/partials/test_invalid.liquid',
@@ -43,8 +43,8 @@ slug: test_valid
       mode: 'quick',
     });
     // This should be invalid (content looks like a file path)
-    if (!result.valid && result.next_step) {
-      expect(result.next_step).toMatch(/MUST/);
+    if (result.status === 'error' && result.next_step) {
+      expect(result.next_step).toContain('Fix');
     }
   });
 
@@ -55,7 +55,7 @@ slug: test_valid
       content,
       mode: 'quick',
     });
-    if (!result.valid) {
+    if (result.status === 'error') {
       expect(result.next_step).toBeDefined();
       expect(result.next_step).toContain('quick');
     }

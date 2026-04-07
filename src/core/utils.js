@@ -26,21 +26,6 @@ export function sanitizePath(directory, filePath) {
   return abs;
 }
 
-/**
- * Map a file path to a domain key, or null if no domain applies.
- */
-export function getDomainFromPath(absPath) {
-  if (absPath.includes('/views/pages/'))    return 'pages';
-  if (absPath.includes('/views/layouts/'))  return 'layouts';
-  if (absPath.includes('/views/partials/')) return 'partials';
-  if (absPath.includes('/app/graphql/') || absPath.includes('/graphql/')) return 'graphql';
-  if (absPath.includes('/lib/commands/'))   return 'commands';
-  if (absPath.includes('/schema/'))         return 'schema';
-  if (absPath.includes('/lib/queries/'))    return 'queries';
-  if (absPath.includes('/translations/'))   return 'translations';
-  if (/\/app\/config\.yml$/.test(absPath))  return 'config';
-  return null;
-}
 
 /**
  * Walk up from a file path to find the project root (contains app/config.yml).

@@ -81,20 +81,20 @@ describePosCli('validate_code — linting', () => {
     // MissingPartial stays as error — blocks validation
     const missing = result.errors.filter(d => d.check === 'MissingPartial');
     expect(missing.length).toBeGreaterThan(0);
-    expect(result.valid).toBe(false);
+    expect(result.status).toBe('error');
     // Should NOT appear in infos
     const missingInfos = result.infos.filter(d => d.check === 'MissingPartial');
     expect(missingInfos).toHaveLength(0);
   });
 
-  it('returns valid=true for clean code', async () => {
+  it('returns status ok for clean code', async () => {
     const result = await server.callTool('validate_code', {
       file_path: 'app/views/pages/test.html.liquid',
       content: '---\nslug: clean-page\n---\n<h1>Hello</h1>',
       mode: 'quick',
     });
 
-    expect(result.valid).toBe(true);
+    expect(result.status).toBe('ok');
     expect(result.errors).toHaveLength(0);
   });
 });
