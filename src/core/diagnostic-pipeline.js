@@ -6,17 +6,19 @@
  * and is documented with its purpose and ordering dependencies.
  *
  * ORDERING CONTRACT:
- *   1. suppressDocParams       — must run before Shopify elevation (doc params may look like Shopify objects)
- *   2. suppressUnusedDocParams — depends on content, independent of other filters
- *   3. elevateShopify          — must run after enrichment (needs .suggestion field)
- *   4. deduplicateArgChecks    — must run after linting (needs MissingRenderPartialArguments + MetadataParamsCheck)
- *   5. suppressModuleHelpers   — independent
- *   6. suppressOrphanedPartial — independent
- *   7. suppressPendingFiles    — must run before pre-write downgrade (removes refs first)
- *   8. suppressPendingTranslations — independent
- *   9. downgradePreWrite       — must run after pending suppression
- *  10. downgradeTranslationKeys — independent
- *  11. verifyMissingAssets     — independent (filesystem check)
+ *   1. suppressDocParams           — must run before Shopify elevation (doc params may look like Shopify objects)
+ *   2. suppressUnusedDocParams     — depends on content, independent of other filters
+ *   3. elevateShopify              — must run after enrichment (needs .suggestion field)
+ *   4. deduplicateArgChecks        — must run after linting (needs MissingRenderPartialArguments + MetadataParamsCheck)
+ *   5. suppressModuleHelpers       — independent
+ *   6. suppressOrphanedPartial     — independent
+ *   7. suppressPendingFiles        — suppress MissingPartial for files being created in the same plan
+ *   8. suppressPendingTranslations — suppress TranslationKeyExists for keys being created in the same plan
+ *   9. verifyMissingAssets         — independent (filesystem check)
+ *
+ * NOTE: MissingPartial and TranslationKeyExists are real errors — do NOT downgrade them
+ * based on isPreWrite or other implicit state. Use pending_files / pending_translations
+ * (populated by validate_intent) to suppress false positives during multi-file creation.
  */
 
 import { existsSync } from 'node:fs';
@@ -30,10 +32,8 @@ import { join } from 'node:path';
  * @param {string} opts.filePath — relative file path
  * @param {string} opts.content — file content
  * @param {Set<string>} opts.docParamNames — declared @param names
- * @param {string[]} opts.pendingFiles — files being created soon
- * @param {string[]} opts.pendingTranslations — translation keys being created soon
- * @param {boolean} opts.isPreWrite — file doesn't exist on disk yet
- * @param {string} opts.mode — 'full' or 'quick'
+ * @param {string[]} opts.pendingFiles — files being created soon (suppresses MissingPartial)
+ * @param {string[]} opts.pendingTranslations — translation keys being created soon (suppresses TranslationKeyExists)
  * @param {string} opts.projectDir — project root directory
  */
 export function runDiagnosticPipeline(result, opts) {
@@ -43,8 +43,6 @@ export function runDiagnosticPipeline(result, opts) {
     docParamNames = new Set(),
     pendingFiles = [],
     pendingTranslations = [],
-    isPreWrite = false,
-    mode = 'full',
     projectDir,
   } = opts;
 
@@ -80,15 +78,7 @@ export function runDiagnosticPipeline(result, opts) {
     suppressPendingTranslations(result, pendingTranslations);
   }
 
-  // 9. Pre-write mode: downgrade MissingPartial errors to warnings
-  if (isPreWrite && mode === 'full') {
-    downgradePreWrite(result);
-  }
-
-  // 10. Downgrade TranslationKeyExists to info
-  downgradeTranslationKeys(result);
-
-  // 11. Verify MissingAsset against filesystem
+  // 9. Verify MissingAsset against filesystem
   if (projectDir) {
     verifyMissingAssets(result, projectDir);
   }
@@ -225,31 +215,6 @@ function suppressPendingTranslations(result, pendingTranslations) {
   result.errors = result.errors.filter(d => !isPendingTrans(d));
   result.warnings = result.warnings.filter(d => !isPendingTrans(d));
   result.infos = result.infos.filter(d => !isPendingTrans(d));
-}
-
-function downgradePreWrite(result) {
-  const missingPartialErrors = result.errors.filter(d => d.check === 'MissingPartial');
-  if (missingPartialErrors.length > 0) {
-    result.errors = result.errors.filter(d => d.check !== 'MissingPartial');
-    for (const d of missingPartialErrors) {
-      result.warnings.push({
-        ...d,
-        severity: 'warning',
-        message: `[pre-write] ${d.message}`,
-      });
-    }
-  }
-}
-
-function downgradeTranslationKeys(result) {
-  const missingTransKeys = result.errors.filter(d => d.check === 'TranslationKeyExists');
-  if (missingTransKeys.length > 0) {
-    result.errors = result.errors.filter(d => d.check !== 'TranslationKeyExists');
-    for (const d of missingTransKeys) {
-      result.infos.push({ ...d, severity: 'info', _downgraded: true,
-        message: `${d.message} (advisory — translation key may not be indexed yet)` });
-    }
-  }
 }
 
 function verifyMissingAssets(result, projectDir) {

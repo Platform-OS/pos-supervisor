@@ -10,6 +10,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { load as yamlLoad } from 'js-yaml';
 import { getProjectMap } from '../tools/project-map.js';
 import { scanModule } from './module-scanner.js';
 import { getTriggeredGotchas } from './knowledge-loader.js';
@@ -868,6 +869,58 @@ export function checkGoalForShopify(goal) {
 }
 
 // ---------------------------------------------------------------------------
+// Scaffold translation key extraction (Track A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Flatten nested YAML object to dot-notation leaf keys.
+ * @param {object} obj
+ * @param {string} prefix
+ * @param {string[]} result
+ */
+function flattenYamlKeys(obj, prefix, result) {
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+      flattenYamlKeys(v, key, result);
+    } else {
+      result.push(key);
+    }
+  }
+}
+
+/**
+ * Extract all translation keys from scaffold translation YML files.
+ *
+ * Translation keys in Liquid use dot-notation WITHOUT the locale prefix:
+ *   en.app.product_items.list.add  →  'app.product_items.list.add'
+ *
+ * These keys are returned as pending_translations so validate_code can
+ * suppress TranslationKeyExists false-positives during scaffold validation
+ * (the YML file hasn't been written to disk yet, but will be).
+ *
+ * @param {Array<{domain: string, content: string}>} scaffoldFiles
+ * @returns {string[]}
+ */
+export function extractScaffoldTranslationKeys(scaffoldFiles) {
+  const keys = [];
+  for (const file of scaffoldFiles) {
+    if (file.domain !== 'translations' || !file.content) continue;
+    try {
+      const parsed = yamlLoad(file.content);
+      if (typeof parsed !== 'object' || parsed === null) continue;
+      // Top-level keys are locale codes (e.g. 'en') — strip them
+      for (const localeObj of Object.values(parsed)) {
+        if (typeof localeObj === 'object' && localeObj !== null) {
+          flattenYamlKeys(localeObj, '', keys);
+        }
+      }
+    } catch { /* invalid YAML — skip silently */ }
+  }
+  return keys;
+}
+
+// ---------------------------------------------------------------------------
 // Scaffold normalisation (Track A)
 // ---------------------------------------------------------------------------
 
@@ -960,8 +1013,8 @@ function collectPendingFiles(changes) {
   return files;
 }
 
-function collectPendingTranslations(changes) {
-  const keys = new Set();
+function collectPendingTranslations(changes, extraKeys = []) {
+  const keys = new Set(extraKeys);
   for (const c of changes) {
     for (const key of c.references?.translations ?? []) {
       keys.add(key);
@@ -970,7 +1023,7 @@ function collectPendingTranslations(changes) {
   return [...keys];
 }
 
-function makeSuccess(changes, warnings, goal, projectMap) {
+function makeSuccess(changes, warnings, goal, projectMap, extraTranslationKeys = []) {
   const pendingFiles = collectPendingFiles(changes);
 
   // Build per-file generation context for create actions
@@ -1020,7 +1073,7 @@ function makeSuccess(changes, warnings, goal, projectMap) {
     plan_id: buildPlanId(changes),
     summary: buildSummary(changes, warnings),
     pending_files: pendingFiles,
-    pending_translations: collectPendingTranslations(changes),
+    pending_translations: collectPendingTranslations(changes, extraTranslationKeys),
     generation_context: Object.keys(generation_context).length > 0 ? generation_context : undefined,
     warnings,
     validated_at: new Date().toISOString(),
@@ -1058,12 +1111,23 @@ function makeFailure(errors, warnings) {
  * @param {string} projectDir - absolute path to project root
  */
 export async function validateIntent(input, projectDir) {
+  // Agents using the MCP stdio transport receive tool results as JSON-encoded text and may
+  // pass scaffold_output as a string. Normalise it to an object before processing.
+  if (input !== null && typeof input === 'object' && typeof input.scaffold_output === 'string') {
+    try {
+      input = { ...input, scaffold_output: JSON.parse(input.scaffold_output) };
+    } catch {
+      // Invalid JSON — let validation fail naturally with the string value
+    }
+  }
+
   const isScaffold = input !== null &&
     typeof input === 'object' &&
     'scaffold_output' in input;
 
   if (isScaffold) {
     const { changes, goal } = normalizeScaffoldInput(input.scaffold_output);
+    const scaffoldTranslationKeys = extractScaffoldTranslationKeys(input.scaffold_output.files ?? []);
     const projectMap = await getProjectMap(projectDir);
 
     const stateResult  = validateProjectState(changes, projectMap, {
@@ -1077,7 +1141,7 @@ export async function validateIntent(input, projectDir) {
     const warnings = [...stateResult.warnings, ...policyResult.warnings, ...goalWarnings];
 
     if (errors.length > 0) return makeFailure(errors, warnings);
-    return makeSuccess(changes, warnings, goal, projectMap);
+    return makeSuccess(changes, warnings, goal, projectMap, scaffoldTranslationKeys);
   }
 
   // Manual track (Track B)

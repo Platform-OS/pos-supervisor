@@ -1,23 +1,51 @@
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
 import { getToolList, dispatchTool } from './tools.js';
 import { listResources, readResource } from './resources.js';
 import { ToolError } from './core/tool-error.js';
 import { HTTP_MAX_BODY } from './core/constants.js';
+import { buildDashboardHtml } from './dashboard.js';
 
 /**
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
  * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log, version }) {
+export function startHttp(registry, { port, log, version, logPath, getStatus }) {
   if (!port) return null;
+
+  const dashboardHtml = buildDashboardHtml();
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const method = req.method;
 
+    // ── Dashboard ────────────────────────────────────────────────────────
+    if (method === 'GET' && (url.pathname === '/' || url.pathname === '')) {
+      res.writeHead(302, { Location: '/dashboard' });
+      return res.end();
+    }
+
+    if (method === 'GET' && url.pathname === '/dashboard') {
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Length': Buffer.byteLength(dashboardHtml),
+      });
+      return res.end(dashboardHtml);
+    }
+
     // ── GET routes ──────────────────────────────────────────────────────
     if (method === 'GET' && url.pathname === '/health') {
       return sendJson(res, 200, { status: 'ok', server: 'pos-supervisor', version });
+    }
+
+    if (method === 'GET' && url.pathname === '/api/status') {
+      const status = getStatus ? getStatus() : { version };
+      return sendJson(res, 200, status);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/logs') {
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200);
+      return sendJson(res, 200, { entries: readLogTail(logPath, limit) });
     }
 
     if (method === 'GET' && url.pathname === '/tools') {
@@ -50,8 +78,17 @@ export function startHttp(registry, { port, log, version }) {
     sendJson(res, 404, { error: 'Not found' });
   });
 
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      log?.(`HTTP port ${port} already in use — dashboard unavailable (another instance may be running)`);
+    } else {
+      log?.(`HTTP server error: ${err.message}`);
+    }
+  });
+
   server.listen(port, () => {
     log?.(`HTTP server listening on http://localhost:${port}`);
+    log?.(`Dashboard: http://localhost:${port}/dashboard`);
   });
 
   return server;
@@ -99,6 +136,20 @@ function sendJson(res, status, data) {
     'Content-Length': Buffer.byteLength(body),
   });
   res.end(body);
+}
+
+function readLogTail(logPath, limit) {
+  if (!logPath) return [];
+  try {
+    const content = readFileSync(logPath, 'utf-8');
+    const lines = content.trim().split('\n').filter(Boolean);
+    return lines
+      .slice(-limit)
+      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
 }
 
 function readJsonBody(req) {

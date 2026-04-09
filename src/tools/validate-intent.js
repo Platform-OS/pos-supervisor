@@ -68,19 +68,29 @@ IMPORTANT: changes must be a JSON array of objects — never a JSON-encoded stri
 IMPORTANT: references is optional per change but should be populated — it is used to verify
   that all partials/graphql/schemas/queries referenced actually exist or are in this plan.`,
   inputSchema: {
-    scaffold_output: z.object({
-      files: z.array(z.object({
-        path: z.string(),
-        content: z.string().optional(),
-        domain: z.string(),
-      })),
-      creation_order: z.array(z.string()).optional(),
-      conflicts: z.array(z.object({
-        path: z.string(),
-        reason: z.string(),
-      })).optional(),
-      summary: z.string().optional(),
-    }).optional().describe('Mode 1: pass the complete result object returned by the scaffold tool. Runs project-state checks (cross-references with existing project) and policy checks. Schema/domain checks are skipped — scaffold already generates correct paths.'),
+    scaffold_output: z.preprocess(
+      (val) => {
+        // Agents using the MCP stdio transport receive tool results as JSON-encoded text.
+        // Accept a JSON string and parse it so the agent can pass scaffold output directly.
+        if (typeof val === 'string') {
+          try { return JSON.parse(val); } catch { return val; }
+        }
+        return val;
+      },
+      z.object({
+        files: z.array(z.object({
+          path: z.string(),
+          content: z.string().optional(),
+          domain: z.string(),
+        })),
+        creation_order: z.array(z.string()).optional(),
+        conflicts: z.array(z.object({
+          path: z.string(),
+          reason: z.string(),
+        })).optional(),
+        summary: z.string().optional(),
+      }).optional()
+    ).describe('Mode 1: pass the complete result object returned by the scaffold tool. Runs project-state checks (cross-references with existing project) and policy checks. Schema/domain checks are skipped — scaffold already generates correct paths.'),
     intent: z.object({
       goal: z.string().describe('What this change is trying to accomplish, in plain language.'),
       changes: z.array(z.object({

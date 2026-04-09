@@ -27,7 +27,7 @@ const VERSION = pkg.version;
  * @param {number} [opts.httpPort] - HTTP port (0 = disabled)
  */
 export async function createServer({ projectDir, httpPort = 0 }) {
-  const { emit, log, close: closeLogger } = createLogger({ directory: projectDir, version: VERSION });
+  const { emit, log, close: closeLogger, logPath } = createLogger({ directory: projectDir, version: VERSION });
 
   emit('server_start', { projectDir, httpPort });
   log(`Starting pos-supervisor v${VERSION} for ${projectDir}`);
@@ -284,7 +284,20 @@ export async function createServer({ projectDir, httpPort = 0 }) {
 
   // ── Start HTTP transport (optional, for REST consumers and tests) ─────────
   if (httpPort > 0) {
-    startHttp(registry, { port: httpPort, log, version: VERSION });
+    const startMs = Date.now();
+    const startedAt = new Date(startMs).toISOString();
+    function getStatus() {
+      return {
+        version: VERSION,
+        projectDir,
+        posCliFound,
+        lspReady: lspWarmupComplete,
+        toolCount: registry.size,
+        uptimeMs: Date.now() - startMs,
+        startedAt,
+      };
+    }
+    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────

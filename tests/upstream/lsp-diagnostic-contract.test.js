@@ -171,14 +171,16 @@ describePosCli('LSP contract: MissingPartial', () => {
     expect(missing.length).toBe(0);
   });
 
-  it('severity is warning (2)', async () => {
-    // MissingPartial is a warning from the LSP — our pipeline keeps it as warning
-    // (or downgrades in pre-write mode)
-    const { warnings } = await getLspDiags(
+  it('severity is error (1) from LSP', async () => {
+    // MissingPartial is an ERROR from the LSP (DiagnosticSeverity.Error = 1).
+    // The previous downgradePreWrite() pipeline step was hiding this by converting
+    // to warning for pre-write files — that step has been removed. MissingPartial
+    // is now always an error; use pending_files to suppress during multi-file creation.
+    const { errors } = await getLspDiags(
       'app/views/partials/contract_missing_sev.liquid',
       "{% render 'does/not/exist/anywhere' %}",
     );
-    const check = warnings.find(d => d.check === 'MissingPartial');
+    const check = errors.find(d => d.check === 'MissingPartial');
     expect(check).toBeDefined();
   });
 });

@@ -216,8 +216,6 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
           docParamNames: new Set(result.structural.doc_params ?? []),
           pendingFiles: pending_files,
           pendingTranslations: pending_translations,
-          isPreWrite,
-          mode,
           projectDir: ctx.directory,
         });
       } else {

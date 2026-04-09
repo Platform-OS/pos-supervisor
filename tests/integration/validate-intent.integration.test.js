@@ -158,6 +158,26 @@ describe('validate_intent — input coercion', () => {
     // Should not fail with schema error — coercion should fire
     expect((result.errors ?? []).every(e => e.type !== 'schema_error')).toBe(true);
   });
+
+  it('accepts scaffold_output as a JSON string (MCP stdio agents pass text content directly)', async () => {
+    // Agents using the MCP stdio transport receive tool results as text content.
+    // They may pass scaffold_output as a JSON-encoded string rather than a parsed object.
+    const scaffold = await server.callTool('scaffold', {
+      type: 'query',
+      name: 'string_coercion_test',
+      properties: [{ name: 'limit', type: 'integer' }],
+    });
+
+    // Simulate what an MCP stdio agent does: pass the JSON-stringified scaffold output
+    const result = await server.callTool('validate_intent', {
+      scaffold_output: JSON.stringify(scaffold),
+    });
+
+    // Should work identically to passing the object directly
+    expect(result.ok).toBe(true);
+    expect(result.pending_files).toBeDefined();
+    expect(result.pending_files.length).toBeGreaterThan(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

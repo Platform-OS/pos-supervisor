@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0
+
+### Fixed
+
+- **`validate_code` hiding TranslationKeyExists errors**: The diagnostic pipeline was unconditionally downgrading all `TranslationKeyExists` diagnostics from errors to infos (with an "advisory" message). Files with missing translation keys reported `status: ok`, masking real issues that `pos-cli check` and `analyze_project` would catch. Removed `downgradeTranslationKeys` entirely — `TranslationKeyExists` is now always surfaced as an error.
+
+- **`validate_code` mode-inconsistent MissingPartial behavior**: `downgradePreWrite` was converting `MissingPartial` from error to warning only in `mode: 'full'` + `isPreWrite: true`, causing different `status` values for the same file content depending on mode. Removed `downgradePreWrite` entirely — `MissingPartial` is now consistently an error in all modes. Use `pending_files` (from `validate_intent`) to suppress cross-file false positives during multi-file creation.
+
+- **`validate_intent` scaffold track returning empty `pending_translations`**: When given scaffold output, `validate_intent` always returned `pending_translations: []` because the scaffold normalizer discarded file content before translation keys could be extracted. CRUD scaffold workflows would then call `validate_code` with no pending translations, triggering `TranslationKeyExists` errors on every file that used scaffold-generated translation keys. Fixed by adding `extractScaffoldTranslationKeys` which parses scaffold translation YML files and flattens keys to dot-notation (stripping the locale prefix), so `pending_translations` is correctly populated for scaffold-based workflows.
+
+- **LSP contract test for MissingPartial severity**: The contract test "severity is warning (2)" was not testing the LSP's native severity — it was testing the `downgradePreWrite` pipeline behavior. MissingPartial is an error (`DiagnosticSeverity.Error = 1`) from the LSP. Updated test to check `result.errors` and renamed to "severity is error (1) from LSP".
+
+### Changed
+
+- Diagnostic pipeline reduced from 11 to 9 steps. The `isPreWrite` and `mode` options are no longer consumed by `runDiagnosticPipeline` (both were only used by the removed steps).
+
 ## 0.3.0
 
 ### Fixed

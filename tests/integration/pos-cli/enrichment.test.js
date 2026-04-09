@@ -88,9 +88,8 @@ describePosCli('Enrichment: TranslationKeyExists', () => {
       content,
       mode: 'full',
     });
-    // TranslationKeyExists may be downgraded to info
-    const allDiags = [...result.errors, ...result.warnings, ...result.infos];
-    const transError = allDiags.find(e => e.check === 'TranslationKeyExists');
+    // TranslationKeyExists is reported as an error
+    const transError = result.errors.find(e => e.check === 'TranslationKeyExists');
     expect(transError).toBeDefined();
     expect(transError.hint).toBeDefined();
     // Hint should contain YAML snippet showing where to add the key

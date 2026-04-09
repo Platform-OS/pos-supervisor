@@ -31,7 +31,7 @@ claude mcp add pos-supervisor -- node /path/to/pos-supervisor/bin/pos-supervisor
 ## global
 
 ```bash
-claude mcp add pos-supervisor -- node /path/to/pos-supervisor/bin/pos-supervisor.js --scope user
+claude mcp add pos-supervisor --scope user -- node /path/to/pos-supervisor/bin/pos-supervisor.js
 ```
 
 ### OpenCode

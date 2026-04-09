@@ -11,6 +11,7 @@ import {
   validatePolicy,
   checkGoalForShopify,
   normalizeScaffoldInput,
+  extractScaffoldTranslationKeys,
   buildPlanId,
   buildPendingResolution,
   coerceIntent,
@@ -930,5 +931,75 @@ describe('output format', () => {
     const { warnings } = validatePolicy(changes, MOCK_PROJECT_MAP);
     expect(errors.some(e => e.type === 'partial_invokes_graphql')).toBe(true);
     expect(warnings.some(w => w.type === 'schema_deletion')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractScaffoldTranslationKeys
+// ---------------------------------------------------------------------------
+
+describe('extractScaffoldTranslationKeys', () => {
+  it('extracts dot-notation keys from a nested translation YML, stripping the locale prefix', () => {
+    const files = [{
+      domain: 'translations',
+      path: 'app/translations/en/products.yml',
+      content: `en:\n  app:\n    products:\n      list:\n        add: Add\n        total: Total\n      attr:\n        title: Title\n`,
+    }];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toContain('app.products.list.add');
+    expect(keys).toContain('app.products.list.total');
+    expect(keys).toContain('app.products.attr.title');
+    // Locale prefix must NOT appear in keys
+    expect(keys.every(k => !k.startsWith('en.'))).toBe(true);
+  });
+
+  it('handles multiple translation files', () => {
+    const files = [
+      {
+        domain: 'translations',
+        path: 'app/translations/en/orders.yml',
+        content: `en:\n  app:\n    orders:\n      create: Create\n`,
+      },
+      {
+        domain: 'translations',
+        path: 'app/translations/en/users.yml',
+        content: `en:\n  app:\n    users:\n      login: Login\n`,
+      },
+    ];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toContain('app.orders.create');
+    expect(keys).toContain('app.users.login');
+  });
+
+  it('ignores non-translation scaffold files', () => {
+    const files = [
+      { domain: 'pages', path: 'app/views/pages/index.html.liquid', content: '---\nslug: index\n---' },
+      { domain: 'graphql', path: 'app/graphql/search.graphql', content: 'query { records { results { id } } }' },
+    ];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toHaveLength(0);
+  });
+
+  it('ignores translation files with no content', () => {
+    const files = [{ domain: 'translations', path: 'app/translations/en/empty.yml', content: '' }];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toHaveLength(0);
+  });
+
+  it('ignores translation files with missing content field', () => {
+    const files = [{ domain: 'translations', path: 'app/translations/en/missing.yml' }];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toHaveLength(0);
+  });
+
+  it('skips files with invalid YAML without throwing', () => {
+    const files = [{ domain: 'translations', path: 'app/translations/en/bad.yml', content: 'en:\n  : [unclosed' }];
+    expect(() => extractScaffoldTranslationKeys(files)).not.toThrow();
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(Array.isArray(keys)).toBe(true);
+  });
+
+  it('returns empty array for empty file list', () => {
+    expect(extractScaffoldTranslationKeys([])).toHaveLength(0);
   });
 });

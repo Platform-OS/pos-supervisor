@@ -117,6 +117,7 @@ describe('Agent scenario: add CRUD feature end-to-end', () => {
     });
     expect(intent.ok).toBe(true);
     expect(intent.pending_files.length).toBeGreaterThan(0);
+    expect(intent.pending_translations.length).toBeGreaterThan(0);
 
     // Step 4: Agent validates each liquid file
     const liquidFiles = scaffold.files.filter(f => f.path.endsWith('.liquid'));
@@ -128,6 +129,7 @@ describe('Agent scenario: add CRUD feature end-to-end', () => {
         content: file.content,
         mode: 'quick',
         pending_files: intent.pending_files,
+        pending_translations: intent.pending_translations,
       });
       // Filter MissingPartial for modules/* — test fixture only has modules/user installed
       const realErrors = validation.errors.filter(e =>
@@ -252,6 +254,7 @@ describe('Agent scenario: API-only scaffold (no views)', () => {
           content: file.content,
           mode: 'quick',
           pending_files: intent.pending_files,
+          pending_translations: intent.pending_translations,
         });
         // Filter MissingPartial for modules/* — test fixture only has modules/user installed
         const realErrors = validation.errors.filter(e =>
