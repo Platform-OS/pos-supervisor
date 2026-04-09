@@ -1,5 +1,9 @@
 import { realpath } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { PlatformOSLSPClient } from './core/lsp-client.js';
 import { SchemaIndex } from './core/schema-index.js';
 import { ObjectsIndex } from './core/objects-index.js';
@@ -7,11 +11,13 @@ import { FiltersIndex } from './core/filters-index.js';
 import { TagsIndex } from './core/tags-index.js';
 import { toUri } from './core/utils.js';
 import { createToolRegistry } from './tools.js';
-import { startStdio } from './stdio-server.js';
 import { startHttp } from './http-server.js';
 import { createLogger } from './core/logger.js';
+import { LSP_READY_TIMEOUT_MS } from './core/constants.js';
 
-const LSP_READY_TIMEOUT_MS = 30_000;
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+const VERSION = pkg.version;
 
 /**
  * Create and start the pos-supervisor server.
@@ -21,10 +27,10 @@ const LSP_READY_TIMEOUT_MS = 30_000;
  * @param {number} [opts.httpPort] - HTTP port (0 = disabled)
  */
 export async function createServer({ projectDir, httpPort = 0 }) {
-  const { emit, log, close: closeLogger } = createLogger({ directory: projectDir });
+  const { emit, log, close: closeLogger } = createLogger({ directory: projectDir, version: VERSION });
 
   emit('server_start', { projectDir, httpPort });
-  log(`Starting pos-supervisor for ${projectDir}`);
+  log(`Starting pos-supervisor v${VERSION} for ${projectDir}`);
 
   // ── Resolve pos-cli paths ─────────────────────────────────────────────────
   let lspCmd = 'pos-cli';
@@ -81,11 +87,11 @@ export async function createServer({ projectDir, httpPort = 0 }) {
 
   const rootUri = toUri(projectDir);
   const lspStart = Date.now();
-  
+
   // Separate Promise to track warm-up completion (distinct from LSP initialization)
   let lspWarmupComplete = false;
   const lspWarmupReady = new Promise((resolve) => {
-    lsp.initialize(rootUri)
+    lsp.initialize(rootUri, { version: VERSION })
       .then(async () => {
         // ─ LSP Warm-up: Force full project indexing ─
         // MissingPartial cross-reference checking requires the LSP's partials index to be fully populated.
@@ -106,7 +112,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
 
           log('LSP warming up cross-reference index...');
           let indexReady = 0;
-          
+
           // Request diagnostics for each area in sequence to trigger indexing
           // Each request blocks until the LSP has analyzed that area
           for (const uri of warmupUris) {
@@ -127,7 +133,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
           log(`LSP warm-up failed (non-fatal): ${e.message}`);
           lspWarmupComplete = true;
         }
-        
+
         emit('lsp_ready', { durationMs: Date.now() - lspStart });
         log('LSP ready');
         resolve();
@@ -139,7 +145,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
         resolve();
       });
   });
-  
+
   const lspReady = lspWarmupReady;
 
   /**
@@ -220,6 +226,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   };
 
   const ctx = {
+    version: VERSION,
     directory: projectDir,
     lsp,
     lspReady,
@@ -237,14 +244,47 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     emit,
   };
 
-  const registry = createToolRegistry(ctx);
+  // ── Create MCP server (SDK) for stdio transport ───────────────────────────
+  const mcpServer = new McpServer({
+    name: 'pos-supervisor',
+    version: VERSION,
+  });
+
+  // Register tools on both the registry (for HTTP) and McpServer (for stdio)
+  const registry = createToolRegistry(ctx, mcpServer);
   log(`Registered ${registry.size} tools: ${[...registry.keys()].join(', ')}`);
 
-  // ── Start transports ──────────────────────────────────────────────────────
-  startStdio(registry, { log });
+  // ── Register resources on McpServer ───────────────────────────────────────
+  const synthesisPath = join(__dirname, 'data', 'resources', 'platformos-synthesis.md');
+  mcpServer.resource(
+    'platformos-synthesis',
+    'pos-supervisor://knowledge/platformos-synthesis',
+    {
+      description: 'Complete platformOS patterns, architecture rules, and API reference. Load at session start for full platform context.',
+      mimeType: 'text/markdown',
+    },
+    async (uri) => {
+      const { readFile } = await import('node:fs/promises');
+      const text = await readFile(synthesisPath, 'utf-8');
+      return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text }] };
+    }
+  );
 
+  // ── Connect stdio transport (replaces hand-rolled stdio-server.js) ────────
+  const transport = new StdioServerTransport();
+  await mcpServer.connect(transport);
+  log('MCP stdio transport connected (SDK)');
+
+  // Exit process when stdin closes (client disconnected).
+  // The SDK cleans up internally but doesn't call process.exit().
+  // Small delay allows pending responses to flush before exit.
+  process.stdin.on('close', () => {
+    setTimeout(() => shutdown('stdin-closed'), 200);
+  });
+
+  // ── Start HTTP transport (optional, for REST consumers and tests) ─────────
   if (httpPort > 0) {
-    startHttp(registry, { port: httpPort, log });
+    startHttp(registry, { port: httpPort, log, version: VERSION });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────
@@ -253,6 +293,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     log(`Shutting down (${reason})...`);
     lsp.stop();
     closeLogger();
+    mcpServer.close().catch(() => {});
     process.exit(0);
   }
 
@@ -269,5 +310,5 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     log(`Uncaught exception: ${err.message}`);
   });
 
-  return { lsp, registry, ctx };
+  return { lsp, registry, ctx, mcpServer };
 }

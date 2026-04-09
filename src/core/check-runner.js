@@ -4,8 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { findProjectRoot } from './utils.js';
-
-const CHECK_TIMEOUT_MS = 60_000;
+import { CHECK_TIMEOUT_MS, CHECK_MAX_BUFFER } from './constants.js';
 
 /**
  * Normalize severity values from pos-cli check output.
@@ -74,7 +73,7 @@ export function createCheckRunner({ cmd, args, directory, log }) {
       execFile(
         cmd,
         args,
-        { env: process.env, cwd, maxBuffer: 10 * 1024 * 1024, timeout: CHECK_TIMEOUT_MS },
+        { env: process.env, cwd, maxBuffer: CHECK_MAX_BUFFER, timeout: CHECK_TIMEOUT_MS },
         (err, stdout) => {
           try {
             const json = JSON.parse(stdout);

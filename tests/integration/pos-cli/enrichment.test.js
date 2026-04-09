@@ -25,7 +25,12 @@ describePosCli('Enrichment: UnknownFilter', () => {
 
 describePosCli('Enrichment: UndefinedObject', () => {
   it('provides hint with variable name', async () => {
-    const content = `{{ some_undefined_variable }}`;
+    // UndefinedObject requires a {% doc %} block — the LSP only reports undefined
+    // variables when the partial declares its expected params via {% doc %}.
+    const content = `{% doc %}
+  @param title {string} - title
+{% enddoc %}
+{{ some_undefined_variable }}`;
     const result = await server.callTool('validate_code', {
       file_path: 'app/views/partials/test_undef.liquid',
       content,
@@ -45,13 +50,15 @@ describePosCli('Enrichment: UndefinedObject', () => {
       content,
       mode: 'full',
     });
-    // cart may appear as UndefinedObject (warning) or pos-supervisor:ShopifyObject
+    // cart is detected as pos-supervisor:ShopifyObject via structural warnings,
+    // or as UndefinedObject via LSP when {% doc %} is present
     const allDiags = [...result.errors, ...result.warnings];
     const cartError = allDiags.find(e =>
       (e.check === 'UndefinedObject' || e.check === 'pos-supervisor:ShopifyObject') &&
       e.message?.includes('cart')
     );
     expect(cartError).toBeDefined();
+    // Shopify detection should provide a suggestion with Shopify context
     expect(cartError.suggestion).toBeDefined();
     expect(cartError.suggestion).toMatch(/shopify/i);
   });

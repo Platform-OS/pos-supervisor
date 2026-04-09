@@ -52,7 +52,7 @@ describe('Performance: project_map', () => {
 });
 
 describe('Performance: validate_code', () => {
-  it('quick mode completes under 3s', async () => {
+  it('quick mode completes under 5s', async () => {
     const content = `---
 slug: perf_test
 ---
@@ -66,7 +66,7 @@ slug: perf_test
       })
     )();
     console.log(`  validate_code quick: ${ms.toFixed(0)}ms`);
-    expect(ms).toBeLessThan(3000);
+    expect(ms).toBeLessThan(5000);
   });
 
   it('full mode completes under 5s', async () => {

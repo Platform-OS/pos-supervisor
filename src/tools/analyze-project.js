@@ -1,27 +1,18 @@
+import { z } from 'zod';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createCheckRunner } from '../core/check-runner.js';
 import { validateSchema } from '../core/schema-validator.js';
 import { toUri, sanitizePath } from '../core/utils.js';
 import { getProjectMap } from './project-map.js';
+import { ToolError } from '../core/tool-error.js';
 
 export const analyzeProjectTool = {
   name: 'analyze_project',
   description: 'Cross-file project health overview. Returns per-file error/warning counts, dependency graph, broken references, dead code, and schema issues. Use validate_code on individual files for full diagnostics, fix proposals, and context-aware analysis.',
   inputSchema: {
-    type: 'object',
-    properties: {
-      files: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'List of file paths (relative to project root) to analyze. Omit to analyze all project files.',
-      },
-      min_severity: {
-        type: 'string',
-        enum: ['error', 'warning', 'info'],
-        description: 'Minimum severity to include in file counts. "error" = only list files with errors, "warning" = errors + warnings (default), "info" = everything.',
-      },
-    },
+    files: z.array(z.string()).optional().describe('List of file paths (relative to project root) to analyze. Omit to analyze all project files.'),
+    min_severity: z.enum(['error', 'warning', 'info']).optional().describe('Minimum severity to include in file counts. "error" = only list files with errors, "warning" = errors + warnings (default), "info" = everything.'),
   },
 
   createHandler(ctx) {
@@ -46,10 +37,10 @@ export const analyzeProjectTool = {
             .filter(e => e.endsWith('.liquid') || e.endsWith('.graphql'))
             .map(e => join('app', e));
         } catch {
-          return { error: 'No files specified and could not scan app/ directory' };
+          throw new ToolError('No files specified and could not scan app/ directory', { status: 404 });
         }
         if (files.length === 0) {
-          return { error: 'No .liquid or .graphql files found in app/' };
+          throw new ToolError('No .liquid or .graphql files found in app/', { status: 404 });
         }
       }
 
@@ -59,7 +50,7 @@ export const analyzeProjectTool = {
         try {
           absPaths[filePath] = sanitizePath(ctx.directory, filePath);
         } catch (e) {
-          return { error: `Invalid file path "${filePath}": ${e.message}` };
+          throw new ToolError(`Invalid file path "${filePath}": ${e.message}`);
         }
       }
 

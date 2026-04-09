@@ -1,16 +1,13 @@
 export const serverStatusTool = {
   name: 'server_status',
   description: 'Check pos-supervisor server status: LSP readiness, loaded indexes, pos-cli availability. Use this to diagnose issues when other tools return incomplete results.',
-  inputSchema: {
-    type: 'object',
-    properties: {},
-  },
+  inputSchema: {},
 
   createHandler(ctx) {
     return async () => {
       return {
         server: 'pos-supervisor',
-        version: '0.2.0',
+        version: ctx.version,
         project_dir: ctx.directory,
         pos_cli: {
           found: ctx.posCliFound ?? false,

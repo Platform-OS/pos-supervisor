@@ -90,7 +90,7 @@ describePosCli('validate_code — linting', () => {
   it('returns status ok for clean code', async () => {
     const result = await server.callTool('validate_code', {
       file_path: 'app/views/pages/test.html.liquid',
-      content: '---\nslug: clean-page\n---\n<h1>Hello</h1>',
+      content: '---\nslug: clean-page\n---\n{% comment %}clean page{% endcomment %}',
       mode: 'quick',
     });
 

@@ -37,7 +37,8 @@ describe('module_info — user module', () => {
 
 describe('module_info — error handling', () => {
   it('returns error for non-existent module', async () => {
-    const result = await server.callTool('module_info', { name: 'nonexistent_module' });
-    expect(result.error || result.not_found).toBeDefined();
+    const { status, body } = await server.callToolRaw('module_info', { name: 'nonexistent_module' });
+    expect(status).toBeGreaterThanOrEqual(400);
+    expect(body.error).toBeDefined();
   });
 });

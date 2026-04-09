@@ -1,14 +1,14 @@
 import { createServer } from 'node:http';
 import { getToolList, dispatchTool } from './tools.js';
 import { listResources, readResource } from './resources.js';
-
-const MAX_BODY = 2 * 1024 * 1024; // 2 MB
+import { ToolError } from './core/tool-error.js';
+import { HTTP_MAX_BODY } from './core/constants.js';
 
 /**
- * MCP HTTP server — built on node:http (zero dependencies).
- * Provides REST endpoints for tool discovery and execution.
+ * HTTP server — REST endpoints for tool discovery, execution, and resources.
+ * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log }) {
+export function startHttp(registry, { port, log, version }) {
   if (!port) return null;
 
   const server = createServer(async (req, res) => {
@@ -17,15 +17,19 @@ export function startHttp(registry, { port, log }) {
 
     // ── GET routes ──────────────────────────────────────────────────────
     if (method === 'GET' && url.pathname === '/health') {
-      return sendJson(res, 200, { status: 'ok', server: 'pos-supervisor', version: '0.2.0' });
+      return sendJson(res, 200, { status: 'ok', server: 'pos-supervisor', version });
     }
 
     if (method === 'GET' && url.pathname === '/tools') {
       return sendJson(res, 200, { tools: getToolList(registry) });
     }
 
+    if (method === 'GET' && url.pathname === '/resources') {
+      return sendJson(res, 200, listResources());
+    }
+
     // ── POST routes (need body parsing) ─────────────────────────────────
-    if (method === 'POST' && (url.pathname === '/call' || url.pathname === '/mcp')) {
+    if (method === 'POST') {
       let body;
       try {
         body = await readJsonBody(req);
@@ -36,8 +40,9 @@ export function startHttp(registry, { port, log }) {
       if (url.pathname === '/call') {
         return handleCall(registry, body, res);
       }
-      if (url.pathname === '/mcp') {
-        return handleMcp(registry, body, res);
+
+      if (url.pathname === '/resources/read') {
+        return handleResourceRead(body, res);
       }
     }
 
@@ -65,66 +70,24 @@ async function handleCall(registry, body, res) {
     const result = await dispatchTool(registry, toolName, params ?? {});
     sendJson(res, 200, { result });
   } catch (err) {
-    const status = err.message.startsWith('Unknown tool') ? 404 : 500;
+    const status = err instanceof ToolError ? err.status
+      : err.message.startsWith('Unknown tool') ? 404
+      : 500;
     sendJson(res, status, { error: err.message });
   }
 }
 
-async function handleMcp(registry, body, res) {
-  const { id, method, params } = body;
-
-  try {
-    switch (method) {
-      case 'initialize':
-        return sendJson(res, 200, {
-          jsonrpc: '2.0', id,
-          result: {
-            protocolVersion: '2024-11-05',
-            serverInfo: { name: 'pos-supervisor', version: '0.2.0' },
-            capabilities: { tools: {}, resources: {} },
-          },
-        });
-
-      case 'tools/list':
-        return sendJson(res, 200, {
-          jsonrpc: '2.0', id,
-          result: { tools: getToolList(registry) },
-        });
-
-      case 'tools/call': {
-        const { name: toolName, arguments: args } = params ?? {};
-        const result = await dispatchTool(registry, toolName, args);
-        return sendJson(res, 200, {
-          jsonrpc: '2.0', id,
-          result: {
-            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-          },
-        });
-      }
-
-      case 'resources/list':
-        return sendJson(res, 200, { jsonrpc: '2.0', id, result: listResources() });
-
-      case 'resources/read': {
-        const rResult = await readResource(params?.uri);
-        if (rResult.error) {
-          return sendJson(res, 200, { jsonrpc: '2.0', id, error: rResult.error });
-        }
-        return sendJson(res, 200, { jsonrpc: '2.0', id, result: rResult });
-      }
-
-      default:
-        return sendJson(res, 200, {
-          jsonrpc: '2.0', id,
-          error: { code: -32601, message: `Method not found: ${method}` },
-        });
-    }
-  } catch (err) {
-    sendJson(res, 200, {
-      jsonrpc: '2.0', id,
-      error: { code: -32603, message: err.message },
-    });
+async function handleResourceRead(body, res) {
+  const { uri } = body;
+  if (!uri) {
+    return sendJson(res, 400, { error: 'Missing uri field.' });
   }
+
+  const result = await readResource(uri);
+  if (result.error) {
+    return sendJson(res, 404, { error: result.error.message });
+  }
+  sendJson(res, 200, result);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -145,7 +108,7 @@ function readJsonBody(req) {
 
     req.on('data', (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
+      if (size > HTTP_MAX_BODY) {
         req.destroy();
         reject(new Error('Request body too large (max 2 MB)'));
         return;

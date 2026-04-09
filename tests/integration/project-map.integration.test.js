@@ -120,8 +120,9 @@ describe('project_map — around scope', () => {
   });
 
   it('requires path parameter', async () => {
-    const result = await server.callTool('project_map', { scope: 'around' });
-    expect(result.error).toBeDefined();
+    const { status, body } = await server.callToolRaw('project_map', { scope: 'around' });
+    expect(status).toBeGreaterThanOrEqual(400);
+    expect(body.error).toBeDefined();
   });
 });
 

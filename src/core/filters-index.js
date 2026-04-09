@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { FILTER_MATCH_MAX_DISTANCE } from './constants.js';
 
 export class FiltersIndex {
   constructor() {
@@ -42,7 +43,7 @@ export class FiltersIndex {
   /**
    * Find the closest filter name by Levenshtein distance.
    */
-  closestMatch(filterName, maxDistance = 2) {
+  closestMatch(filterName, maxDistance = FILTER_MATCH_MAX_DISTANCE) {
     if (!this._loaded || !filterName) return null;
     let best = null;
     let bestDist = maxDistance + 1;

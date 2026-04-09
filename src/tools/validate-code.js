@@ -1,5 +1,5 @@
+import { z } from 'zod';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { parseLiquidFile, extractAllFromAST } from '../core/liquid-parser.js';
 import { checkContent } from '../core/check-runner.js';
 import { normalizeLspDiagnostics } from '../core/lsp-client.js';
@@ -9,74 +9,52 @@ import { getDomainFromPath, getDomainHeader } from '../core/domain-detector.js';
 import { getTriggeredGotchas, getContentTriggers } from '../core/knowledge-loader.js';
 import { generateStructuralWarnings } from '../core/structural-warnings.js';
 import { validateSchema } from '../core/schema-validator.js';
+import { runDiagnosticPipeline } from '../core/diagnostic-pipeline.js';
 import { toUri, sanitizePath } from '../core/utils.js';
 import { getProjectMap } from './project-map.js';
+import { LSP_DIAGNOSTICS_TIMEOUT_MS, CONSECUTIVE_ERROR_THRESHOLD } from '../core/constants.js';
 
 export const validateCodeTool = {
   name: 'validate_code',
-  description: [
-    'PURPOSE:',
-    'Validate platformOS code content prior to any write/edit operation. Returns enriched diagnostics,',
-    'fix hints, LSP intelligence, domain guidance, and structural analysis.',
-    '',
-    'You are STRICTLY PROHIBITED from:',
-    'Writing, saving, or applying any changes to *.liquid, *.graphql, or *.yml files without first calling validate_code on the full proposed content to be written',
-    'You MUST:',
-    'Resolve all reported errors and warnings.',
-    'Re-run validation until zero issues remain.',
-    'Skipping or bypassing this step = FAIL.',
-    '',
-    'REQUIRED PROCEDURE:',
-    '1. If editing an existing file: READ the file first, extract its FULL current content.',
-    '2. Prepare the COMPLETE target content — full file text for new files; full updated text for edits (not a diff).',
-    '3. Call validate_code with content = full file text.',
-    '4. Fix every ERROR and WARNING in the result before writing.',
-    '5. Only write the file after validate_code returns no errors or warnings.',
-    '',
-    'CONSTRAINTS:',
-    '  - NEVER call validate_code with part of the content.',
-    '  - NEVER pass a file path as the content parameter.',
-    '  - NEVER skip validation regardless of confidence level.',
-    '  - Validation must occur immediately before the write operation.',
-    '',
-    'If validate_intent was called before drafting, pass its pending_files and pending_translations',
-    'here to suppress false-positive MissingPartial/TranslationKeyExists errors during multi-file creation.',
-  ].join('\n'),
+  description: `PURPOSE:
+Validate platformOS code content prior to any write/edit operation. Returns enriched diagnostics,
+fix hints, LSP intelligence, domain guidance, and structural analysis.
+
+You are STRICTLY PROHIBITED from:
+Writing, saving, or applying any changes to *.liquid, *.graphql, or *.yml files without first calling validate_code on the full proposed content to be written
+You MUST:
+Resolve all reported errors and warnings.
+Re-run validation until zero issues remain.
+Skipping or bypassing this step = FAIL.
+
+REQUIRED PROCEDURE:
+1. If editing an existing file: READ the file first, extract its FULL current content.
+2. Prepare the COMPLETE target content — full file text for new files; full updated text for edits (not a diff).
+3. Call validate_code with content = full file text.
+4. Fix every ERROR and WARNING in the result before writing.
+5. Only write the file after validate_code returns no errors or warnings.
+
+CONSTRAINTS:
+  - NEVER call validate_code with part of the content.
+  - NEVER pass a file path as the content parameter.
+  - NEVER skip validation regardless of confidence level.
+  - Validation must occur immediately before the write operation.
+
+If validate_intent was called before drafting, pass its pending_files and pending_translations
+here to suppress false-positive MissingPartial/TranslationKeyExists errors during multi-file creation.`,
   inputSchema: {
-    type: 'object',
-    properties: {
-      file_path: {
-        type: 'string',
-        description: 'Target file path (relative to project root, e.g. "app/views/pages/index.html.liquid")',
-      },
-      content: {
-        type: 'string',
-        description: 'The complete text content of the file — NOT a file path. Read the file first, then pass the full text here.',
-      },
-      mode: {
-        type: 'string',
-        enum: ['full', 'quick'],
-        description: 'Validation mode. Both modes: parse + lint + enrichment (suggestions, Shopify detection) + structural warnings. Difference: "full" additionally provides LSP completions, fix proposals, domain guidance, and architectural scoring. "quick" is for rapid re-validation after applying fixes.',
-      },
-      pending_files: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'File paths being created soon (suppresses MissingPartial for these). Use when writing scaffold output file-by-file.',
-      },
-      pending_translations: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Translation keys being created soon (suppresses TranslationKeyExists for these).',
-      },
-    },
-    required: ['file_path', 'content'],
+    file_path: z.string().describe('Target file path (relative to project root, e.g. "app/views/pages/index.html.liquid")'),
+    content: z.string().describe('The complete text content of the file — NOT a file path. Read the file first, then pass the full text here.'),
+    mode: z.enum(['full', 'quick']).optional().describe('Validation mode. Both modes: parse + lint + enrichment (suggestions, Shopify detection) + structural warnings. Difference: "full" additionally provides LSP completions, fix proposals, domain guidance, and architectural scoring. "quick" is for rapid re-validation after applying fixes.'),
+    pending_files: z.array(z.string()).optional().describe('File paths being created soon (suppresses MissingPartial for these). Use when writing scaffold output file-by-file.'),
+    pending_translations: z.array(z.string()).optional().describe('Translation keys being created soon (suppresses TranslationKeyExists for these).'),
   },
 
   createHandler(ctx) {
     return async (params) => {
       const { file_path, content, mode = 'full', pending_files = [], pending_translations = [] } = params;
 
-      // Input validation
+      // Input validation — returns validation-shaped response so agents get uniform {status, errors, warnings, infos}
       if (!file_path || typeof file_path !== 'string') {
         return { status: 'error', errors: [{ check: 'InputError', severity: 'error', message: 'file_path is required' }], warnings: [], infos: [] };
       }
@@ -165,7 +143,7 @@ export const validateCodeTool = {
 
           // Now sync content to LSP server and await per-document diagnostics (~200ms)
           try {
-            const lspDiags = await ctx.lsp.awaitDiagnostics(uri, content, 5000);
+            const lspDiags = await ctx.lsp.awaitDiagnostics(uri, content, LSP_DIAGNOSTICS_TIMEOUT_MS);
             checkResult = normalizeLspDiagnostics(lspDiags, file_path);
           } catch (e) {
             ctx.log?.(`LSP diagnostics failed, falling back to pos-cli check: ${e.message}`);
@@ -229,228 +207,26 @@ export const validateCodeTool = {
         result.infos.push({ check: 'pos-cli', severity: 'info', message: `Linter unavailable: ${e.message}` });
       }
 
-      // 2a. Context-aware diagnostic post-processing
-      // Suppress/downgrade diagnostics that are false positives in platformOS patterns
+      // 2a. Context-aware diagnostic post-processing pipeline
+      // Suppress/downgrade false positives for platformOS patterns (see diagnostic-pipeline.js)
       if (isLiquid && result.structural) {
-        const domain = getDomainFromPath(absPath);
-        const docParamNames = new Set(result.structural.doc_params ?? []);
-
-        // UndefinedObject: suppress for {% doc %} @param names in commands/queries/partials
-        if (docParamNames.size > 0) {
-          const suppressUndefined = (diag) => {
-            if (diag.check !== 'UndefinedObject') return false;
-            const varMatch = diag.message?.match(/`([^`]+)`/);
-            return varMatch && docParamNames.has(varMatch[1]);
-          };
-          const suppressed = [
-            ...result.errors.filter(suppressUndefined),
-            ...result.warnings.filter(suppressUndefined),
-          ];
-          if (suppressed.length > 0) {
-            result.errors = result.errors.filter(d => !suppressUndefined(d));
-            result.warnings = result.warnings.filter(d => !suppressUndefined(d));
-            result.infos.push({
-              check: 'pos-supervisor:DocParamSuppressed',
-              severity: 'info',
-              message: `Suppressed ${suppressed.length} UndefinedObject warning(s) for declared @param(s): ${[...docParamNames].join(', ')}`,
-            });
-          }
-        }
-
-        // UnusedDocParam: suppress when the param is used as a named argument in
-        // graphql/function/render calls. The LSP only tracks Liquid variable usage
-        // ({{ x }}, {% if x %}), not named argument passing (id: id).
-        if (docParamNames.size > 0) {
-          // Build a set of param names that appear as named args in the content
-          // Matches: "paramName:" in graphql/function/render markup
-          const usedAsArg = new Set();
-          for (const name of docParamNames) {
-            // Match "name:" preceded by comma/space (named arg context), NOT in {% doc %} block
-            const argPattern = new RegExp(`(?:,|{%\\s*(?:graphql|function|render|include|theme_render_rc)\\b[^%]*)\\b${name}\\s*:`, 's');
-            if (argPattern.test(content)) usedAsArg.add(name);
-          }
-          if (usedAsArg.size > 0) {
-            const suppressUnused = (d) => {
-              if (d.check !== 'UnusedDocParam') return false;
-              const varMatch = d.message?.match(/['"`](\w+)['"`]/);
-              return varMatch && usedAsArg.has(varMatch[1]);
-            };
-            const suppressed = [
-              ...result.errors.filter(suppressUnused),
-              ...result.warnings.filter(suppressUnused),
-            ];
-            if (suppressed.length > 0) {
-              result.errors = result.errors.filter(d => !suppressUnused(d));
-              result.warnings = result.warnings.filter(d => !suppressUnused(d));
-              result.infos.push({
-                check: 'pos-supervisor:UnusedDocParamSuppressed',
-                severity: 'info',
-                message: `Suppressed ${suppressed.length} UnusedDocParam warning(s) for @param(s) used as named arguments: ${[...usedAsArg].join(', ')}`,
-              });
-            }
-          }
-        }
-
-        // Elevate Shopify contamination from warning to error
-        // When the linter flags UndefinedObject and the enricher identifies it as Shopify,
-        // move it from warnings to errors so it blocks status:"ok".
-        {
-          const shopifyWarnings = result.warnings.filter(d =>
-            d.check === 'UndefinedObject' && d.suggestion && /shopify/i.test(d.suggestion)
-          );
-          if (shopifyWarnings.length > 0) {
-            result.warnings = result.warnings.filter(d => !shopifyWarnings.includes(d));
-            for (const d of shopifyWarnings) {
-              result.errors.push({ ...d, severity: 'error' });
-            }
-          }
-        }
-
-        // Deduplicate MissingRenderPartialArguments + MetadataParamsCheck
-        // Both checks can fire at the same render tag line for the same missing @param.
-        // MissingRenderPartialArguments is more specific — suppress redundant MetadataParamsCheck.
-        {
-          const mrpaLines = new Set([
-            ...result.errors.filter(d => d.check === 'MissingRenderPartialArguments').map(d => d.line),
-            ...result.warnings.filter(d => d.check === 'MissingRenderPartialArguments').map(d => d.line),
-          ]);
-          if (mrpaLines.size > 0) {
-            const isRedundantMpc = (d) => d.check === 'MetadataParamsCheck' && mrpaLines.has(d.line);
-            const suppressed = result.errors.filter(isRedundantMpc).length + result.warnings.filter(isRedundantMpc).length;
-            if (suppressed > 0) {
-              result.errors = result.errors.filter(d => !isRedundantMpc(d));
-              result.warnings = result.warnings.filter(d => !isRedundantMpc(d));
-              result.infos.push({
-                check: 'pos-supervisor:DuplicateArgCheck',
-                severity: 'info',
-                message: `Suppressed ${suppressed} MetadataParamsCheck diagnostic(s) already covered by MissingRenderPartialArguments`,
-              });
-            }
-          }
-        }
-
-        // Suppress DeprecatedTag for module helper includes
-        // Module APIs (e.g., modules/user/helpers/can_do) use {% include %} deliberately
-        // for scope sharing. Changing to {% render %} would break them.
-        {
-          const isModuleHelperInclude = (d) => {
-            if (d.check !== 'DeprecatedTag') return false;
-            return /include\s+['"]modules\/[^'"]*\/helpers\//.test(content) &&
-              d.message?.includes('include');
-          };
-          const moduleHelperDeprecated = [
-            ...result.errors.filter(isModuleHelperInclude),
-            ...result.warnings.filter(isModuleHelperInclude),
-          ];
-          if (moduleHelperDeprecated.length > 0) {
-            result.errors = result.errors.filter(d => !isModuleHelperInclude(d));
-            result.warnings = result.warnings.filter(d => !isModuleHelperInclude(d));
-            result.infos.push({
-              check: 'pos-supervisor:ModuleHelperInclude',
-              severity: 'info',
-              message: `Suppressed ${moduleHelperDeprecated.length} DeprecatedTag warning(s) for module helper includes — modules use {% include %} for scope sharing by design.`,
-            });
-          }
-        }
-
-        // OrphanedPartial: suppress only for commands/queries.
-        // The LSP tracks render/include references reliably — OrphanedPartial is correct
-        // for actual partials. But commands/queries are called via {% function %} which
-        // the LSP doesn't track, producing false positives for those file types.
-        if (/\/lib\/(commands|queries)\//.test(file_path)) {
-          result.errors = result.errors.filter(d => d.check !== 'OrphanedPartial');
-          result.warnings = result.warnings.filter(d => d.check !== 'OrphanedPartial');
-        }
-
-        // Batch-aware suppression: fully suppress diagnostics for pending files/translations
-        // Handles partials ({% render %}), graphql ({% graphql %}), and commands/queries ({% function %})
-        if (pending_files.length > 0) {
-          const pendingNames = new Set();
-          for (const f of pending_files) {
-            // Partial: app/views/partials/blog_posts/card.liquid → blog_posts/card
-            pendingNames.add(f.replace(/^app\/views\/partials\//, '').replace(/\.liquid$/, ''));
-            // GraphQL: app/graphql/blog_posts/search.graphql → blog_posts/search
-            pendingNames.add(f.replace(/^app\/graphql\//, '').replace(/\.graphql$/, ''));
-            // Command/Query: app/lib/commands/blog_posts/create.liquid → commands/blog_posts/create
-            pendingNames.add(f.replace(/^app\/lib\//, '').replace(/\.liquid$/, ''));
-            // Also keep the raw path for exact matches
-            pendingNames.add(f);
-          }
-          const isPendingRef = (d) => {
-            if (d.check !== 'MissingPartial') return false;
-            const nameMatch = d.message?.match(/['"]([^'"]+)['"]/);
-            return nameMatch && pendingNames.has(nameMatch[1]);
-          };
-          result.errors = result.errors.filter(d => !isPendingRef(d));
-          result.warnings = result.warnings.filter(d => !isPendingRef(d));
-          result.infos = result.infos.filter(d => !isPendingRef(d));
-        }
-        if (pending_translations.length > 0) {
-          const pendingTransSet = new Set(pending_translations);
-          const isPendingTrans = (d) => {
-            if (d.check !== 'TranslationKeyExists') return false;
-            const keyMatch = d.message?.match(/['"]([^'"]+)['"]/);
-            return keyMatch && pendingTransSet.has(keyMatch[1]);
-          };
-          result.errors = result.errors.filter(d => !isPendingTrans(d));
-          result.warnings = result.warnings.filter(d => !isPendingTrans(d));
-          result.infos = result.infos.filter(d => !isPendingTrans(d));
-        }
-
-        // Pre-write mode: file doesn't exist on disk — MissingPartial errors for referenced files
-        // are likely for files being created next in the sequence. Downgrade to warnings.
-        // Only applies in full mode (pre-write is a semantic signal, not a syntax check).
-        if (isPreWrite && mode === 'full') {
-          const missingPartialErrors = result.errors.filter(d => d.check === 'MissingPartial');
-          if (missingPartialErrors.length > 0) {
-            result.errors = result.errors.filter(d => d.check !== 'MissingPartial');
-            for (const d of missingPartialErrors) {
-              result.warnings.push({
-                ...d,
-                severity: 'warning',
-                message: `[pre-write] ${d.message}`,
-              });
-            }
-          }
-        }
-
-        // TranslationKeyExists: downgrade from error to info (keys may not be indexed yet)
-        const missingTransKeys = result.errors.filter(d => d.check === 'TranslationKeyExists');
-        if (missingTransKeys.length > 0) {
-          result.errors = result.errors.filter(d => d.check !== 'TranslationKeyExists');
-          for (const d of missingTransKeys) {
-            result.infos.push({ ...d, severity: 'info', _downgraded: true,
-              message: `${d.message} (advisory — translation key may not be indexed yet)` });
-          }
-        }
-      }
-
-      // MissingAsset: downgrade to info when the referenced asset actually exists on disk.
-      // The LSP builds its file index at startup and doesn't track newly created files
-      // during the session. Assets created mid-session are invisible to the LSP but
-      // present on disk — check the filesystem to avoid false positives.
-      {
-        const missingAssets = [...result.errors, ...result.warnings].filter(d => d.check === 'MissingAsset');
-        if (missingAssets.length > 0) {
-          const verified = [];
-          for (const d of missingAssets) {
-            const pathMatch = d.message?.match(/['"`]([^'"`]+)['"`]/);
-            if (pathMatch) {
-              const assetPath = join(ctx.directory, 'app', 'assets', pathMatch[1]);
-              if (existsSync(assetPath)) verified.push(d);
-            }
-          }
-          if (verified.length > 0) {
-            const verifiedSet = new Set(verified);
-            result.errors = result.errors.filter(d => !verifiedSet.has(d));
-            result.warnings = result.warnings.filter(d => !verifiedSet.has(d));
-            result.infos.push({
-              check: 'pos-supervisor:MissingAssetSuppressed',
-              severity: 'info',
-              message: `Suppressed ${verified.length} MissingAsset diagnostic(s) — referenced asset(s) exist on disk: ${verified.map(d => d.message?.match(/['"`]([^'"`]+)['"`]/)?.[1]).filter(Boolean).join(', ')}`,
-            });
-          }
-        }
+        runDiagnosticPipeline(result, {
+          filePath: file_path,
+          content,
+          docParamNames: new Set(result.structural.doc_params ?? []),
+          pendingFiles: pending_files,
+          pendingTranslations: pending_translations,
+          isPreWrite,
+          mode,
+          projectDir: ctx.directory,
+        });
+      } else {
+        // MissingAsset check runs regardless of liquid/structural (also applies to GraphQL etc.)
+        runDiagnosticPipeline(result, {
+          filePath: file_path,
+          content,
+          projectDir: ctx.directory,
+        });
       }
 
       // 2b. Schema validation (YAML schema files only)
@@ -495,8 +271,8 @@ export const validateCodeTool = {
             }
           }
           // structural errors flow into result.errors — status derived at the end
-        } catch {
-          // Structural warnings are best-effort
+        } catch (e) {
+          ctx.log?.(`Structural warnings failed for ${file_path}: ${e.message}`);
         }
       }
 
@@ -564,8 +340,8 @@ export const validateCodeTool = {
               }
             }
           }
-        } catch {
-          // Diff comparison is best-effort
+        } catch (e) {
+          ctx.log?.(`Diff comparison failed for ${file_path}: ${e.message}`);
         }
       }
 
@@ -576,8 +352,8 @@ export const validateCodeTool = {
             file_path, result.structural.doc_params, ctx.directory,
           );
           if (callerWarning) result.warnings.push(callerWarning);
-        } catch {
-          // Cross-file check is best-effort
+        } catch (e) {
+          ctx.log?.(`Cross-file caller check failed for ${file_path}: ${e.message}`);
         }
       }
 
@@ -711,7 +487,7 @@ export const validateCodeTool = {
       // 8. Session-aware error loop detection (advisory, never blocks)
       if (ctx.session?.fileHistory) {
         const history = ctx.session.fileHistory.get(file_path);
-        if (history && history.consecutiveNonDecreasing >= 3 && history.lastErrorCount > 0) {
+        if (history && history.consecutiveNonDecreasing >= CONSECUTIVE_ERROR_THRESHOLD && history.lastErrorCount > 0) {
           result.note = `This file has been validated ${history.calls} times with ${history.lastErrorCount} persistent error(s). ` +
             `The current approach may not be working. Consider: calling enrich_error on a specific error, ` +
             `reviewing domain_guide for the relevant domain, or asking the user for guidance.`;

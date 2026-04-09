@@ -12,10 +12,12 @@
  * - Translation key counts
  */
 
+import { z } from 'zod';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { scanModule, listModules } from '../core/module-scanner.js';
+import { ToolError } from '../core/tool-error.js';
 
 const SECTIONS = ['overview', 'api', 'patterns', 'gotchas', 'configuration', 'advanced', 'prerequisites', 'all'];
 
@@ -34,18 +36,8 @@ export const moduleInfoTool = {
   description:
     'Get comprehensive reference for a platformOS module. Combines live disk scanning (version, API surface, schemas, GraphQL ops, parameters) with curated documentation (API reference, usage patterns, gotchas, configuration). Call with just a name for a complete overview, or specify a section for focused docs. Call without a name to list all installed modules.',
   inputSchema: {
-    type: 'object',
-    properties: {
-      name: {
-        type: 'string',
-        description: 'Module name (directory name under modules/, e.g. "core", "user", "payments"). Omit to list all installed modules.',
-      },
-      section: {
-        type: 'string',
-        enum: SECTIONS,
-        description: 'Documentation section: "overview" (default — API surface + README), "api" (function signatures), "patterns" (usage examples), "gotchas" (common mistakes), "configuration" (setup), "advanced" (edge cases), "all" (everything).',
-      },
-    },
+    name: z.string().optional().describe('Module name (directory name under modules/, e.g. "core", "user", "payments"). Omit to list all installed modules.'),
+    section: z.enum(SECTIONS).optional().describe('Documentation section: "overview" (default — API surface + README), "api" (function signatures), "patterns" (usage examples), "gotchas" (common mistakes), "configuration" (setup), "advanced" (edge cases), "all" (everything).'),
   },
 
   createHandler(ctx) {
@@ -58,7 +50,7 @@ export const moduleInfoTool = {
       }
 
       if (!SECTIONS.includes(section)) {
-        return { error: `Invalid section "${section}". Valid: ${SECTIONS.join(', ')}` };
+        throw new ToolError(`Invalid section "${section}". Valid: ${SECTIONS.join(', ')}`);
       }
 
       // Scan live module from disk
@@ -74,7 +66,7 @@ export const moduleInfoTool = {
             reference: refDocs,
           };
         }
-        return { error: scan.error };
+        throw new ToolError(scan.error, { status: 404 });
       }
 
       // Build result based on section
