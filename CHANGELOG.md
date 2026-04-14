@@ -1,5 +1,93 @@
 # Changelog
 
+## 0.5.2
+
+### Added
+
+- **Dashboard POS-CLI tab**: New tab in the HTTP dashboard for executing pos-cli commands against project environments.
+  - **Data Clean** — runs `pos-cli data clean --auto-confirm --include-schema <env>` with caution warning about permanent data deletion.
+  - **Deploy** — runs `pos-cli deploy <env>` with caution warning about remote file overwrite.
+  - Environment selector populated from `.pos` file (parsed with js-yaml, matching project-scanner behavior).
+  - Live command preview updates on environment change.
+  - Result banner with success/failure status, duration, and full command output.
+  - New HTTP endpoints: `GET /api/pos-cli/envs`, `POST /api/pos-cli/data-clean`, `POST /api/pos-cli/deploy`.
+
+## 0.5.1
+
+### Added
+
+- **Schema property validation in `validate_code`**: GraphQL files (`.graphql`) are now checked against schema definitions. Two new check types:
+  - `pos-supervisor:UnknownSchemaProperty` — warns when `property(name: "X")` or `{ name: "X", value: ... }` references a property not defined in the schema.
+  - `pos-supervisor:SchemaPropertyTypeMismatch` — warns when the accessor or value key doesn't match the property's schema type (e.g. `property_int(name: "title")` when `title` is a `string`).
+  - Table resolution: extracts `table:` from content, falls back to path-based resolution (`app/graphql/blog_posts/` -> `blog_post`). Skips `modules/`-prefixed tables and built-in fields (`id`, `created_at`, `updated_at`, `deleted_at`, `table`, `type`).
+
+- **Dashboard Project Explorer**: Three new tabs added to the HTTP dashboard:
+  - **Explorer** — vertical slice view of each resource (schema properties, GraphQL operations, business logic commands/queries, page routes), with summary stat cards and missing-operation alerts.
+  - **Routes** — request flow trace showing every page route with HTTP method badges and the function calls each route triggers.
+  - **Health** — project health dashboard with total errors/warnings/files scanned, recommended next step, fix order priority list, dead code listing, integrity issues, blocking files, diff from last run, and modules & assets overview.
+  - All tabs lazy-load data via existing `/call` endpoint (project_map + analyze_project tools) and include a Refresh button. Matches existing dashboard dark theme — no external dependencies, no framework, vanilla JS.
+
+- `src/core/schema-property-checker.js` — new module: `checkSchemaProperties(content, filePath, projectDir)`, `extractTableNames`, `resolveTableFromPath`, `loadSchemas`.
+
+- `tests/unit/schema-property-checker.test.js` — 37 tests covering table extraction, path-based resolution, schema loading, accessor checks, mutation value-key checks, edge cases, and zero false-positive verification against all fixture GraphQL files.
+
+## 0.5.0
+
+### Fixed
+
+- **Scaffold 403 on form save — broken authorization**: `can_do_or_unauthorized` checks `requester.roles` against `role_permissions/permissions` which only registers built-in actions (session/user/oauth/admin) — NOT custom resource actions like `posts.create`. Every authenticated non-superadmin got 403 on scaffold-generated create/update/delete pages. Replaced with inline `context.current_user.id == null → response_status 403 → break` guard that works for all authenticated users without requiring role_permissions registry entries.
+
+- **Scaffold no ownership filtering**: Search queries returned all records regardless of user. GraphQL `search` now accepts an owner-field parameter (e.g. `$user_id: String!`) with a `properties` filter; Liquid wrapper passes `context.current_user.id` and returns an empty result set for anonymous callers. Show/update/delete pages verify ownership after fetching the record — non-owners get 404.
+
+- **Scaffold owner field exposed in forms**: Fields like `user_id` were rendered as editable form inputs, allowing any user to spoof ownership by submitting an arbitrary ID. Owner fields (with `role: auth`) are now excluded from form partials.
+
+- **Auto-upgrade of canonical owner fields**: When `include_authorization: true`, properties named `user_id`, `owner_id`, `author_id`, or `created_by` are automatically promoted to `role: auth`. This ensures the ownership pipeline activates even when the agent omits `role: auth` on the owner field. Agents can opt out by using a non-canonical name.
+
+- **Scaffold emitting undeployable files when `properties` omitted**: Calling `scaffold` with `type: crud|api|command` and no `properties` array silently produced broken files: `app/graphql/<plural>/create.graphql` contained `mutation create()` (GraphQL parse error at `[1, 17]`), `app/schema/<name>.yml` had an empty properties list (platformOS schema validation failure), and `create/build.liquid` + `create/check.liquid` had no assignments or validations. Fixed by rejecting these scaffold types at the entry point with an actionable error message listing a concrete `properties:` example, and by adding defense-in-depth guards inside `schemaYml`, `createGql`, `updateGql`, `createBuildCmd`, and `createCheckCmd` that throw if a generator is ever reached with zero non-auth properties. `query`, `partial`, and `page` continue to accept zero properties since none of their templates would produce invalid output.
+
+- **`MetadataParamsCheck` false positives on module partial calls**: Errors like "Required parameter autohide must be passed" on `{% theme_render_rc 'modules/common-styling/toasts' %}` were surfaced as real errors despite `modules/*` being listed in `.platformos-check.yml` `ignore`. Root cause: the ignore rule excludes module *files* from linting, but `MetadataParamsCheck` fires on the *calling* app file — so the ignore rule never applied. Added `suppressModuleTargetParams` as step 5 in the diagnostic pipeline: for each `MetadataParamsCheck` error, the source line is inspected; if it contains a `modules/` path the error is suppressed and replaced with an info diagnostic explaining the root cause. This unblocks layouts and pages using `common-styling/toasts`, `user/helpers/can_do_or_unauthorized`, and `core/validations/presence` without requiring changes to module source files.
+
+- **MissingPage ghost errors**: `validate_code` on a header partial linking to `/`, `/notes`, `/dashboard` triggered MissingPage for each link even though those pages exist in other files. Added `page-route-index.js` which walks `app/views/pages/` once, builds a `Map<route, Set<method>>`, and the diagnostic pipeline cross-checks reported routes against this truth. MissingPage is suppressed when the route + method exist on disk; wrong-method cases get a `.hint` explaining which methods are served.
+
+- **Scaffold workflow contradiction**: Scaffold's dry-run `next_step` said "MUST call validate_intent before writing" while the tool itself supports `write: true`. Reframed: `scaffold(write: true)` is the default single-shot path; `validate_intent` is optional for review of dry-run output only.
+
+### Changed
+
+- **Canonical workflow rewrite**: The shared `CANONICAL_WORKFLOW_BLOCK` (used by scaffold and validate_intent descriptions) now defines two tracks: Track A for scaffold-generated files (preferred, single-shot `write: true`) and Track B for hand-drafted files (validate_intent required, then validate_code per file). `validate_intent` on scaffold output is explicitly labeled OPTIONAL.
+
+- **Tool descriptions clarified**: `validate_code` description now specifies when it IS and IS NOT required (not needed after scaffold write:true; required for hand-drafted and manually-edited files). `validate_intent` mode 1 reframed as optional scaffold review, mode 2 as required for manual plans.
+
+- **`load_development_guide` moved to tool registry**: Previously registered directly on McpServer (bypassing the registry). Now a standard tool in `src/tools/load-development-guide.js`, visible in the dashboard, HTTP `/tools`, and playground.
+
+- **Development guide updated**: Section 0 mandatory workflow rewritten to match the new canonical workflow — scaffold(write:true) is the default path, validate_intent is optional for scaffold.
+
+- Diagnostic pipeline extended from 9 to 10 steps. New step 5 (`suppressModuleTargetParams`) inserts after `deduplicateArgChecks` and before `suppressModuleHelpers`.
+
+### Added
+
+- **`src/core/page-route-index.js`**: Builds a route index from `app/views/pages/` for MissingPage suppression. Exports `buildPageRouteIndex`, `normalizeRoute`, `parseMissingPageMessage`, `resolvePageRoute`.
+
+- `tests/unit/page-route-index.test.js` — 19 tests covering path-derived routes, frontmatter slug overrides, index collapse, multi-method merge, non-liquid skip, and message parsing.
+
+- `tests/unit/diagnostic-pipeline.test.js` — extended with `verifyPageRoutesOnDisk` tests (6 cases: multi-page suppression, wrong-method hint enrichment, genuine miss passthrough, missing-projectDir bypass, pendingPages coexistence) and `suppressModuleTargetParams` tests.
+
+- **Scaffold improvements**: `scaffold` tool now generates correct HTML structure using design system classes:
+  - Index partial uses `feature-grid` / `card` layout instead of phantom `pos-table` / `pos-table-content` classes that have no CSS definition in common-styling
+  - "New" button on index partial is auth-gated (`{% if context.current_user.id %}`)
+  - Edit/delete buttons on index partial are ownership-gated using the schema's auth-role field (e.g. `{% if context.current_user.id == item.author_id %}`)
+  - Show partial displays the record's title/name field as an `<h1 class="pos-heading-1">` instead of `{{ object.id }}`
+  - New/edit partials use `col-8` centered wrapper with `pos-heading-1` heading
+  - Edit partial no longer appends `{{ object.name }}` to the heading (most models have no `.name` field)
+  - `error_input_handler` and `error_list` calls now include the required `name:` param — fixes broken ARIA `aria-describedby` linkage and eliminates real `MetadataParamsCheck` errors on scaffold output
+  - Form submit button uses a translation key (`app.{plural}.save`) instead of hardcoded "Submit"
+  - Form includes a cancel link using `app.{plural}.cancel` translation key
+  - Empty state partial now includes `{% doc %}` block and auth-gates the "New" CTA
+  - Translation file now includes `save`, `cancel`, and `list.delete` keys
+
+- **Design system reference docs**: Added `src/data/references/design-system/common-styling-migration.md` — coexistence guide for projects using both `modules/common-styling` and the custom CSS design system. Covers load order, which common-styling classes to keep, design system layout classes, the accepted inline-style exception for flex containers, the header partial pattern with correct auth URLs, and the toasts linter noise note.
+
+- **Improvement roadmap and dashboard concepts**: Added `docs/improvement-roadmap.md` (10 actionable items from blog evaluation session) and `docs/dashboard-concepts.md` (9 creative dashboard concepts including live dependency health graph, session cockpit, false positive manager, translation coverage heatmap, scaffold approval flow, loop detector, deploy pipeline panel, agent replay, and module inspector).
+
 ## 0.4.0
 
 ### Fixed

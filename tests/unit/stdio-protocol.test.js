@@ -59,7 +59,8 @@ describe('MCP stdio protocol', () => {
 
     expect(res.id).toBe(2);
     const tools = res.result.tools;
-    expect(tools).toHaveLength(10);
+    // 11 registry tools (including zero-arg load_development_guide)
+    expect(tools).toHaveLength(11);
 
     const names = tools.map(t => t.name);
     expect(names).toContain('validate_code');
@@ -69,6 +70,7 @@ describe('MCP stdio protocol', () => {
     expect(names).toContain('lookup');
     expect(names).toContain('server_status');
     expect(names).toContain('module_info');
+    expect(names).toContain('load_development_guide');
   });
 
   it('returns error for unknown tool', async () => {
@@ -126,5 +128,54 @@ describe('domain_guide tool via stdio', () => {
     const content = JSON.parse(res.result.content[0].text);
     expect(content.section).toBe('gotchas');
     expect(content.content.length).toBeGreaterThan(50);
+  });
+});
+
+describe('load_development_guide tool via stdio', () => {
+  it('returns the mandatory workflow as the first visible content', async () => {
+    const [, res] = await sendAndReceive([
+      ...INIT_SEQUENCE,
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
+        name: 'load_development_guide',
+        arguments: {},
+      }},
+    ]);
+
+    expect(res.id).toBe(2);
+    const text = res.result.content[0].text;
+    // Section 0 MUST be present and MUST be the first substantive section —
+    // agents reading it in context see the mandatory workflow before anything else.
+    expect(text).toContain('## 0. MANDATORY WORKFLOW');
+    expect(text).toContain('MUST NOT');
+    expect(text).toContain('domain_guide');
+    // The old title should NOT appear (file was renamed).
+    expect(text).not.toContain('Synthesized Knowledge Reference');
+  });
+
+  it('server advertises no resources capability — resource registration is gone (F-017 fallout)', async () => {
+    const [initRes] = await sendAndReceive([
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+    ]);
+    expect(initRes.id).toBe(1);
+    // Tools capability MUST be present. Resources capability MUST NOT be —
+    // we deliberately removed resource registration because Claude Code rejects
+    // every non-http URI scheme (pos-supervisor://, file://). Guide lives as a
+    // tool (load_development_guide) instead.
+    expect(initRes.result.capabilities.tools).toBeDefined();
+    expect(initRes.result.capabilities.resources).toBeUndefined();
+  });
+
+  it('resources/list returns Method not found when no resources are registered', async () => {
+    // Responses arrive out of order — initialize may resolve after resources/list.
+    // Grab whichever message has id:2.
+    const responses = await sendAndReceive([
+      ...INIT_SEQUENCE,
+      { jsonrpc: '2.0', id: 2, method: 'resources/list', params: {} },
+    ]);
+    const listRes = responses.find(r => r.id === 2);
+    expect(listRes).toBeTruthy();
+    expect(listRes.error?.code).toBe(-32601);
+    expect(listRes.error?.message).toContain('Method not found');
   });
 });

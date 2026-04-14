@@ -54,7 +54,8 @@ describe('Agent scenario: add a new query feature', () => {
   it('completes project_map → manual plan → validate_intent → validate_code for update', async () => {
     // Step 1: Agent calls project_map
     const map = await server.callTool('project_map', { scope: 'full' });
-    expect(map.pages['blog_posts']).toBeDefined();
+    // Pages keyed by {slug}:{method} since Phase 2.5 — fetch the GET entry.
+    expect(map.pages['blog_posts:get']).toBeDefined();
 
     // Step 2: Agent plans an update to the blog index page
     const intent = await server.callTool('validate_intent', {

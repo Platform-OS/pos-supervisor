@@ -1,9 +1,22 @@
 # modules/user - API Reference
 
-## Queries
+The live API surface (call signatures, required/optional params, return types)
+is exposed via `module_info(name: 'user', section: 'api')` and scanned directly
+from the installed module's source. This file provides narrative notes and
+GraphQL context that a disk scan cannot infer.
 
-### Current User Query
-Fetch the authenticated user's information:
+## GraphQL Schema Highlights
+
+### Current User
+
+Fetch the authenticated user's information server-side:
+
+```liquid
+{% graphql current_user = 'modules/user/queries/user/current' %}
+{{ current_user.email }}
+```
+
+Underlying operation:
 
 ```graphql
 query CurrentUser {
@@ -12,22 +25,12 @@ query CurrentUser {
     email
     first_name
     last_name
-    roles {
-      id
-      name
-    }
+    roles { id name }
   }
 }
 ```
 
-Usage in Liquid:
-```liquid
-{% graphql current_user = 'modules/user/queries/user/current' %}
-{{ current_user.email }}
-```
-
 ### User by ID
-Retrieve a specific user:
 
 ```graphql
 query GetUser($id: ID!) {
@@ -43,49 +46,63 @@ query GetUser($id: ID!) {
 ## Mutations
 
 ### Update User Profile
+
 ```graphql
 mutation UpdateProfile($email: String, $first_name: String) {
   user_update(data: {
     email: $email
     first_name: $first_name
   }) {
-    user { id, email }
+    user { id email }
   }
 }
 ```
 
 ### Create User
+
 ```graphql
 mutation CreateUser($email: String!, $password: String!) {
   user_create(data: {
     email: $email
     password: $password
   }) {
-    user { id, email }
+    user { id email }
   }
 }
 ```
 
-## Authorization Helpers
+## Authorization Helpers (use `{% function %}`, NOT `{% include %}`)
 
-### Permission Check
+platformOS has deprecated `{% include %}` for app code. All user-module
+authorization helpers MUST be invoked via `{% function %}`. The scan-derived
+`module_info(name: 'user', section: 'api')` response contains the exact call
+signature for each helper — always prefer that over examples here.
+
+### Permission check
+
 ```liquid
-{% include 'modules/user/helpers/can_do' with_action: 'delete_post' %}
+{% function allowed = 'modules/user/helpers/can_do', requester: context.current_user, do: 'delete_post' %}
+{% if allowed %}...{% endif %}
 ```
 
-### Enforce Authorization
-Redirect unauthorized users:
+### Redirect unauthorized users
+
 ```liquid
-{% include 'modules/user/helpers/can_do_or_redirect' with_action: 'admin_panel' %}
+{% function _ = 'modules/user/helpers/can_do_or_redirect', requester: context.current_user, do: 'admin_panel' %}
 ```
 
-Return 403 Forbidden:
+### Return 403 Forbidden for unauthorized users
+
 ```liquid
-{% include 'modules/user/helpers/can_do_or_unauthorized' with_action: 'sensitive_action' %}
+{% function _ = 'modules/user/helpers/can_do_or_unauthorized', requester: context.current_user, do: 'sensitive_action' %}
 ```
+
+MUST NOT use `{% include 'modules/user/helpers/...' %}` — the module's public
+interface uses `{% function %}` with `requester` and `do` as required params.
 
 ## See Also
-- configuration.md - Setup and configuration
-- patterns.md - Common usage patterns
-- gotchas.md - Common mistakes
-- advanced.md - Advanced techniques
+
+- `configuration.md` — setup and configuration
+- `patterns.md` — common usage patterns
+- `gotchas.md` — common mistakes
+- `advanced.md` — advanced techniques

@@ -80,10 +80,10 @@ describe('HTTP GET endpoints', () => {
     expect(body.version).toBeDefined();
   });
 
-  it('GET /tools returns 10 tools', async () => {
+  it('GET /tools returns 11 tools', async () => {
     const { status, body } = await httpGet('/tools');
     expect(status).toBe(200);
-    expect(body.tools).toHaveLength(10);
+    expect(body.tools).toHaveLength(11);
 
     const names = body.tools.map(t => t.name);
     expect(names).toContain('validate_code');
@@ -92,6 +92,7 @@ describe('HTTP GET endpoints', () => {
     expect(names).toContain('analyze_project');
     expect(names).toContain('lookup');
     expect(names).toContain('server_status');
+    expect(names).toContain('load_development_guide');
   });
 });
 

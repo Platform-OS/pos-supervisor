@@ -8,32 +8,54 @@
 
 import { z } from 'zod';
 import { validateIntent } from '../core/intent-validator.js';
+import { CANONICAL_WORKFLOW_BLOCK } from '../core/workflow-text.js';
 
 export const validateIntentTool = {
   name: 'validate_intent',
   description: `PURPOSE:
 Validate a plan before any file is drafted. Catches architectural errors (wrong directory,
 missing prerequisites, broken cross-references, policy violations) before any code exists.
-Returns pending_files/pending_translations that feed directly into validate_code.
+Returns pending_files/pending_translations that suppress false positives in validate_code.
 
-MANDATE (NON-NEGOTIABLE):
-Call this tool BEFORE drafting any file — either after scaffold or after declaring a manual plan.
-SKIPPING THIS STEP = undetected cross-file inconsistencies that only surface after multiple writes.
+TWO MODES — the response's write_directly flag tells you which workflow to follow:
 
-Two calling modes:
-  1. After scaffold — pass the scaffold result directly: { scaffold_output: <scaffold result> }
-  2. Manual plan   — declare your intent explicitly:    { intent: { goal, changes[] } }
+  1. REVIEW SCAFFOLD (mode 1, scaffold_output): OPTIONAL pre-write review of a scaffold
+     dry-run (write:false) result. Runs project-state and policy layers against the
+     generated file set. On success → write_directly:true → call scaffold again with
+     write:true to commit. Do NOT hand-write scaffold files and do NOT call validate_code
+     on them; scaffold templates are the contract, re-linting them produces false-positive
+     loops. NOT required — scaffold(write:true) is the default path; use mode 1 only for
+     a second look before committing.
 
-RECOMMENDED PREPARATION:
-  For best results, call domain_guide for each role in your plan (pages, partials, commands, etc.)
-  and module_info for any modules you reference. This gives you the rules validate_intent checks against.
+  2. MANUAL PLAN (mode 2, intent): REQUIRED before writing hand-drafted file batches.
+     Declares paths/roles/refs for files you will author by hand. On success
+     → write_directly:false → you still owe a validate_code pass on the full content of
+     each file BEFORE writing it. session.pending is merged automatically so downstream
+     validate_code calls suppress cross-ref noise for files in this plan.
+
+${CANONICAL_WORKFLOW_BLOCK}
+
+REQUIRED PREPARATION (MUST, mode 2 only):
+  You MUST call domain_guide(domain) for every domain in your manual plan BEFORE calling
+  validate_intent. If you have not already called domain_guide for a domain in this
+  session, call it now. validate_intent checks against the same rules domain_guide
+  teaches — consulting it first means fewer failures here and fewer validate_code
+  failures later.
+  MUST NOT: call validate_intent without having consulted domain_guide for each
+  relevant domain. A plan drafted without domain context is almost always wrong.
+  (Mode 1 is exempt — the scaffold generator already embeds the domain rules.)
 
 REQUIRED PROCEDURE:
-1. Call validate_intent (either mode).
-2. If ok:false — read errors[].suggestion and allowed_next_actions, fix the plan, re-call.
-3. If ok:true  — use pending_files as the pending_files parameter in every validate_code call.
-4. If you add a file not in the validated plan — re-call validate_intent with the updated plan
-   before writing it (scope drift enforcement).
+1. Call validate_intent — mode 1 (optional review of scaffold dry-run output), or mode 2
+   (required for hand-drafted batches).
+2. If ok:false — read errors[].suggestion and allowed_next_actions, fix, re-call.
+3. If ok:true + write_directly:true — call scaffold again with write:true to commit. Do
+   NOT hand-write the scaffold files; let scaffold write them so session.pending clears
+   and the LSP re-indexes. You are DONE for the scaffold batch after the write:true call.
+4. If ok:true + write_directly:false — draft each file, call validate_code on the full
+   content, fix findings, then write.
+5. If you add a file not in the validated plan — re-call validate_intent with the
+   updated plan before writing it (scope drift enforcement).
 
 Manual intent example (mode 2):
   {
@@ -130,7 +152,22 @@ IMPORTANT: references is optional per change but should be populated — it is u
   createHandler(ctx) {
     return async (params) => {
       try {
-        return await validateIntent(params, ctx.directory);
+        const result = await validateIntent(params, ctx.directory);
+
+        // On success, overwrite session.pending with this plan's pending state.
+        // Every successful validation is authoritative — the latest plan wins.
+        // This is what downstream tools (validate_code, analyze_project) read so
+        // the agent does not have to re-pass pending_* on every call.
+        if (result?.ok && ctx.session?.pending) {
+          ctx.session.pending.files         = new Set(result.pending_files ?? []);
+          ctx.session.pending.translations  = new Set(result.pending_translations ?? []);
+          ctx.session.pending.pages         = new Set(extractPendingPages(result.pending_files ?? []));
+          ctx.session.pending.planId        = result.plan_id ?? null;
+          ctx.session.pending.validatedAt   = result.validated_at ?? new Date().toISOString();
+          ctx.session.pending.writeDirectly = result.write_directly === true;
+        }
+
+        return result;
       } catch (e) {
         return {
           ok: false,
@@ -148,3 +185,12 @@ IMPORTANT: references is optional per change but should be populated — it is u
     };
   },
 };
+
+/**
+ * Filter pending_files down to page paths. Pages are already in pending_files (they
+ * are just files), but the diagnostic pipeline's MissingPage suppression matches by
+ * slug/path differently from MissingPartial, so we extract the page subset.
+ */
+function extractPendingPages(pendingFiles) {
+  return pendingFiles.filter(f => /^app\/views\/pages\/.+\.(html\.liquid|liquid)$/.test(f));
+}

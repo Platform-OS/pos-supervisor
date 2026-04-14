@@ -32,6 +32,80 @@ describe('scaffold-generator', () => {
     it('rejects invalid scaffold type', async () => {
       expect(await generateScaffold({ ...baseOpts, type: 'unknown' }).catch(e => e.message)).toMatch(/Invalid scaffold type/);
     });
+
+    describe('required properties guard', () => {
+      for (const type of ['crud', 'api', 'command']) {
+        it(`${type}: rejects missing properties array`, async () => {
+          const err = await generateScaffold({ type, name: 'note' }).catch(e => e.message);
+          expect(err).toMatch(/requires at least one non-auth property/);
+          expect(err).toMatch(/missing or empty/);
+          expect(err).toMatch(/Example:/);
+        });
+
+        it(`${type}: rejects empty properties array`, async () => {
+          const err = await generateScaffold({ type, name: 'note', properties: [] }).catch(e => e.message);
+          expect(err).toMatch(/requires at least one non-auth property/);
+        });
+
+        it(`${type}: rejects auth-only properties`, async () => {
+          const err = await generateScaffold({
+            type,
+            name: 'note',
+            properties: [{ name: 'user_id', type: 'string', role: 'auth' }],
+          }).catch(e => e.message);
+          expect(err).toMatch(/all properties are role:auth/);
+        });
+
+        it(`${type}: accepts mix of non-auth and auth properties`, async () => {
+          const result = await generateScaffold({
+            type,
+            name: 'note',
+            properties: [
+              { name: 'title', type: 'string' },
+              { name: 'user_id', type: 'string', role: 'auth' },
+            ],
+          });
+          expect(result.files.length).toBeGreaterThan(0);
+        });
+      }
+
+      it('query: accepts missing properties (GraphQL stays valid without them)', async () => {
+        const result = await generateScaffold({ type: 'query', name: 'note' });
+        expect(result.files.length).toBeGreaterThan(0);
+      });
+
+      it('partial: accepts missing properties', async () => {
+        const result = await generateScaffold({ type: 'partial', name: 'widget' });
+        expect(result.files.length).toBe(1);
+      });
+
+      it('page: accepts missing properties', async () => {
+        const result = await generateScaffold({ type: 'page', name: 'home' });
+        expect(result.files.length).toBe(1);
+      });
+
+      it('crud: rejected error message is actionable — includes concrete property example', async () => {
+        const err = await generateScaffold({ type: 'crud', name: 'note' }).catch(e => e.message);
+        expect(err).toContain('{ name: "title", type: "string" }');
+      });
+    });
+  });
+
+  describe('generated output is always valid', () => {
+    it('crud: create.graphql never emits empty mutation args', async () => {
+      const result = await generateScaffold(baseOpts);
+      const create = result.files.find(f => f.path.endsWith('create.graphql'));
+      expect(create.content).not.toMatch(/mutation create\(\)/);
+      expect(create.content).toMatch(/mutation create\(\$\w+:/);
+    });
+
+    it('crud: schema.yml never emits empty property list', async () => {
+      const result = await generateScaffold(baseOpts);
+      const schema = result.files.find(f => f.path.endsWith('.yml') && f.path.includes('schema/'));
+      const parsed = yaml.load(schema.content);
+      expect(parsed.properties).toBeDefined();
+      expect(parsed.properties.length).toBeGreaterThan(0);
+    });
   });
 
   describe('crud scaffold', () => {
@@ -275,7 +349,12 @@ describe('scaffold-generator', () => {
       const search = queries.find(f => f.path.includes('search.liquid'));
       expect(search.content).toContain("graphql result = 'blog_posts/search'");
       expect(search.content).toContain('return result.records');
-      expect(search.content).toContain('@param page');
+      // Optional params use bracket notation so the LSP's MetadataParamsCheck
+      // does not flag them as required on the caller.
+      expect(search.content).toContain('@param [page]');
+      expect(search.content).toContain('@param [limit]');
+      expect(search.content).not.toMatch(/@param\s+page\s+\{/);
+      expect(search.content).not.toMatch(/@param\s+limit\s+\{/);
     });
 
     it('find query returns single item', async () => {
@@ -355,16 +434,44 @@ describe('scaffold-generator', () => {
     beforeAll(async () => { result = await generateScaffold({ ...baseOpts, include_authorization: true }); pages = result.files.filter(f => f.domain === 'pages'); });
     let pages;
 
-    it('create page includes authorization via function (not deprecated include)', async () => {
+    // The scaffold uses an inline `context.current_user.id == null` guard
+    // instead of can_do_or_unauthorized. Reason: the user module ships a
+    // role_permissions registry that does NOT include per-resource actions
+    // like `blog_posts.create`, so can_do_or_unauthorized would return
+    // false for every non-superadmin and 403 every authenticated request.
+    // Seeding the registry is outside the scaffold's remit (projects carry
+    // different permission maps), so the scaffold uses the narrower
+    // always-correct check: "any logged-in user may mutate their own
+    // records". Ownership is enforced separately via the authProp check
+    // on update/delete pages.
+    it('create page guards with inline current_user.id null check (not can_do_or_unauthorized)', async () => {
       const create = pages.find(f => f.path.includes('create.html.liquid'));
-      expect(create.content).toContain("modules/user/queries/user/current");
-      expect(create.content).toContain("function _ = 'modules/user/helpers/can_do_or_unauthorized'");
-      expect(create.content).not.toContain("include ");
+      expect(create.content).toContain('if context.current_user.id == null');
+      expect(create.content).toContain('response_status 403');
+      expect(create.content).toContain('break');
+      // Must NOT use the role-permissions helper — see comment above.
+      expect(create.content).not.toContain('can_do_or_unauthorized');
+      expect(create.content).not.toContain('current_profile');
+    });
+
+    it('update page carries the same inline guard', async () => {
+      const update = pages.find(f => f.path.includes('update.html.liquid'));
+      expect(update.content).toContain('if context.current_user.id == null');
+      expect(update.content).toContain('response_status 403');
+      expect(update.content).not.toContain('can_do_or_unauthorized');
+    });
+
+    it('delete page carries the same inline guard', async () => {
+      const del = pages.find(f => f.path.includes('delete.html.liquid'));
+      expect(del.content).toContain('if context.current_user.id == null');
+      expect(del.content).toContain('response_status 403');
+      expect(del.content).not.toContain('can_do_or_unauthorized');
     });
 
     it('index page does not include authorization', async () => {
       const index = pages.find(f => f.path.includes('index.html.liquid'));
       expect(index.content).not.toContain('can_do_or_unauthorized');
+      expect(index.content).not.toContain('context.current_user.id == null');
     });
   });
 
@@ -378,20 +485,22 @@ describe('scaffold-generator', () => {
       expect(partials).toHaveLength(6);
     });
 
-    it('index partial uses common-styling pos-table structure', async () => {
+    it('index partial uses pos-table layout with real common-styling classes', async () => {
       const index = partials.find(f => f.path.endsWith('blog_posts/index.liquid'));
       expect(index.content).toContain('blog_posts.results.size');
       expect(index.content).toContain("render 'blog_posts/empty_state'");
       expect(index.content).toContain('for blog_post in blog_posts.results');
       expect(index.content).toContain('_method');
       expect(index.content).toContain('value="delete"');
-      // common-styling pos-table structure
-      expect(index.content).toContain('<section class="pos-table">');
-      expect(index.content).toContain('<header>');
+      // pos-table layout from common-styling module (replaces phantom feature-grid/card)
+      expect(index.content).toContain('class="pos-table"');
       expect(index.content).toContain('class="pos-table-content pos-card"');
       expect(index.content).toContain('pos-table-content-heading');
-      // delete form has no pos-form class
-      expect(index.content).not.toContain('class="pos-form"');
+      // auth guard on New button
+      expect(index.content).toContain('{% if context.current_user.id %}');
+      // phantom classes MUST NOT appear
+      expect(index.content).not.toContain('feature-grid');
+      expect(index.content).not.toContain('"card"');
     });
 
     it('form partial uses fieldset and common-styling error partials', async () => {
@@ -417,12 +526,12 @@ describe('scaffold-generator', () => {
       expect(form.content).toContain('name="blog_post[id]"');
     });
 
-    it('show partial displays fields with pos-card class', async () => {
+    it('show partial displays title field in heading', async () => {
       const show = partials.find(f => f.path.includes('show.liquid'));
-      expect(show.content).toContain('object.id');
       expect(show.content).toContain('object.title');
       expect(show.content).toContain('@param object');
-      expect(show.content).toContain('class="pos-card"');
+      expect(show.content).toContain('class="pos-heading-1"');
+      expect(show.content).toContain('<article>');
     });
 
     it('new partial wraps form', async () => {
@@ -475,8 +584,16 @@ describe('scaffold-generator', () => {
     beforeAll(async () => { result = await generateScaffold(baseOpts); transFile = result.files.find(f => f.domain === 'translations') });
     let transFile;
 
-    it('uses per-model file path', async () => {
-      expect(transFile.path).toBe('app/translations/en/blog_posts.yml');
+    it('uses the single-locale file path', async () => {
+      expect(transFile.path).toBe('app/translations/en.yml');
+    });
+
+    it('flags the file as deep-merge so re-scaffolds do not conflict', async () => {
+      expect(transFile.mergeStrategy).toBe('deep-merge');
+    });
+
+    it('reports existed:false when no on-disk file is present (no projectDir)', async () => {
+      expect(transFile.existed).toBe(false);
     });
 
     it('generates valid YAML with en: app: hierarchy', async () => {
@@ -492,12 +609,87 @@ describe('scaffold-generator', () => {
       expect(parsed.en.app.blog_posts.attr.body).toBe('Body');
     });
 
-    it('includes new, edit, and list translations', () => {
+    it('includes new, edit, list, save and cancel translations', () => {
       const parsed = yaml.load(transFile.content);
-      expect(parsed.en.app.blog_posts.new.new).toContain('blog_post');
-      expect(parsed.en.app.blog_posts.edit.edit).toContain('blog_post');
-      expect(parsed.en.app.blog_posts.list.add).toContain('blog_post');
+      expect(parsed.en.app.blog_posts.new.new).toBeDefined();
+      expect(parsed.en.app.blog_posts.edit.edit).toBeDefined();
+      expect(parsed.en.app.blog_posts.list.add).toBeDefined();
       expect(parsed.en.app.blog_posts.list.empty_state).toBeDefined();
+      expect(parsed.en.app.blog_posts.list.edit).toBeDefined();
+      expect(parsed.en.app.blog_posts.list.delete).toBeDefined();
+      expect(parsed.en.app.blog_posts.save).toBeDefined();
+      expect(parsed.en.app.blog_posts.cancel).toBeDefined();
+    });
+  });
+
+  describe('translations deep-merge', () => {
+    let tmpDir;
+
+    beforeAll(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'scaffold-trans-'));
+    });
+    afterAll(() => {
+      if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    async function runWithExisting(existingYaml, opts = baseOpts) {
+      const { mkdirSync, writeFileSync } = await import('node:fs');
+      mkdirSync(join(tmpDir, 'app/translations'), { recursive: true });
+      writeFileSync(join(tmpDir, 'app/translations/en.yml'), existingYaml, 'utf8');
+      const result = await generateScaffold(opts, tmpDir);
+      return result.files.find(f => f.domain === 'translations');
+    }
+
+    it('preserves existing keys for the same resource (existing wins on leaf conflicts)', async () => {
+      const transFile = await runWithExisting(
+        "en:\n  app:\n    blog_posts:\n      save: Guardar\n"
+      );
+      expect(transFile.existed).toBe(true);
+      const parsed = yaml.load(transFile.content);
+      expect(parsed.en.app.blog_posts.save).toBe('Guardar');
+      // And still introduces scaffold-contributed keys the user doesn't have.
+      expect(parsed.en.app.blog_posts.cancel).toBe('Cancel');
+      expect(parsed.en.app.blog_posts.attr.title).toBe('Title');
+    });
+
+    it('adds the new resource when another resource already lives in the file', async () => {
+      const transFile = await runWithExisting(
+        "en:\n  app:\n    products:\n      save: Save\n"
+      );
+      const parsed = yaml.load(transFile.content);
+      expect(parsed.en.app.products.save).toBe('Save');
+      expect(parsed.en.app.blog_posts.save).toBe('Save');
+    });
+
+    it('leaves unrelated locales (pl, de, …) completely untouched', async () => {
+      const transFile = await runWithExisting(
+        "en:\n  app:\n    existing: Existing\npl:\n  app:\n    hello: Cześć\n"
+      );
+      const parsed = yaml.load(transFile.content);
+      expect(parsed.pl.app.hello).toBe('Cześć');
+      expect(parsed.en.app.existing).toBe('Existing');
+      expect(parsed.en.app.blog_posts).toBeDefined();
+    });
+
+    it('overwrites nothing when the existing file is syntactically broken YAML', async () => {
+      const transFile = await runWithExisting('en:\n  app:\n    blog_posts:\n      : : :');
+      // The fallback keeps the scaffold tree rather than crashing.
+      const parsed = yaml.load(transFile.content);
+      expect(parsed.en.app.blog_posts.save).toBe('Save');
+    });
+
+    it('marks the translation file existed=true so normalizeScaffoldInput treats it as an update', async () => {
+      const transFile = await runWithExisting("en:\n  app:\n    x: y\n");
+      expect(transFile.existed).toBe(true);
+    });
+
+    it('never reports the translation file as a conflict even when it already exists', async () => {
+      const { mkdirSync, writeFileSync } = await import('node:fs');
+      mkdirSync(join(tmpDir, 'app/translations'), { recursive: true });
+      writeFileSync(join(tmpDir, 'app/translations/en.yml'), "en:\n  app:\n    x: y\n", 'utf8');
+      const result = await generateScaffold(baseOpts, tmpDir);
+      const trConflict = result.conflicts.find(c => c.path === 'app/translations/en.yml');
+      expect(trConflict).toBeUndefined();
     });
   });
 
@@ -589,11 +781,14 @@ describe('scaffold-generator', () => {
     it('skips existing files and reports them', async () => {
       // First write creates files
       await generateScaffold({ ...baseOpts, name: 'thing', write: true }, tmpDir);
-      // Second write should skip all
+      // Second write should skip all conflicts. The single translation file is
+      // deep-merged on re-scaffold (intentional), so it is always written and
+      // never reported as a conflict.
       const result2 = await generateScaffold({ ...baseOpts, name: 'thing', write: true }, tmpDir);
       expect(result2.conflicts.length).toBeGreaterThan(0);
+      expect(result2.conflicts.find(c => c.path === 'app/translations/en.yml')).toBeUndefined();
       expect(result2.skipped.length).toBe(result2.conflicts.length);
-      expect(result2.written).toEqual([]);
+      expect(result2.written).toEqual(['app/translations/en.yml']);
     });
 
     it('does not include _instructions when write=true', async () => {
@@ -641,21 +836,18 @@ describe('scaffold-generator', () => {
       }).catch(e => e.message)).toMatch(/Invalid property role/);
     });
 
-    it('auto-enables authorization when auth fields present', async () => {
+    it('auto-enables authorization when auth fields present (inline guard, not can_do)', async () => {
       const result = await generateScaffold(authOpts);
       const createPage = result.files.find(f => f.path.includes('create.html.liquid'));
-      expect(createPage.content).toContain("modules/user/helpers/can_do_or_unauthorized");
+      expect(createPage.content).toContain('if context.current_user.id == null');
+      expect(createPage.content).toContain('response_status 403');
+      expect(createPage.content).not.toContain('can_do_or_unauthorized');
     });
 
     it('adds a note when authorization is auto-enabled', async () => {
       const result = await generateScaffold(authOpts);
       expect(result.notes).toBeDefined();
-      expect(result.notes[0]).toMatch(/Authorization automatically enabled/);
-    });
-
-    it('does not add note when include_authorization already true', async () => {
-      const result = await generateScaffold({ ...authOpts, include_authorization: true });
-      expect(result.notes).toBeUndefined();
+      expect(result.notes.some(n => /Authorization automatically enabled/.test(n))).toBe(true);
     });
 
     it('create build command assigns auth field from current_user.id', async () => {
@@ -709,6 +901,121 @@ describe('scaffold-generator', () => {
       const result = await generateScaffold(authOpts);
       const schema = result.files.find(f => f.path.endsWith('.yml') && f.domain === 'schema');
       expect(schema.content).toContain('name: user_id');
+    });
+
+    // ── ownership filter in search query ─────────────────────────────────────
+    //
+    // Pins the fix for the original ghost bug: scaffolded CRUD with a role:auth
+    // property used to return every user's records because the search query had
+    // no ownership filter. The GraphQL side now takes a required user_id
+    // variable and the Liquid wrapper supplies it from context.current_user.id.
+
+    it('search GraphQL filters by the auth field (ownership)', async () => {
+      const result = await generateScaffold(authOpts);
+      const searchGql = result.files.find(f => f.path.endsWith('search.graphql'));
+      expect(searchGql.content).toContain('$user_id: String!');
+      expect(searchGql.content).toContain('properties: [{ name: "user_id", value: $user_id }]');
+    });
+
+    it('search Liquid wrapper passes current_user.id as user_id', async () => {
+      const result = await generateScaffold(authOpts);
+      const searchQuery = result.files.find(f => f.path.endsWith('queries/blog_posts/search.liquid'));
+      expect(searchQuery.content).toContain('user_id: context.current_user.id');
+      expect(searchQuery.content).toContain('if context.current_user.id');
+    });
+
+    it('search Liquid wrapper returns an empty result set for anonymous callers', async () => {
+      // Anonymous visitors cannot be resolved to an owner, and a graphql call
+      // with a null required variable errors. The wrapper short-circuits to an
+      // empty records shape that the index partial can render safely.
+      const result = await generateScaffold(authOpts);
+      const searchQuery = result.files.find(f => f.path.endsWith('queries/blog_posts/search.liquid'));
+      expect(searchQuery.content).toContain('parse_json');
+      expect(searchQuery.content).toContain('empty_result');
+    });
+
+    // ── ownership guards on show / update / delete ───────────────────────────
+
+    it('show page 404s when the record is not owned by the caller', async () => {
+      const result = await generateScaffold(authOpts);
+      const show = result.files.find(f => f.path.includes('show.html.liquid'));
+      expect(show.content).toContain('object.user_id != context.current_user.id');
+      expect(show.content).toContain('response_status 404');
+    });
+
+    it('update page re-fetches the record and aborts if not owned by the caller', async () => {
+      const result = await generateScaffold(authOpts);
+      const update = result.files.find(f => f.path.includes('update.html.liquid'));
+      // Must use a fresh lookup (not trust form payload) to decide ownership.
+      expect(update.content).toContain("function existing = 'queries/blog_posts/find', id: context.params.blog_post.id");
+      expect(update.content).toContain('existing.user_id != context.current_user.id');
+      expect(update.content).toContain('response_status 404');
+    });
+
+    it('delete page refuses to delete records the caller does not own', async () => {
+      const result = await generateScaffold(authOpts);
+      const del = result.files.find(f => f.path.includes('delete.html.liquid'));
+      expect(del.content).toContain('object.user_id != context.current_user.id');
+      expect(del.content).toContain('response_status 404');
+    });
+
+    // ── owner-field auto-upgrade ─────────────────────────────────────────────
+    //
+    // Agents (including humans) routinely pass `user_id` as a plain `string`
+    // property. Without auto-upgrade the form exposes user_id as editable, the
+    // build command copies it from the form payload, and any authenticated
+    // visitor can spoof ownership. The scaffold silently promotes the canonical
+    // owner field names and emits a note so the agent learns what happened.
+
+    it('auto-upgrades user_id / owner_id / author_id / created_by to role:auth when include_authorization is set', async () => {
+      for (const fieldName of ['user_id', 'owner_id', 'author_id', 'created_by']) {
+        const result = await generateScaffold({
+          type: 'crud',
+          name: 'post',
+          include_authorization: true,
+          properties: [
+            { name: 'title', type: 'string' },
+            { name: fieldName, type: 'string' },
+          ],
+        });
+        const form = result.files.find(f => f.path.endsWith('form.liquid'));
+        expect(form.content, `form for ${fieldName}`).not.toContain(`name="post[${fieldName}]"`);
+        const build = result.files.find(f => f.path.endsWith('create/build.liquid'));
+        expect(build.content, `build for ${fieldName}`).toContain(`assign object['${fieldName}'] = context.current_user.id`);
+        expect(result.notes.some(n => n.includes(fieldName) && /Auto-upgraded to role:auth/.test(n))).toBe(true);
+      }
+    });
+
+    it('does NOT auto-upgrade owner fields when include_authorization is not set', async () => {
+      const result = await generateScaffold({
+        type: 'crud',
+        name: 'post',
+        properties: [
+          { name: 'title', type: 'string' },
+          { name: 'user_id', type: 'string' },
+        ],
+        // include_authorization omitted — agent opted out of ownership semantics
+      });
+      const form = result.files.find(f => f.path.endsWith('form.liquid'));
+      expect(form.content).toContain('name="post[user_id]"');
+      expect((result.notes ?? []).some(n => /Auto-upgraded to role:auth/.test(n))).toBe(false);
+    });
+
+    it('an explicit user_id without role:auth but with include_authorization flips include_authorization on via the upgrade', async () => {
+      // Auto-upgrade runs BEFORE the "auth fields → include_authorization" check
+      // so the upgrade itself is what triggers the guarded pages.
+      const result = await generateScaffold({
+        type: 'crud',
+        name: 'post',
+        include_authorization: true,
+        properties: [
+          { name: 'title', type: 'string' },
+          { name: 'user_id', type: 'string' },
+        ],
+      });
+      const createPage = result.files.find(f => f.path.includes('create.html.liquid'));
+      expect(createPage.content).toContain('if context.current_user.id == null');
+      expect(createPage.content).toContain('response_status 403');
     });
   });
 });

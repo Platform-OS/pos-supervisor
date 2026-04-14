@@ -80,3 +80,14 @@ export async function getProjectMap(projectDir, { forceRefresh = false } = {}) {
   _cacheTime = Date.now();
   return result;
 }
+
+/**
+ * Reset the cached project map so the next `getProjectMap` call does a fresh
+ * scan. Called by the fs-watcher whenever a dependency-graph-relevant file
+ * changes on disk so cross-file tools (analyze_project, validate_code's
+ * caller lookup) always see current state.
+ */
+export function invalidateProjectMap() {
+  _cache = null;
+  _cacheTime = 0;
+}

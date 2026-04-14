@@ -70,7 +70,7 @@ export async function getReference(domain, section) {
   }
 }
 
-const VALID_DOMAINS = [
+export const VALID_DOMAINS = [
   // Core (Tier A)
   'pages', 'partials', 'graphql', 'translations', 'layouts', 'commands', 'schema', 'config', 'queries',
   // Platform features (Tier B)
@@ -80,6 +80,8 @@ const VALID_DOMAINS = [
   // Liquid sub-topics
   'liquid/tags', 'liquid/objects', 'liquid/filters', 'liquid/variables',
   'liquid/types', 'liquid/flow-control', 'liquid/loops',
+  // Project-specific
+  'design-system',
 ];
 const VALID_SECTIONS = ['gotchas', 'patterns', 'api', 'configuration', 'advanced', 'overview'];
 

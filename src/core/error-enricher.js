@@ -251,7 +251,115 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
     result.hint = getHint(diagnostic.check, null);
   }
 
+  // Route diagnostics to the right reference via a structured see_also field.
+  // Prose hints get skipped by agents; structured fields get acted on.
+  // See roadmap Fix 3 and the table in the plan.
+  attachSeeAlso(result, content);
+
   return result;
+}
+
+/**
+ * Attach a structured `see_also` field pointing at the authoritative source
+ * for this diagnostic — usually a `domain_guide` call, occasionally
+ * `module_info`. MUST be a structured object (tool + args), NOT embedded prose,
+ * because agents react reliably to fields and ignore prose advice.
+ *
+ * This is the "catch the agent at error-fix time and route them to the right
+ * guide" intervention from the roadmap: agents that skip domain_guide at plan
+ * time see see_also.reason + see_also.call at validate_code time and typically
+ * follow it.
+ *
+ * @param {object} diagnostic — mutated in place
+ * @param {string} [content] — file content (optional, for route-slug heuristics)
+ */
+export function attachSeeAlso(diagnostic, content) {
+  if (!diagnostic || typeof diagnostic !== 'object') return;
+  if (diagnostic.see_also) return; // never overwrite an explicit route
+
+  const check = diagnostic.check;
+  const message = diagnostic.message ?? '';
+
+  // Shopify contamination → partials gotchas.
+  // Identified either by suggestion text mentioning Shopify, or by the
+  // UndefinedObject-shopify hint variant. Either signal means the diagnostic
+  // is about a Shopify-ism in otherwise valid Liquid.
+  if (check === 'UndefinedObject' && /shopify/i.test(diagnostic.suggestion ?? '')) {
+    diagnostic.see_also = {
+      tool: 'domain_guide',
+      args: { domain: 'partials', section: 'gotchas' },
+      reason: 'Shopify object detected — platformOS uses context.* objects, not shop/cart/customer/product/collection. domain_guide(partials, gotchas) lists every deprecated/forbidden identifier.',
+    };
+    return;
+  }
+
+  // Deprecated {% include %} tag.
+  if (check === 'DeprecatedTag' && /include/i.test(message)) {
+    diagnostic.see_also = {
+      tool: 'domain_guide',
+      args: { domain: 'partials', section: 'gotchas' },
+      reason: '{% include %} is deprecated in platformOS. Use {% render %} for isolated scope or {% function %} for module helpers. domain_guide(partials, gotchas) has the full deprecated-tag list.',
+    };
+    return;
+  }
+
+  // Missing module partial — route to module_info for the authoritative call path.
+  if (check === 'MissingPartial') {
+    const nameMatch = message.match(/['"]([^'"]+)['"]/);
+    const partialName = nameMatch?.[1];
+    if (partialName?.startsWith('modules/')) {
+      const moduleName = partialName.split('/')[1];
+      diagnostic.see_also = {
+        tool: 'module_info',
+        args: { name: moduleName, section: 'api' },
+        reason: `Module partial '${partialName}' not found. module_info(${moduleName}, api) returns the live-scanned call paths and signatures from the installed module — stale memory of module paths is the #1 reason for this error.`,
+      };
+      return;
+    }
+  }
+
+  // Missing param on render/function — route to the relevant domain API section.
+  // forms/* partials use form-specific conventions documented in the forms guide;
+  // everything else falls back to the partials guide.
+  if (check === 'MetadataParamsCheck' || check === 'MissingRenderPartialArguments') {
+    const isFormPartial = /['"]modules\/common-styling\/forms\//.test(content ?? '') ||
+                          /['"][^'"]*forms\/[^'"]+['"]/.test(content ?? '');
+    diagnostic.see_also = {
+      tool: 'domain_guide',
+      args: { domain: isFormPartial ? 'forms' : 'partials', section: 'api' },
+      reason: isFormPartial
+        ? 'Form partial call is missing required params. domain_guide(forms, api) lists every form helper signature (error_list, error_input_handler, etc.).'
+        : 'Render call is missing required params. domain_guide(partials, api) explains how {% doc %} @param declarations interact with render and function calls.',
+    };
+    return;
+  }
+
+  // Missing translation key — route to translations gotchas.
+  if (check === 'TranslationKeyExists') {
+    diagnostic.see_also = {
+      tool: 'domain_guide',
+      args: { domain: 'translations', section: 'gotchas' },
+      reason: 'Translation key not found. domain_guide(translations, gotchas) covers locale nesting, key derivation, and dot-notation conventions.',
+    };
+    return;
+  }
+
+  // Hardcoded auth routes — common Shopify/Rails contamination. /sessions
+  // and /users are the two specific slugs that route to the wrong place in
+  // platformOS (correct forms are /sessions/new and /users/new).
+  if (check === 'HardcodedRoutes') {
+    const looksAuth = /\/sessions\b|\/users\b|\/login\b|\/signup\b|\/register\b/i.test(message);
+    diagnostic.see_also = {
+      tool: 'domain_guide',
+      args: looksAuth
+        ? { domain: 'authentication', section: 'patterns' }
+        : { domain: 'routing', section: 'patterns' },
+      reason: looksAuth
+        ? 'Auth route detected. platformOS uses /sessions/new (not /sessions) and /users/new (not /users). domain_guide(authentication, patterns) has the correct URLs and ownership patterns.'
+        : 'Hardcoded route. domain_guide(routing, patterns) explains slug conventions and how to use link_to helpers.',
+    };
+    return;
+  }
 }
 
 /**

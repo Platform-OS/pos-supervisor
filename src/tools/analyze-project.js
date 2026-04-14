@@ -6,6 +6,14 @@ import { validateSchema } from '../core/schema-validator.js';
 import { toUri, sanitizePath } from '../core/utils.js';
 import { getProjectMap } from './project-map.js';
 import { ToolError } from '../core/tool-error.js';
+import {
+  suppressByPending,
+  buildPendingPartialNames,
+  buildPendingPageKeys,
+} from '../core/diagnostic-pipeline.js';
+import { buildDependencyGraph, detectDeadCode } from '../core/dependency-graph.js';
+import { findOrphanPartials } from '../core/orphan-detector.js';
+import { resolveRenderName } from '../core/project-scanner.js';
 
 export const analyzeProjectTool = {
   name: 'analyze_project',
@@ -58,6 +66,36 @@ export const analyzeProjectTool = {
       const allResults = await runCheck(null);
       const filesScanned = files.length;
 
+      // Apply session.pending suppression to the aggregated result before per-file counting.
+      // This keeps analyze_project consistent with validate_code — both honor the same
+      // authoritative pending state written by validate_intent, so a multi-file plan
+      // does not produce false-positive MissingPartial/MissingPage/TranslationKeyExists
+      // counts during the creation window.
+      const sessionPending = ctx.session?.pending;
+      if (sessionPending && (sessionPending.files.size > 0 || sessionPending.pages.size > 0 || sessionPending.translations.size > 0)) {
+        if (sessionPending.files.size > 0) {
+          suppressByPending(allResults, {
+            check: 'MissingPartial',
+            pendingSet: buildPendingPartialNames([...sessionPending.files]),
+            extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+          });
+        }
+        if (sessionPending.pages.size > 0) {
+          suppressByPending(allResults, {
+            check: 'MissingPage',
+            pendingSet: buildPendingPageKeys([...sessionPending.pages]),
+            extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+          });
+        }
+        if (sessionPending.translations.size > 0) {
+          suppressByPending(allResults, {
+            check: 'TranslationKeyExists',
+            pendingSet: new Set(sessionPending.translations),
+            extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+          });
+        }
+      }
+
       const fileResults = [];
       for (const filePath of files) {
         const absPath = absPaths[filePath];
@@ -101,10 +139,18 @@ export const analyzeProjectTool = {
         }
       } catch { /* schema directory not found — skip */ }
 
-      // Build dependency graph via LSP
+      // Build dependency graph.
+      //
+      // The LSP's appGraph/* methods return empty arrays for files it has not
+      // indexed (warmup only opens placeholder files). Rather than rely on
+      // LSP alone, we build the graph from the project_map scan — which has
+      // EVERY file's renders, function_calls, and graphql_calls — and merge
+      // LSP results on top. LSP wins per edge (it knows about dynamic render
+      // names the scanner cannot see), projectMap backs it when LSP is silent.
       await ctx.awaitLsp();
 
-      const dependencyGraph = {};
+      // Per-file LSP query, used as the overlay.
+      const lspOverlay = {};
       if (ctx.lsp?.initialized) {
         for (const filePath of files) {
           const absPath = absPaths[filePath];
@@ -115,81 +161,32 @@ export const analyzeProjectTool = {
               ctx.lsp.dependencies(uri).catch(() => null),
             ]);
 
-            dependencyGraph[filePath] = {
+            lspOverlay[filePath] = {
               referenced_by: (refs?.items ?? []).map(r => (r.source?.uri ?? '').replace('file://', '')),
               depends_on: (deps?.items ?? []).map(d => (d.target?.uri ?? '').replace('file://', '')),
             };
           } catch {
-            dependencyGraph[filePath] = { referenced_by: [], depends_on: [] };
+            // LSP failure is not fatal — projectMap graph covers the file.
           }
         }
       }
 
-      // Cross-file integrity checks + dead code detection using project_map
+      // Fetch the project map once — both the dep graph and the integrity
+      // checks consume it.
+      const projectMap = await getProjectMap(ctx.directory);
+
+      // projectMap-derived graph merged with LSP overlay. This is the
+      // authoritative graph surfaced to the agent.
+      const dependencyGraph = buildDependencyGraph(projectMap, lspOverlay);
+
+      // Cross-file integrity checks + dead code detection.
       let integrity = [];
       let dead_code = [];
       try {
-        const projectMap = await getProjectMap(ctx.directory);
         integrity = performIntegrityChecks(projectMap);
-
-        // Dead code: files never referenced by anything
-        const referencedPartials = new Set();
-        const referencedGraphql = new Set();
-        const referencedCommands = new Set();
-        const referencedQueries = new Set();
-
-        for (const partial of Object.values(projectMap.partials ?? {})) {
-          if ((partial.rendered_by ?? []).length > 0) {
-            referencedPartials.add(partial.path);
-          }
-        }
-
-        for (const cmd of Object.values(projectMap.commands ?? {})) {
-          for (const gql of cmd.graphql_calls ?? []) {
-            referencedGraphql.add(gql.queryName ?? gql);
-          }
-        }
-        for (const q of Object.values(projectMap.queries ?? {})) {
-          for (const gql of q.graphql_calls ?? []) {
-            referencedGraphql.add(gql.queryName ?? gql);
-          }
-        }
-
-        for (const page of Object.values(projectMap.pages ?? {})) {
-          for (const fc of page.function_calls ?? []) {
-            referencedCommands.add(`app/lib/${fc.path}.liquid`);
-            referencedQueries.add(`app/lib/${fc.path}.liquid`);
-          }
-        }
-        for (const partial of Object.values(projectMap.partials ?? {})) {
-          for (const fc of partial.function_calls ?? []) {
-            referencedCommands.add(`app/lib/${fc.path}.liquid`);
-            referencedQueries.add(`app/lib/${fc.path}.liquid`);
-          }
-        }
-
-        for (const [name, partial] of Object.entries(projectMap.partials ?? {})) {
-          if (!referencedPartials.has(partial.path)) {
-            dead_code.push(partial.path);
-          }
-        }
-
-        for (const cmdPath of Object.keys(projectMap.commands ?? {})) {
-          if (!referencedCommands.has(cmdPath)) {
-            const isSubPhase = cmdPath.includes('/build.liquid') || cmdPath.includes('/check.liquid');
-            if (!isSubPhase) {
-              dead_code.push(cmdPath);
-            }
-          }
-        }
-
-        for (const qPath of Object.keys(projectMap.queries ?? {})) {
-          if (!referencedQueries.has(qPath)) {
-            dead_code.push(qPath);
-          }
-        }
+        dead_code = detectDeadCode(dependencyGraph, projectMap);
       } catch {
-        // Integrity checks and dead code detection are best-effort
+        // Integrity checks and dead code detection are best-effort.
       }
 
       // Apply severity filter to integrity issues
@@ -202,9 +199,37 @@ export const analyzeProjectTool = {
       const integrityErrors = integrity.filter(i => i.severity === 'error').length;
       const integrityWarnings = integrity.filter(i => i.severity === 'warning').length;
 
+      const fix_order = buildFixOrder(fileResults, dependencyGraph, ctx.directory);
+
+      const totalErrors = lintErrors + integrityErrors;
+      const totalWarnings = lintWarnings + integrityWarnings;
+
+      // ── blocking_files: files with errors that must be fixed ────────────
+      const blockingFiles = computeBlockingFiles(fileResults, integrity);
+
+      // ── diff_from_last_run: compare against previous analysis ──────────
+      const prefix = ctx.directory.endsWith('/') ? ctx.directory : ctx.directory + '/';
+      const toRel = (p) => p?.startsWith(prefix) ? p.slice(prefix.length) : (p ?? '');
+
+      const currentSnapshot = buildDiagnosticSnapshot(allResults, integrity, toRel);
+      const diff = computeDiffFromLastRun(ctx.session, currentSnapshot, totalErrors, totalWarnings);
+
+      // Store snapshot for next run (after diff computed)
+      if (ctx.session) {
+        ctx.session.lastAnalysis = {
+          timestamp: new Date().toISOString(),
+          diagnostics: currentSnapshot,
+          total_errors: totalErrors,
+          total_warnings: totalWarnings,
+        };
+      }
+
       return {
         files_scanned: filesScanned + schemasScanned,
         files: fileResults,
+        fix_order,
+        blocking_files: blockingFiles,
+        diff_from_last_run: diff,
         dependency_graph: dependencyGraph,
         dead_code,
         integrity,
@@ -212,13 +237,114 @@ export const analyzeProjectTool = {
         lint_warnings: lintWarnings,
         integrity_errors: integrityErrors,
         integrity_warnings: integrityWarnings,
-        total_errors: lintErrors + integrityErrors,
-        total_warnings: lintWarnings + integrityWarnings,
-        next_step: 'Run validate_code on files with errors for full diagnostics, fix proposals, and context-aware analysis.',
+        total_errors: totalErrors,
+        total_warnings: totalWarnings,
+        next_step: fix_order.length > 0
+          ? `Fix in order: ${fix_order.map(f => f.path).join(' → ')}. Run validate_code on each file for full diagnostics and fix proposals.`
+          : 'Run validate_code on individual files for full diagnostics, fix proposals, and context-aware analysis.',
       };
     };
   },
 };
+
+/**
+ * Produce a topologically-sorted fix order for files that have errors.
+ *
+ * The dependency graph from the LSP stores absolute paths in `depends_on`.
+ * We normalise these to relative paths (stripping `projectDir/`) so they
+ * can be matched against the relative paths in `fileResults`.
+ *
+ * Sort rule: fix dependencies before the files that depend on them.
+ * If A renders/calls B and both have errors, B should be fixed first —
+ * fixing B may eliminate cascade errors in A.
+ *
+ * @param {{ path: string, errors: number, warnings: number }[]} fileResults
+ * @param {Record<string, { depends_on: string[] }>} dependencyGraph
+ * @param {string} projectDir - absolute project root
+ * @returns {{ path: string, errors: number, warnings: number, reason: string, dependents_with_errors: number }[]}
+ */
+export function buildFixOrder(fileResults, dependencyGraph, projectDir) {
+  if (fileResults.length === 0) return [];
+
+  const errorPaths = new Set(fileResults.map(f => f.path));
+  const prefix = projectDir.endsWith('/') ? projectDir : projectDir + '/';
+
+  function toRel(absPath) {
+    return absPath.startsWith(prefix) ? absPath.slice(prefix.length) : absPath;
+  }
+
+  // Build adjacency within the error subgraph only.
+  // deps[path]      = Set of paths THIS file depends on that also have errors
+  // dependents[path] = Set of paths that depend on THIS file and also have errors
+  const deps = {};
+  const dependents = {};
+  for (const f of fileResults) {
+    deps[f.path] = new Set();
+    dependents[f.path] = new Set();
+  }
+
+  for (const f of fileResults) {
+    const graph = dependencyGraph[f.path];
+    if (!graph) continue;
+    for (const raw of graph.depends_on ?? []) {
+      const rel = toRel(raw);
+      if (errorPaths.has(rel) && rel !== f.path) {
+        deps[f.path].add(rel);
+        dependents[rel].add(f.path);
+      }
+    }
+  }
+
+  // Kahn's algorithm — nodes with in-degree 0 (no unresolved deps) go first.
+  const inDegree = {};
+  for (const f of fileResults) inDegree[f.path] = deps[f.path].size;
+
+  const queue = fileResults
+    .filter(f => inDegree[f.path] === 0)
+    .map(f => f.path);
+  const result = [];
+  const seen = new Set();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (seen.has(current)) continue;
+    seen.add(current);
+
+    const f = fileResults.find(x => x.path === current);
+    const numDependents = dependents[current].size;
+    result.push({
+      path: current,
+      errors: f.errors,
+      warnings: f.warnings,
+      dependents_with_errors: numDependents,
+      reason: numDependents > 0
+        ? `Fix first — ${numDependents} file(s) with errors depend on this`
+        : deps[current].size > 0
+          ? 'All dependencies fixed — fix this next'
+          : 'No cross-error dependencies',
+    });
+
+    for (const dependent of dependents[current]) {
+      inDegree[dependent]--;
+      if (inDegree[dependent] === 0) queue.push(dependent);
+    }
+  }
+
+  // Append any files caught in a cycle (shouldn't happen in a well-formed project)
+  for (const f of fileResults) {
+    if (!seen.has(f.path)) {
+      result.push({
+        path: f.path,
+        errors: f.errors,
+        warnings: f.warnings,
+        dependents_with_errors: dependents[f.path].size,
+        reason: 'Circular dependency — fix in any order',
+      });
+    }
+  }
+
+  return result;
+}
 
 /**
  * Cross-file integrity checks using the project map.
@@ -235,23 +361,31 @@ function performIntegrityChecks(projectMap) {
   /** Skip module references — module files exist at runtime, not in local app/ */
   const isModuleRef = (name) => name.startsWith('modules/');
 
-  // 1. Broken render references (pages and partials)
+  // 1. Broken render references (pages and partials).
+  // Render names may be relative to the caller's directory — a partial at
+  // app/views/partials/blog_posts/new.liquid that does {% render 'form' %}
+  // resolves to 'blog_posts/form'. Use resolveRenderName so we match the same
+  // keys the scanner stores (Phase 2.3).
   for (const [slug, page] of Object.entries(projectMap.pages ?? {})) {
     for (const renderName of page.renders ?? []) {
-      if (!isModuleRef(renderName) && !allPartials.has(renderName)) {
+      if (isModuleRef(renderName)) continue;
+      const resolved = resolveRenderName(page.path, renderName);
+      if (!allPartials.has(resolved)) {
         issues.push({
-          type: 'broken_render', severity: 'error', source: page.path, target: renderName,
-          message: `Page '${page.path}' renders partial '${renderName}' which does not exist`,
+          type: 'broken_render', severity: 'error', source: page.path, target: resolved,
+          message: `Page '${page.path}' renders partial '${renderName}' (resolved to '${resolved}') which does not exist`,
         });
       }
     }
   }
   for (const [name, partial] of Object.entries(projectMap.partials ?? {})) {
     for (const renderName of partial.renders ?? []) {
-      if (!isModuleRef(renderName) && !allPartials.has(renderName)) {
+      if (isModuleRef(renderName)) continue;
+      const resolved = resolveRenderName(partial.path, renderName);
+      if (!allPartials.has(resolved)) {
         issues.push({
-          type: 'broken_render', severity: 'error', source: partial.path, target: renderName,
-          message: `Partial '${name}' renders '${renderName}' which does not exist`,
+          type: 'broken_render', severity: 'error', source: partial.path, target: resolved,
+          message: `Partial '${name}' renders '${renderName}' (resolved to '${resolved}') which does not exist`,
         });
       }
     }
@@ -311,14 +445,14 @@ function performIntegrityChecks(projectMap) {
     checkFunctionCalls(partial.path, partial.function_calls);
   }
 
-  // 4. Orphan partials (never rendered by anything)
-  for (const [name, partial] of Object.entries(projectMap.partials ?? {})) {
-    if ((partial.rendered_by ?? []).length === 0) {
-      issues.push({
-        type: 'orphan_partial', severity: 'warning', source: partial.path, target: null,
-        message: `Partial '${name}' is never rendered by any file in the project`,
-      });
-    }
+  // 4. Orphan partials (never rendered by anything) — shared predicate so
+  //    validate_intent P5 and dependency-graph dead-code detection use the
+  //    same rule. See src/core/orphan-detector.js.
+  for (const { name, path } of findOrphanPartials(projectMap)) {
+    issues.push({
+      type: 'orphan_partial', severity: 'warning', source: path, target: null,
+      message: `Partial '${name}' is never rendered by any file in the project`,
+    });
   }
 
   return issues;
@@ -333,4 +467,88 @@ function matchesFile(diagnostic, absPath, relPath) {
     return diagnostic._filePath === absPath || diagnostic._filePath.endsWith(relPath);
   }
   return true;
+}
+
+/**
+ * Files with at least one error (lint or integrity) that block a clean project.
+ * Sorted by total error count descending — worst offenders first.
+ */
+export function computeBlockingFiles(fileResults, integrity) {
+  const blockMap = new Map();
+
+  for (const f of fileResults) {
+    if (f.errors > 0) {
+      blockMap.set(f.path, { path: f.path, lint_errors: f.errors, integrity_errors: 0 });
+    }
+  }
+
+  for (const issue of integrity) {
+    if (issue.severity !== 'error' || !issue.source) continue;
+    const existing = blockMap.get(issue.source);
+    if (existing) {
+      existing.integrity_errors++;
+    } else {
+      blockMap.set(issue.source, { path: issue.source, lint_errors: 0, integrity_errors: 1 });
+    }
+  }
+
+  return [...blockMap.values()]
+    .map(b => ({ ...b, total: b.lint_errors + b.integrity_errors }))
+    .sort((a, b) => b.total - a.total);
+}
+
+/**
+ * Build a Map<fingerprint, detail> of all diagnostics for snapshot storage.
+ * Fingerprint: "severity::relPath::check::message" — stable across runs as
+ * long as the file content and check rules don't change.
+ */
+export function buildDiagnosticSnapshot(allResults, integrity, toRel) {
+  const snapshot = new Map();
+
+  for (const d of [...allResults.errors, ...allResults.warnings]) {
+    const file = toRel(d._filePath);
+    const key = `${d.severity}::${file}::${d.check}::${d.message}`;
+    if (!snapshot.has(key)) {
+      snapshot.set(key, { file, check: d.check, message: d.message, severity: d.severity });
+    }
+  }
+
+  for (const issue of integrity) {
+    const key = `${issue.severity}::${issue.source}::${issue.type}::${issue.message}`;
+    if (!snapshot.has(key)) {
+      snapshot.set(key, { file: issue.source, check: issue.type, message: issue.message, severity: issue.severity });
+    }
+  }
+
+  return snapshot;
+}
+
+/**
+ * Compare current diagnostic snapshot against session.lastAnalysis.
+ * Returns null on first run (no previous data to compare).
+ */
+export function computeDiffFromLastRun(session, currentSnapshot, totalErrors, totalWarnings) {
+  const prev = session?.lastAnalysis;
+  if (!prev) return null;
+
+  const prevKeys = prev.diagnostics;
+  const newItems = [];
+  const resolvedItems = [];
+
+  for (const [key, detail] of currentSnapshot) {
+    if (!prevKeys.has(key)) newItems.push(detail);
+  }
+  for (const [key, detail] of prevKeys) {
+    if (!currentSnapshot.has(key)) resolvedItems.push(detail);
+  }
+
+  return {
+    previous_run_at: prev.timestamp,
+    new_errors: newItems.filter(d => d.severity === 'error'),
+    resolved_errors: resolvedItems.filter(d => d.severity === 'error'),
+    new_warnings: newItems.filter(d => d.severity === 'warning'),
+    resolved_warnings: resolvedItems.filter(d => d.severity === 'warning'),
+    error_delta: totalErrors - (prev.total_errors ?? 0),
+    warning_delta: totalWarnings - (prev.total_warnings ?? 0),
+  };
 }

@@ -41,11 +41,13 @@ describe('project_map — full scope', () => {
     expect(create.operation).toBe('mutation');
   });
 
-  it('indexes pages by slug', async () => {
+  it('indexes pages by {slug}:{method} (Phase 2.5 — F-006)', async () => {
     const result = await server.callTool('project_map', { scope: 'full' });
-    expect(result.pages['blog_posts']).toBeDefined();
-    expect(result.pages['blog_posts'].renders).toContain('blog_posts/list');
-    expect(result.pages['blog_posts/show']).toBeDefined();
+    // Composite keys keep multi-method routes visible (GET/POST/PUT/DELETE).
+    expect(result.pages['blog_posts:get']).toBeDefined();
+    expect(result.pages['blog_posts:get'].slug).toBe('blog_posts');
+    expect(result.pages['blog_posts:get'].renders).toContain('blog_posts/list');
+    expect(result.pages['blog_posts/show:get']).toBeDefined();
   });
 
   it('indexes partials with rendered_by reverse index', async () => {

@@ -170,11 +170,17 @@ describe('project-scanner', () => {
       expect(create.name).toBe('create');
     });
 
-    it('indexes pages by slug', async () => {
+    it('indexes pages by {slug}:{method} (Phase 2.5 — F-006)', async () => {
       const result = await scanProject(TEST_DIR);
-      expect(result.pages['blog_posts']).toBeDefined();
-      expect(result.pages['blog_posts'].method).toBe('get');
-      expect(result.pages['blog_posts'].renders).toContain('blog_posts/list');
+      // Key includes the method suffix to support multi-method routes
+      // (GET/POST/PUT/DELETE on the same slug). Before Phase 2.5 pages keyed
+      // by slug alone collapsed under scaffolded CRUD; the new key keeps
+      // each file visible.
+      const page = result.pages['blog_posts:get'];
+      expect(page).toBeDefined();
+      expect(page.slug).toBe('blog_posts');
+      expect(page.method).toBe('get');
+      expect(page.renders).toContain('blog_posts/list');
     });
 
     it('indexes partials with params', async () => {

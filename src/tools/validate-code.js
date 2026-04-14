@@ -9,23 +9,49 @@ import { getDomainFromPath, getDomainHeader } from '../core/domain-detector.js';
 import { getTriggeredGotchas, getContentTriggers } from '../core/knowledge-loader.js';
 import { generateStructuralWarnings } from '../core/structural-warnings.js';
 import { validateSchema } from '../core/schema-validator.js';
+import { checkSchemaProperties } from '../core/schema-property-checker.js';
 import { runDiagnosticPipeline } from '../core/diagnostic-pipeline.js';
+import { partitionCallersByPending } from '../core/pending-callers.js';
 import { toUri, sanitizePath } from '../core/utils.js';
 import { getProjectMap } from './project-map.js';
 import { LSP_DIAGNOSTICS_TIMEOUT_MS, CONSECUTIVE_ERROR_THRESHOLD } from '../core/constants.js';
 
+/**
+ * Warnings that MUST block a write even when result.status is 'warning'.
+ *
+ * Agents frequently read `status !== 'error'` as "safe to write" and ship a
+ * file that silently breaks callers or drops functionality. The cases below
+ * are narrower than "all warnings" — they are the specific cross-file or
+ * signal-loss warnings that turn into bugs if ignored, and they drive the
+ * boolean `must_fix_before_write` field. `next_step` branches on that field
+ * instead of on status, so the agent sees a hard stop in the response shape
+ * rather than a gentle "fix them before writing" prose line.
+ */
+const BLOCKING_WARNINGS = new Set([
+  'pos-supervisor:AddedParam',        // new @param breaks existing callers
+  'pos-supervisor:NewPartialParams',  // new partial declares params existing callers don't pass
+  'pos-supervisor:RemovedRender',     // removing render breaks user-visible behavior
+  'pos-supervisor:RemovedGraphQL',    // removing graphql call drops data fetch
+  'pos-supervisor:RemovedParam',      // removing @param breaks callers
+  'OrphanedPartial',                  // not reachable — shipping means dead code
+]);
+
 export const validateCodeTool = {
   name: 'validate_code',
   description: `PURPOSE:
-Validate platformOS code content prior to any write/edit operation. Returns enriched diagnostics,
-fix hints, LSP intelligence, domain guidance, and structural analysis.
+Validate platformOS code content prior to any hand-authored write/edit operation. Returns
+enriched diagnostics, fix hints, LSP intelligence, domain guidance, and structural analysis.
 
-You are STRICTLY PROHIBITED from:
-Writing, saving, or applying any changes to *.liquid, *.graphql, or *.yml files without first calling validate_code on the full proposed content to be written
+WHEN TO CALL:
+  - Before writing any HAND-DRAFTED .liquid, .graphql, or .yml file (REQUIRED).
+  - After manually EDITING a scaffold-generated file (REQUIRED for the edited file only).
+  - After scaffold(write:true) — NOT required. Scaffold output is pre-validated; re-linting
+    it produces false-positive loops.
+
 You MUST:
-Resolve all reported errors and warnings.
-Re-run validation until zero issues remain.
-Skipping or bypassing this step = FAIL.
+  Resolve every ERROR and WARNING returned before writing the file.
+  Re-run validate_code after fixing until zero issues remain.
+  Skipping validation on a hand-drafted file = FAIL.
 
 REQUIRED PROCEDURE:
 1. If editing an existing file: READ the file first, extract its FULL current content.
@@ -37,22 +63,32 @@ REQUIRED PROCEDURE:
 CONSTRAINTS:
   - NEVER call validate_code with part of the content.
   - NEVER pass a file path as the content parameter.
-  - NEVER skip validation regardless of confidence level.
+  - NEVER skip validation on a hand-drafted file regardless of confidence level.
   - Validation must occur immediately before the write operation.
 
-If validate_intent was called before drafting, pass its pending_files and pending_translations
-here to suppress false-positive MissingPartial/TranslationKeyExists errors during multi-file creation.`,
+If validate_intent was called before drafting, session.pending is merged automatically so you
+do NOT need to pass pending_files / pending_translations / pending_pages here. Pass them
+explicitly only if you are validating a file that is NOT part of the most recent plan.`,
   inputSchema: {
     file_path: z.string().describe('Target file path (relative to project root, e.g. "app/views/pages/index.html.liquid")'),
     content: z.string().describe('The complete text content of the file — NOT a file path. Read the file first, then pass the full text here.'),
     mode: z.enum(['full', 'quick']).optional().describe('Validation mode. Both modes: parse + lint + enrichment (suggestions, Shopify detection) + structural warnings. Difference: "full" additionally provides LSP completions, fix proposals, domain guidance, and architectural scoring. "quick" is for rapid re-validation after applying fixes.'),
-    pending_files: z.array(z.string()).optional().describe('File paths being created soon (suppresses MissingPartial for these). Use when writing scaffold output file-by-file.'),
-    pending_translations: z.array(z.string()).optional().describe('Translation keys being created soon (suppresses TranslationKeyExists for these).'),
+    pending_files: z.array(z.string()).optional().describe('File paths being created soon (suppresses MissingPartial for these). Automatically merged with session pending from validate_intent — omit if you already called validate_intent in this session.'),
+    pending_pages: z.array(z.string()).optional().describe('Page paths being created soon (suppresses MissingPage for these). Automatically merged with session pending from validate_intent.'),
+    pending_translations: z.array(z.string()).optional().describe('Translation keys being created soon (suppresses TranslationKeyExists for these). Automatically merged with session pending from validate_intent.'),
   },
 
   createHandler(ctx) {
     return async (params) => {
-      const { file_path, content, mode = 'full', pending_files = [], pending_translations = [] } = params;
+      const { file_path, content, mode = 'full' } = params;
+
+      // Merge explicit params with session.pending (written by validate_intent).
+      // Params take precedence when present — explicit wins over implicit — but both
+      // are unioned so the agent does not have to re-pass state on every call.
+      const sessionPending = ctx.session?.pending ?? {};
+      const pending_files = unionUnique(params.pending_files, sessionPending.files);
+      const pending_pages = unionUnique(params.pending_pages, sessionPending.pages);
+      const pending_translations = unionUnique(params.pending_translations, sessionPending.translations);
 
       // Input validation — returns validation-shaped response so agents get uniform {status, errors, warnings, infos}
       if (!file_path || typeof file_path !== 'string') {
@@ -61,21 +97,30 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
       if (typeof content !== 'string') {
         return { status: 'error', errors: [{ check: 'InputError', severity: 'error', message: 'content is required and must be a string' }], warnings: [], infos: [] };
       }
-      // Catch agent mistakes: empty content, or passing a file path instead of file text
+      // Catch agent mistakes: empty content, or passing a file path instead of file text.
+      // Phase 4 tightens this: also rejects content shorter than 5 chars (which
+      // cannot contain any meaningful Liquid) and flags frontmatter-only pages
+      // as an advisory warning rather than a silent pass.
       const contentTrimmed = content.trim();
-      if (
-        contentTrimmed === '' ||
-        content === file_path ||
-        /^(app|modules)\/[^\n]+\.(liquid|graphql|yml)$/.test(contentTrimmed)
-      ) {
+      const looksLikePath = content === file_path ||
+        /^(app|modules)\/[^\n]+\.(liquid|graphql|yml)$/.test(contentTrimmed);
+      const tooShort = contentTrimmed.length > 0 && contentTrimmed.length < 5;
+
+      if (contentTrimmed === '' || looksLikePath || tooShort) {
+        const reason = contentTrimmed === ''
+          ? '(empty string)'
+          : looksLikePath
+            ? `looks like a file path, not file content: "${content.slice(0, 80)}"`
+            : `too short to be valid content (${contentTrimmed.length} chars): "${contentTrimmed}"`;
         return {
           status: 'error',
+          must_fix_before_write: true,
           errors: [{
             check: 'InputError',
             severity: 'error',
             message: `content must be the actual file text, not a path or empty string. ` +
               `Read the file first (e.g. via Read tool), then pass the full text here. ` +
-              `Received: ${contentTrimmed === '' ? '(empty string)' : `"${content.slice(0, 80)}"`}`,
+              `Received: ${reason}`,
           }],
           warnings: [],
           infos: [],
@@ -93,6 +138,7 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
 
       const uri = toUri(absPath);
       const isLiquid = file_path.endsWith('.liquid');
+      const isGraphql = file_path.endsWith('.graphql');
       const isSchema = file_path.endsWith('.yml') && /(?:^|\/)app\/schema\//.test(file_path);
 
       const result = {
@@ -106,6 +152,14 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
         domain_guide: null,
         structural: null,
       };
+
+      // Frontmatter-only page detection — flagged and pushed AFTER the lint
+      // pass (section 2), because section 2 reassigns result.warnings from the
+      // enriched lint output and would blow away anything pushed earlier.
+      // Computed here as a boolean, pushed further down.
+      const isPage = /(?:^|\/)app\/views\/pages\//.test(file_path);
+      const isFrontmatterOnlyPage = isLiquid && isPage &&
+        content.replace(/^---[\s\S]*?---\s*/m, '').trim() === '';
 
       // 1. Parse (Liquid only)
       let ast = null;
@@ -215,6 +269,7 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
           content,
           docParamNames: new Set(result.structural.doc_params ?? []),
           pendingFiles: pending_files,
+          pendingPages: pending_pages,
           pendingTranslations: pending_translations,
           projectDir: ctx.directory,
         });
@@ -223,6 +278,9 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
         runDiagnosticPipeline(result, {
           filePath: file_path,
           content,
+          pendingFiles: pending_files,
+          pendingPages: pending_pages,
+          pendingTranslations: pending_translations,
           projectDir: ctx.directory,
         });
       }
@@ -236,6 +294,16 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
           // schema errors flow into result.errors — status derived at the end
         } catch (e) {
           result.infos.push({ check: 'schema-validator', severity: 'info', message: `Schema validation failed: ${e.message}` });
+        }
+      }
+
+      // 2b2. Schema property cross-check (GraphQL files only)
+      if (isGraphql) {
+        try {
+          const propResult = checkSchemaProperties(content, file_path, ctx.directory);
+          result.warnings.push(...propResult.warnings);
+        } catch (e) {
+          result.infos.push({ check: 'schema-property-checker', severity: 'info', message: `Schema property check failed: ${e.message}` });
         }
       }
 
@@ -320,12 +388,24 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
                 .replace(/\.liquid$/, '');
               try {
                 const projectMap = await getProjectMap(ctx.directory);
-                const callers = projectMap.partials?.[partialName]?.rendered_by ?? [];
-                if (callers.length > 0) {
+                const rawCallers = projectMap.partials?.[partialName]?.rendered_by ?? [];
+                const { pending: pendingCallers, remaining: externalCallers } =
+                  partitionCallersByPending(rawCallers, pending_files);
+                if (externalCallers.length > 0) {
+                  const pendingNote = pendingCallers.length > 0
+                    ? ` (${pendingCallers.length} additional caller(s) are in the current plan and will be updated there: ${pendingCallers.slice(0, 5).join(', ')}${pendingCallers.length > 5 ? ` (+${pendingCallers.length - 5} more)` : ''}.)`
+                    : '';
                   result.warnings.push({
                     check: 'pos-supervisor:AddedParam',
                     severity: 'warning',
-                    message: `Adding @param(s) ${addedParams.map(p => `'${p}'`).join(', ')} will break ${callers.length} caller(s) that don't pass them yet: ${callers.slice(0, 10).join(', ')}${callers.length > 10 ? ` (+${callers.length - 10} more)` : ''}. Each caller must be updated to pass the new parameter(s).`,
+                    message: `Adding @param(s) ${addedParams.map(p => `'${p}'`).join(', ')} will break ${externalCallers.length} caller(s) that don't pass them yet: ${externalCallers.slice(0, 10).join(', ')}${externalCallers.length > 10 ? ` (+${externalCallers.length - 10} more)` : ''}. Each caller must be updated to pass the new parameter(s).${pendingNote}`,
+                  });
+                } else if (pendingCallers.length > 0) {
+                  // All callers are in the pending plan — the agent is already updating them.
+                  result.infos.push({
+                    check: 'pos-supervisor:AddedParamAllPending',
+                    severity: 'info',
+                    message: `Adding @param(s) ${addedParams.map(p => `'${p}'`).join(', ')} affects ${pendingCallers.length} caller(s), all included in the current plan: ${pendingCallers.slice(0, 10).join(', ')}${pendingCallers.length > 10 ? ` (+${pendingCallers.length - 10} more)` : ''}.`,
                   });
                 }
               } catch {
@@ -346,10 +426,11 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
       // 2e. New partial with @params — check if existing callers need updating
       if (isPreWrite && isLiquid && result.structural?.doc_params?.length > 0) {
         try {
-          const callerWarning = await checkNewPartialCallers(
-            file_path, result.structural.doc_params, ctx.directory,
+          const callerDiag = await checkNewPartialCallers(
+            file_path, result.structural.doc_params, ctx.directory, pending_files,
           );
-          if (callerWarning) result.warnings.push(callerWarning);
+          if (callerDiag?.severity === 'warning') result.warnings.push(callerDiag);
+          else if (callerDiag?.severity === 'info') result.infos.push(callerDiag);
         } catch (e) {
           ctx.log?.(`Cross-file caller check failed for ${file_path}: ${e.message}`);
         }
@@ -492,6 +573,18 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
         }
       }
 
+      // 8a. Frontmatter-only page advisory (Phase 4). Pushed here so it survives
+      // section 2's result.warnings reassignment from the lint pass.
+      if (isFrontmatterOnlyPage) {
+        result.warnings.push({
+          check: 'pos-supervisor:FrontmatterOnlyPage',
+          severity: 'warning',
+          message: `Page '${file_path}' has frontmatter but no body — the rendered output will be empty. ` +
+            `If this is intentional (redirect-only page, header-driven response), add a body comment to ` +
+            `acknowledge the empty body; otherwise add the page content.`,
+        });
+      }
+
       // 9. Derive status — single source of truth, computed once after all mutations
       result.status = result.errors.length > 0
         ? 'error'
@@ -499,20 +592,41 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
           ? 'warning'
           : 'ok';
 
-      // 10. Next step guidance
-      if (result.status === 'ok') {
-        result.next_step = 'File validated. Write it to disk now.';
-      } else if (result.status === 'warning') {
-        result.next_step = 'File has warnings — fix them before writing. Re-validate with validate_code (mode: "quick") after fixing.';
+      // 9a. Structured blocking-gate field.
+      //
+      // `status` is advisory — agents sometimes read `status !== 'error'` as
+      // "safe to write" and ship a file with silent cross-file damage (new
+      // @param that callers don't pass, removed render that breaks a page,
+      // etc.). `must_fix_before_write` is a hard boolean the agent cannot
+      // mis-interpret. It is true whenever:
+      //   - there is at least one error, OR
+      //   - there is a warning whose check name is in BLOCKING_WARNINGS.
+      // Everything else (benign warnings, infos) is write-safe.
+      const blockingWarnings = result.warnings.filter(w => BLOCKING_WARNINGS.has(w.check));
+      result.must_fix_before_write = result.errors.length > 0 || blockingWarnings.length > 0;
+
+      // 10. Next step guidance — branches on must_fix_before_write, NOT status.
+      if (!result.must_fix_before_write) {
+        // Either status:'ok' or status:'warning' with no blocking warnings.
+        // The agent may proceed, but we still surface any non-blocking warnings
+        // so they are not silently accepted.
+        result.next_step = result.status === 'ok'
+          ? 'File validated. Write it to disk now.'
+          : 'File has advisory warnings but none block the write. Review the warnings, then write the file to disk.';
       } else {
-        const parts = [
-          `Fix every ERROR above. Apply proposed_fixes where available.`,
-          `Re-validate with validate_code (mode: "quick") after fixing.`,
-          `Do not write the file to disk until it passes validation.`,
-        ];
-        if (result.proposed_fixes.length > 0) {
-          parts.unshift(`${result.proposed_fixes.length} proposed fix(es) available — apply them first.`);
+        const parts = [];
+        if (result.errors.length > 0) {
+          parts.push(`Fix every ERROR above.`);
         }
+        if (blockingWarnings.length > 0) {
+          const names = [...new Set(blockingWarnings.map(w => w.check))].join(', ');
+          parts.push(`Fix every BLOCKING WARNING above (${names}). These break callers or drop functionality — they MUST be resolved before write.`);
+        }
+        if (result.proposed_fixes.length > 0) {
+          parts.push(`${result.proposed_fixes.length} proposed fix(es) available — apply them first.`);
+        }
+        parts.push(`Re-validate with validate_code (mode: "quick") after fixing.`);
+        parts.push(`MUST NOT write the file to disk until validation passes (must_fix_before_write: false).`);
         result.next_step = parts.join('\n');
       }
 
@@ -536,6 +650,23 @@ here to suppress false-positive MissingPartial/TranslationKeyExists errors durin
     };
   },
 };
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Merge an array param with a Set from session state into a deduplicated array.
+ * Explicit params and session state are both valid inputs — this gives the agent
+ * a choice of where to put pending state without ever losing it. Missing or empty
+ * inputs are fine; the result is always an array.
+ */
+function unionUnique(paramArr, sessionSet) {
+  const out = new Set();
+  if (Array.isArray(paramArr)) for (const v of paramArr) if (v) out.add(v);
+  if (sessionSet && typeof sessionSet.forEach === 'function') {
+    sessionSet.forEach(v => { if (v) out.add(v); });
+  }
+  return [...out];
+}
 
 // ── Scaffold-preventable error detection ───────────────────────────────────
 
@@ -622,7 +753,7 @@ function detectScaffoldPreventableErrors(content, errors, warnings) {
  * @param {string} projectDir - Absolute project root
  * @returns {Promise<object|null>} Warning diagnostic or null
  */
-async function checkNewPartialCallers(filePath, docParams, projectDir) {
+async function checkNewPartialCallers(filePath, docParams, projectDir, pendingFiles = []) {
   if (!filePath.includes('app/views/partials/')) return null;
 
   const partialName = filePath
@@ -631,16 +762,35 @@ async function checkNewPartialCallers(filePath, docParams, projectDir) {
     .replace(/\.liquid$/, '');
 
   const projectMap = await getProjectMap(projectDir);
-  const callers = findCallersInProjectMap(projectMap, partialName);
-  if (callers.length === 0) return null;
+  const rawCallers = findCallersInProjectMap(projectMap, partialName);
+  if (rawCallers.length === 0) return null;
+
+  const { pending: pendingCallers, remaining: externalCallers } =
+    partitionCallersByPending(rawCallers, pendingFiles);
+
+  if (externalCallers.length === 0 && pendingCallers.length > 0) {
+    return {
+      check: 'pos-supervisor:NewPartialParamsAllPending',
+      severity: 'info',
+      message:
+        `New partial declares @param(s) ${docParams.map(p => `'${p}'`).join(', ')}; ` +
+        `${pendingCallers.length} existing caller(s) of '${partialName}' are all in the current plan ` +
+        `and will be updated there: ${pendingCallers.slice(0, 10).join(', ')}` +
+        `${pendingCallers.length > 10 ? ` (+${pendingCallers.length - 10} more)` : ''}.`,
+    };
+  }
+
+  const pendingNote = pendingCallers.length > 0
+    ? ` (${pendingCallers.length} additional caller(s) are in the current plan and will be updated there.)`
+    : '';
 
   return {
     check: 'pos-supervisor:NewPartialParams',
     severity: 'warning',
     message: `New partial declares @param(s) ${docParams.map(p => `'${p}'`).join(', ')} ` +
-      `but ${callers.length} existing file(s) already render '${partialName}' without passing them: ` +
-      `${callers.slice(0, 10).join(', ')}${callers.length > 10 ? ` (+${callers.length - 10} more)` : ''}. ` +
-      `Each caller must be updated to pass the required parameter(s).`,
+      `but ${externalCallers.length} existing file(s) already render '${partialName}' without passing them: ` +
+      `${externalCallers.slice(0, 10).join(', ')}${externalCallers.length > 10 ? ` (+${externalCallers.length - 10} more)` : ''}. ` +
+      `Each caller must be updated to pass the required parameter(s).${pendingNote}`,
   };
 }
 

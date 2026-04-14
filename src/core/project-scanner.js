@@ -37,10 +37,20 @@ export async function scanProject(projectDir) {
   for (const file of liquidFiles) {
     switch (file.domain) {
       case 'pages': {
-        const key = file.structural.slug || file.relPath;
+        // Key pages by {slug}:{method} instead of slug alone. Multi-method
+        // routes (GET/POST/PUT/DELETE on `blog_posts`) scaffold to 7 files but
+        // share only 3 or 4 slugs, so the pre-Phase-2.5 key collapse silently
+        // dropped everything but the last-seen file for each slug. See F-006.
+        //
+        // Fallback: when the page has no frontmatter slug (degenerate case),
+        // key by relPath+method so the entry never collides with a real slug.
+        const method = (file.structural.method || 'get').toLowerCase();
+        const slug = file.structural.slug || file.relPath;
+        const key = `${slug}:${method}`;
         pages[key] = {
           path: file.relPath,
-          method: file.structural.method || 'get',
+          slug,
+          method,
           layout: file.structural.layout,
           renders: file.structural.renders,
           function_calls: file.functionCalls,
@@ -63,6 +73,9 @@ export async function scanProject(projectDir) {
           params: [...file.structural.docParams],
           phases: detectPhases(projectDir, file.relPath),
           graphql_calls: file.structural.graphql,
+          // Multi-phase commands invoke their own build/check via {% function %}.
+          // Dep graph needs this edge to resolve create.liquid → create/build.liquid.
+          function_calls: file.functionCalls,
         };
         break;
       }
@@ -70,6 +83,7 @@ export async function scanProject(projectDir) {
         queries[file.relPath] = {
           params: [...file.structural.docParams],
           graphql_calls: file.structural.graphql,
+          function_calls: file.functionCalls,
         };
         break;
       }
@@ -384,8 +398,9 @@ function detectPhases(projectDir, relPath) {
 function buildReverseIndex(partials, liquidFiles) {
   for (const file of liquidFiles) {
     for (const renderName of file.structural.renders) {
-      if (partials[renderName]) {
-        partials[renderName].rendered_by.push(file.relPath);
+      const resolved = resolveRenderName(file.relPath, renderName);
+      if (partials[resolved]) {
+        partials[resolved].rendered_by.push(file.relPath);
       }
     }
     for (const fc of file.functionCalls) {
@@ -395,6 +410,48 @@ function buildReverseIndex(partials, liquidFiles) {
       }
     }
   }
+}
+
+/**
+ * Resolve a {% render %} name to a partial key, honoring relative names.
+ *
+ * platformOS render syntax allows a relative name like `{% render 'form' %}`
+ * inside a nested partial — the name resolves against the caller's directory.
+ * Absolute names (containing `/`) are used verbatim. This matches the actual
+ * runtime resolution the LSP applies.
+ *
+ * Before Phase 2.3 this function did not exist and buildReverseIndex just
+ * looked up `partials[renderName]` with the literal name — relative renders
+ * inside nested partials never matched, so they looked orphaned (roadmap F-016).
+ * Now every lookup goes through this helper.
+ *
+ * @param {string} callerRelPath - the file rendering the partial, e.g.
+ *                                 'app/views/partials/blog_posts/new.liquid'
+ * @param {string} renderName    - the name as written in Liquid, e.g. 'form'
+ * @returns {string} canonical partial key (matches the key used by project-scanner
+ *                   when it stores partials — strip of app/views/partials/ and
+ *                   .liquid extension)
+ */
+export function resolveRenderName(callerRelPath, renderName) {
+  if (!renderName) return renderName;
+  // Absolute paths and module refs pass through unchanged.
+  if (renderName.includes('/')) return renderName;
+  if (renderName.startsWith('modules/')) return renderName;
+
+  // Resolve relative to the caller's directory within app/views/partials/.
+  // For a caller outside views/partials (e.g. a page), there is no meaningful
+  // "current directory" for partial resolution — return verbatim.
+  const partialsPrefix = 'app/views/partials/';
+  if (!callerRelPath.startsWith(partialsPrefix)) return renderName;
+
+  const relUnderPartials = callerRelPath
+    .slice(partialsPrefix.length)
+    .replace(/\.html\.liquid$/, '')
+    .replace(/\.liquid$/, '');
+  const slashIdx = relUnderPartials.lastIndexOf('/');
+  if (slashIdx < 0) return renderName; // caller is at partials root
+  const dir = relUnderPartials.slice(0, slashIdx);
+  return `${dir}/${renderName}`;
 }
 
 function detectResources(schema, graphql, commands, queries, pages) {
@@ -429,9 +486,13 @@ function detectResources(schema, graphql, commands, queries, pages) {
       }
     }
 
-    for (const [slug] of Object.entries(pages)) {
+    // Iterate pages by value — the key now includes the method suffix
+    // ({slug}:{method}) so key-based startsWith checks would misfire.
+    // Use each page's stored slug directly.
+    for (const page of Object.values(pages)) {
+      const slug = page.slug ?? '';
       if (slug === plural || slug.startsWith(`${plural}/`)) {
-        r.pages.push(pages[slug].path);
+        r.pages.push(page.path);
       }
     }
 

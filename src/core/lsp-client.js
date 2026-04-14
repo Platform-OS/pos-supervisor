@@ -234,6 +234,19 @@ export class PlatformOSLSPClient {
     }
   }
 
+  /**
+   * Public wrapper for workspace/didChangeWatchedFiles notifications.
+   *
+   * LSP change types: 1=Created, 2=Changed, 3=Deleted. The pos-cli LSP may or
+   * may not honor this method; sending it is cheap and it is the spec-correct
+   * way to hint at out-of-band file changes from a filesystem watcher.
+   */
+  notifyDidChangeWatched(uri, type = 2) {
+    this.#notify('workspace/didChangeWatchedFiles', {
+      changes: [{ uri, type }],
+    });
+  }
+
   diags(uri) {
     return this.#diagnostics.get(uri) ?? [];
   }

@@ -1,6 +1,68 @@
-# platformOS Synthesized Knowledge Reference
+# platformOS Development Guide
 
-Every rule uses MUST/MUST NOT. No information omitted.
+Every rule uses MUST/MUST NOT. No information omitted. Section 0 is the mandatory
+workflow — read it before touching any file.
+
+## 0. MANDATORY WORKFLOW — Read Before Writing Any Code
+
+You MUST follow this loop for every feature. Each step produces structured output
+the next step consumes — skipping any step produces invalid state that downstream
+tools will reject.
+
+1. **`project_map`** — understand what already exists. MUST be called once per session
+   before any scaffold or write.
+2. **`domain_guide(domain)` for every domain in your plan** — BEFORE drafting files.
+   Skipping this is the #1 cause of broken platformOS code. `domain_guide` contains
+   rules that are NOT in your training data and that differ from Shopify, Rails, and
+   generic Liquid.
+3. **`scaffold(type, name, properties, write: true)`** — generate AND write the
+   authoritative file set from platformOS-native templates. MUST use scaffold whenever
+   a file set matches one of its types (crud, api, command, query, partial, page).
+   Scaffold output is pre-validated — no `validate_intent` or `validate_code` needed
+   on untouched scaffold files. `validate_intent({ scaffold_output })` is OPTIONAL
+   (review only, for a dry-run preview before committing).
+4. **Hand-drafted files** — for files not covered by scaffold, call
+   `validate_intent({ intent })` (REQUIRED) then `validate_code` per file before
+   writing. `validate_intent` writes `pending_files`, `pending_translations`,
+   `pending_pages` into session state that `validate_code` and `analyze_project`
+   automatically merge — you do NOT need to pass them on every call.
+5. **Feedback loop.** When `validate_code` returns `status !== "ok"` or
+   `must_fix_before_write: true`, fix every error and re-validate. MUST NOT write
+   a hand-drafted file to disk until validation passes.
+
+### MUST-CALL domains (by feature type)
+
+- **Auth code** — `domain_guide(domain: "authentication")`
+- **Any form** — `domain_guide(domain: "forms")`
+- **New pages** — `domain_guide(domain: "pages")`
+- **New partials** — `domain_guide(domain: "partials")`
+- **GraphQL ops** — `domain_guide(domain: "graphql")`
+- **Any new domain** — `domain_guide(domain: "<domain>", section: "gotchas")`
+
+### MUST NOT
+
+- Use `{% include %}` for app code — deprecated. Use `{% render %}` or
+  `{% function %}`.
+- Use Shopify objects (`shop`, `cart`, `customer`, `product`, `collection`). These
+  do not exist in platformOS.
+- Write hand-drafted files to disk without calling `validate_code` on the proposed
+  content first. (Scaffold-written files are exempt — they are pre-validated.)
+- Assume module call syntax from memory — call `module_info(name)` to get the
+  authoritative live-scan API surface.
+- Ignore `consult_before_writing` in a scaffold response. Every domain listed there
+  MUST be consulted via `domain_guide` before writing.
+
+### Session-start checklist
+
+Before your first tool call, the following are true:
+
+- [ ] `server_status` called — confirms LSP and indexes are ready, lists
+  `domain_guides` and `session_pending`.
+- [ ] `load_development_guide` called (this document) — re-read if you lose
+  context or are unsure which step comes next.
+- [ ] `project_map` called once for full project baseline.
+
+Proceed only when all three are checked.
 
 ## 1. Technology Stack
 

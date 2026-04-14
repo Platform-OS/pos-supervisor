@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { validateCodeTool } from './tools/validate-code.js';
 import { enrichErrorTool } from './tools/enrich-error.js';
 import { domainGuideTool } from './tools/domain-guide.js';
@@ -10,6 +9,7 @@ import { projectMapTool } from './tools/project-map.js';
 import { scaffoldTool } from './tools/scaffold.js';
 import { moduleInfoTool } from './tools/module-info.js';
 import { validateIntentTool } from './tools/validate-intent.js';
+import { loadDevelopmentGuideTool } from './tools/load-development-guide.js';
 
 /**
  * All available MCP tools with their definitions and handler factories.
@@ -25,20 +25,28 @@ const TOOL_DEFS = [
   scaffoldTool,
   moduleInfoTool,
   validateIntentTool,
+  loadDevelopmentGuideTool,
 ];
 
 /**
  * Convert a Zod shape (ZodRawShape) to JSON Schema for MCP protocol.
  * Returns the full JSON Schema object with type: 'object'.
+ *
+ * Uses Zod v4's native `z.toJSONSchema()` (shipped with zod 4.x). The
+ * external `zod-to-json-schema@3.x` package does NOT handle Zod v4 schemas
+ * and silently returns `{}` — that bug previously erased every tool's
+ * inputSchema from the HTTP `/tools` response, leaving clients blind to
+ * required parameters (e.g. scaffold's `properties` field).
  */
 function zodShapeToJsonSchema(shape) {
   if (!shape || Object.keys(shape).length === 0) {
     return { type: 'object', properties: {} };
   }
-  const schema = zodToJsonSchema(z.object(shape), { target: 'openApi3' });
-  // zodToJsonSchema wraps in { type: 'object', properties: {...}, required: [...] }
-  // Strip $schema and other metadata — keep only what MCP needs
+  const schema = z.toJSONSchema(z.object(shape));
+  // toJSONSchema tags its output with $schema — MCP clients don't need that.
   delete schema.$schema;
+  // additionalProperties:false is valid JSON Schema but breaks some clients
+  // that treat unknown fields as errors when the agent sends extras.
   delete schema.additionalProperties;
   return schema;
 }
@@ -157,17 +165,23 @@ function updateSession(session, toolName, args, result) {
 
   // Track validated plans
   if (toolName === 'validate_intent' && result?.ok === true) {
+    const files = new Set(result.pending_files ?? []);
+    // Scaffold-generated files are valid by construction — pre-mark them as validated.
+    // Only manually-declared intent leaves validatedFiles empty (those need explicit validate_code).
+    const preValidated = args?.scaffold_output ? new Set(files) : new Set();
     session.validatedPlan = {
       planId: result.plan_id,
-      pendingFiles: new Set(result.pending_files ?? []),
-      validatedFiles: new Set(),
+      pendingFiles: files,
+      validatedFiles: preValidated,
+      source: args?.scaffold_output ? 'scaffold' : 'manual',
     };
   }
 
   // Track per-file validation history
   if (toolName === 'validate_code' && args?.file_path) {
-    const fp = args.file_path;
-    const errorCount = result?.errors?.length ?? 0;
+    const fp           = args.file_path;
+    const errorCount   = result?.errors?.length   ?? 0;
+    const warningCount = result?.warnings?.length ?? 0;
     const prev = session.fileHistory.get(fp);
 
     if (prev) {
@@ -177,17 +191,22 @@ function updateSession(session, toolName, args, result) {
       } else {
         prev.consecutiveNonDecreasing = 0;
       }
-      prev.lastErrorCount = errorCount;
+      prev.lastErrorCount   = errorCount;
+      prev.lastWarningCount = warningCount;
     } else {
       session.fileHistory.set(fp, {
         calls: 1,
         lastErrorCount: errorCount,
+        lastWarningCount: warningCount,
         consecutiveNonDecreasing: 0,
       });
     }
 
-    // Mark file as validated in current plan — only if validation passed
-    if (session.validatedPlan && result?.status === 'ok') {
+    // Mark file as validated in current plan.
+    // 'ok' = clean; 'warning' = has warnings agent must review but no errors.
+    // Both mean the agent has validated the file and can act on the result.
+    // 'error' stays pending — the agent must fix errors and re-validate.
+    if (session.validatedPlan && result?.status !== 'error') {
       session.validatedPlan.validatedFiles.add(fp);
     }
   }
