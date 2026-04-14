@@ -12,10 +12,12 @@
  * - Translation key counts
  */
 
+import { z } from 'zod';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { scanModule, listModules } from '../core/module-scanner.js';
+import { ToolError } from '../core/tool-error.js';
 
 const SECTIONS = ['overview', 'api', 'patterns', 'gotchas', 'configuration', 'advanced', 'prerequisites', 'all'];
 
@@ -34,18 +36,8 @@ export const moduleInfoTool = {
   description:
     'Get comprehensive reference for a platformOS module. Combines live disk scanning (version, API surface, schemas, GraphQL ops, parameters) with curated documentation (API reference, usage patterns, gotchas, configuration). Call with just a name for a complete overview, or specify a section for focused docs. Call without a name to list all installed modules.',
   inputSchema: {
-    type: 'object',
-    properties: {
-      name: {
-        type: 'string',
-        description: 'Module name (directory name under modules/, e.g. "core", "user", "payments"). Omit to list all installed modules.',
-      },
-      section: {
-        type: 'string',
-        enum: SECTIONS,
-        description: 'Documentation section: "overview" (default — API surface + README), "api" (function signatures), "patterns" (usage examples), "gotchas" (common mistakes), "configuration" (setup), "advanced" (edge cases), "all" (everything).',
-      },
-    },
+    name: z.string().optional().describe('Module name (directory name under modules/, e.g. "core", "user", "payments"). Omit to list all installed modules.'),
+    section: z.enum(SECTIONS).optional().describe('Documentation section: "overview" (default — API surface + README), "api" (function signatures), "patterns" (usage examples), "gotchas" (common mistakes), "configuration" (setup), "advanced" (edge cases), "all" (everything).'),
   },
 
   createHandler(ctx) {
@@ -58,7 +50,7 @@ export const moduleInfoTool = {
       }
 
       if (!SECTIONS.includes(section)) {
-        return { error: `Invalid section "${section}". Valid: ${SECTIONS.join(', ')}` };
+        throw new ToolError(`Invalid section "${section}". Valid: ${SECTIONS.join(', ')}`);
       }
 
       // Scan live module from disk
@@ -74,7 +66,7 @@ export const moduleInfoTool = {
             reference: refDocs,
           };
         }
-        return { error: scan.error };
+        throw new ToolError(scan.error, { status: 404 });
       }
 
       // Build result based on section
@@ -86,8 +78,38 @@ export const moduleInfoTool = {
         return buildOverview(name, scan, ctx.directory);
       }
 
-      // Specific section: return scan summary + focused reference doc
+      // Specific section: return scan summary + focused reference doc.
+      //
+      // The `api` section gets the live-scan API surface as the primary payload.
+      // Static markdown at data/references/modules/<name>/api.md was the previous
+      // source and rotted relative to the real module (roadmap F-007/F-008).
+      // Scan wins — the markdown is appended only as `additional_notes` when
+      // present, never as the primary content.
       const refDoc = await loadReferenceDoc(name, section);
+
+      if (section === 'api') {
+        return {
+          name,
+          version: scan.version,
+          dependencies: scan.dependencies,
+          section: 'api',
+          // Live scan is the source of truth — every entry includes call_syntax,
+          // required_params, optional_params, and returns when the doc block
+          // provided them.
+          api: {
+            commands:    scan.commands.map(formatApiEntry),
+            queries:     scan.queries.map(formatApiEntry),
+            helpers:     scan.helpers.map(formatApiEntry),
+            validations: scan.validations.map(formatApiEntry),
+            events:      scan.events.map(formatApiEntry),
+            hooks:       scan.hooks.map(formatApiEntry),
+            partials:    (scan.partials ?? []).map(formatApiEntry),
+          },
+          ...(scan.css_classes?.length > 0 ? { css_classes: scan.css_classes } : {}),
+          ...(refDoc ? { additional_notes: refDoc } : {}),
+        };
+      }
+
       return {
         name,
         version: scan.version,
@@ -152,14 +174,20 @@ async function buildOverview(name, scan) {
     // Required setup steps — always surfaced when docs exist so agents don't miss prerequisites
     ...(prerequisites ? { prerequisites } : {}),
 
-    // API surface summary with call paths
+    // API surface summary with call paths.
+    // Every category uses formatApiEntry so call_syntax / required_params /
+    // optional_params / returns flow through uniformly. Previously validations,
+    // events, and hooks stripped these fields — which is why module_info(user, api)
+    // returned stale markdown: the scan knew the signatures, the formatter threw
+    // them away.
     api: {
-      commands: scan.commands.map(formatApiEntry),
-      queries: scan.queries.map(formatApiEntry),
-      helpers: scan.helpers.map(formatApiEntry),
-      validations: scan.validations.map(c => ({ name: c.name, call_path: c.call_path })),
-      events: scan.events.map(c => ({ name: c.name, call_path: c.call_path })),
-      hooks: scan.hooks.map(c => ({ name: c.name, call_path: c.call_path })),
+      commands:    scan.commands.map(formatApiEntry),
+      queries:     scan.queries.map(formatApiEntry),
+      helpers:     scan.helpers.map(formatApiEntry),
+      validations: scan.validations.map(formatApiEntry),
+      events:      scan.events.map(formatApiEntry),
+      hooks:       scan.hooks.map(formatApiEntry),
+      partials:    (scan.partials ?? []).map(formatApiEntry),
     },
 
     // Schema summary
@@ -180,6 +208,10 @@ async function buildOverview(name, scan) {
 
     // Translations
     translations: scan.translations,
+
+    // CSS classes published by this module (scanned from assets/ or css_classes.json).
+    // Only surfaced when non-empty — modules without stylesheets get no field.
+    ...(scan.css_classes?.length > 0 ? { css_classes: scan.css_classes } : {}),
 
     // Curated overview documentation
     reference_overview: readme || null,
@@ -209,14 +241,32 @@ async function buildFullReport(name, scan) {
   };
 }
 
+/**
+ * Render a module API entry for agent consumption.
+ *
+ * Every entry surfaces, when available from live disk scan:
+ *   - call_path: relative module path
+ *   - call_syntax: ready-to-paste Liquid invocation
+ *   - params: [{name, type, description, optional}]
+ *   - required_params / optional_params: name-only arrays for quick checks
+ *   - returns: @return from doc block
+ *   - description, pattern: as before
+ *
+ * The scan layer is authoritative. This function MUST NOT inject any static
+ * content — if a field is missing here, it is missing from the source file.
+ */
 function formatApiEntry(entry) {
   const result = {
     name: entry.name,
     call_path: entry.call_path,
   };
-  if (entry.params?.length > 0) result.params = entry.params;
-  if (entry.description) result.description = entry.description;
-  if (entry.pattern) result.pattern = entry.pattern;
+  if (entry.call_syntax)            result.call_syntax     = entry.call_syntax;
+  if (entry.params?.length > 0)     result.params          = entry.params;
+  if (entry.required_params?.length > 0) result.required_params = entry.required_params;
+  if (entry.optional_params?.length > 0) result.optional_params = entry.optional_params;
+  if (entry.returns)                result.returns         = entry.returns;
+  if (entry.description)            result.description     = entry.description;
+  if (entry.pattern)                result.pattern         = entry.pattern;
   return result;
 }
 

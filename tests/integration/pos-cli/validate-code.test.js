@@ -71,14 +71,13 @@ describePosCli('validate_code — linting', () => {
   });
 
   it('catches MissingPartial as error (blocks valid)', async () => {
-    // Use an existing file path so pre-write downgrade doesn't apply
     const result = await server.callTool('validate_code', {
       file_path: 'app/views/pages/blog_posts/index.html.liquid',
       content: '---\nslug: blog\n---\n{% render \'nonexistent/partial\' %}',
       mode: 'quick',
     });
 
-    // MissingPartial stays as error — blocks validation
+    // MissingPartial is always an error — use pending_files to suppress during multi-file creation
     const missing = result.errors.filter(d => d.check === 'MissingPartial');
     expect(missing.length).toBeGreaterThan(0);
     expect(result.status).toBe('error');
@@ -90,7 +89,7 @@ describePosCli('validate_code — linting', () => {
   it('returns status ok for clean code', async () => {
     const result = await server.callTool('validate_code', {
       file_path: 'app/views/pages/test.html.liquid',
-      content: '---\nslug: clean-page\n---\n<h1>Hello</h1>',
+      content: '---\nslug: clean-page\n---\n{% comment %}clean page{% endcomment %}',
       mode: 'quick',
     });
 
@@ -252,7 +251,6 @@ describePosCli('validate_code — context-aware suppression', () => {
   });
 
   it('MissingPartial stays as error — use pending_files to suppress during scaffolding', async () => {
-    // Use an existing file path so pre-write downgrade doesn't apply
     const result = await server.callTool('validate_code', {
       file_path: 'app/views/pages/blog_posts/index.html.liquid',
       content: '---\nslug: blog\n---\n{% render \'nonexistent/partial\' %}',

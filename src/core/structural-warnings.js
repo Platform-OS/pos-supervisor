@@ -19,8 +19,9 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { walk, NodeTypes, NamedTags } from '@platformos/liquid-html-parser';
-import { isShopifyObject, isShopifyFilter, getShopifyTag } from './knowledge-loader.js';
+import { isShopifyObject, isShopifyFilter, getShopifyObject, getShopifyTag } from './knowledge-loader.js';
 import { getDomainFromPath } from './domain-detector.js';
+import { offsetToLineCol, slugFromPath } from './position-utils.js';
 
 const HTML_NODE_TYPES = new Set([
   NodeTypes.HtmlElement,
@@ -275,12 +276,17 @@ function detectShopifyVariables(ast, content, existingChecks, docParams) {
           seenVars.add(name);
           const pos = offsetToLineCol(content, node.position.start);
 
+          const info = getShopifyObject(name);
+          const suggestion = info?.replacement
+            ? `\`${name}\` is a Shopify object. Use: \`${info.replacement}\`${info.note ? ` — ${info.note}` : ''}`
+            : `\`${name}\` is a Shopify theme object — not in platformOS.${info?.note ? ` ${info.note}` : ' Use GraphQL queries to fetch data and `context.*` for request/user data.'}`;
           const message = `\`${name}\` is a Shopify theme object — it does not exist in platformOS. Use \`{% graphql %}\` to fetch data and \`context.*\` for request/user data.`;
 
           warnings.push({
             check: 'pos-supervisor:ShopifyObject',
             severity: 'error',
             message,
+            suggestion,
             line: pos.line,
             column: pos.character,
           });
@@ -517,24 +523,6 @@ function isRootIndexPage(filePath) {
 }
 
 /**
- * Derive a suggested slug from a file path, e.g.
- *   app/views/pages/blog_posts/show.html.liquid → blog_posts/show
- *   app/views/pages/blog_posts/new.liquid       → blog_posts/new
- *   app/views/pages/index.liquid                → (root — returns empty string)
- */
-function slugFromPath(filePath) {
-  if (!filePath) return 'your-page-url';
-  // Strip everything up to and including app/views/pages/ — works for both
-  // relative paths (app/views/pages/...) and absolute paths (/home/.../app/views/pages/...)
-  const rel = filePath
-    .replace(/^.*app\/views\/pages\//, '')
-    .replace(/\.html\.liquid$/, '')
-    .replace(/\.liquid$/, '');
-  if (rel === 'index') return '';
-  return rel;
-}
-
-/**
  * Validate front matter keys and check for missing slug.
  * Parses the YAML front matter block and checks each key.
  */
@@ -691,12 +679,4 @@ function detectFilterArgMisuse(ast, content) {
   });
 
   return warnings;
-}
-
-function offsetToLineCol(content, offset) {
-  let line = 0, col = 0;
-  for (let i = 0; i < offset && i < content.length; i++) {
-    if (content[i] === '\n') { line++; col = 0; } else { col++; }
-  }
-  return { line, character: col };
 }

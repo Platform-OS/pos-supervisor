@@ -10,9 +10,13 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { load as yamlLoad } from 'js-yaml';
 import { getProjectMap } from '../tools/project-map.js';
 import { scanModule } from './module-scanner.js';
 import { getTriggeredGotchas } from './knowledge-loader.js';
+import { parseLiquidFile, extractAllFromAST } from './liquid-parser.js';
+import { resolveRenderName } from './project-scanner.js';
+import { isOrphanPartial } from './orphan-detector.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -803,12 +807,12 @@ export function validatePolicy(changes, projectMap) {
       });
     }
 
-    // P5: Orphan partial — created but not referenced in plan or project
+    // P5: Orphan partial — created but not referenced in plan or project.
+    //     Uses the shared predicate so we agree with analyze_project and the
+    //     dep-graph dead-code detector.
     if (role === 'partial' && action === 'create') {
       const name = partialPathToName(path);
-      const referencedInPlan = referencedPartials.has(name);
-      const referencedInProject = (projectMap?.partials?.[name]?.rendered_by?.length ?? 0) > 0;
-      if (!referencedInPlan && !referencedInProject) {
+      if (isOrphanPartial(name, projectMap, { planReferencedPartials: referencedPartials })) {
         warnings.push({
           layer: 'policy',
           type: 'orphan_partial',
@@ -868,20 +872,122 @@ export function checkGoalForShopify(goal) {
 }
 
 // ---------------------------------------------------------------------------
+// Scaffold translation key extraction (Track A)
+// ---------------------------------------------------------------------------
+
+/**
+ * Flatten nested YAML object to dot-notation leaf keys.
+ * @param {object} obj
+ * @param {string} prefix
+ * @param {string[]} result
+ */
+function flattenYamlKeys(obj, prefix, result) {
+  for (const [k, v] of Object.entries(obj)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+      flattenYamlKeys(v, key, result);
+    } else {
+      result.push(key);
+    }
+  }
+}
+
+/**
+ * Extract all translation keys from scaffold translation YML files.
+ *
+ * Translation keys in Liquid use dot-notation WITHOUT the locale prefix:
+ *   en.app.product_items.list.add  →  'app.product_items.list.add'
+ *
+ * These keys are returned as pending_translations so validate_code can
+ * suppress TranslationKeyExists false-positives during scaffold validation
+ * (the YML file hasn't been written to disk yet, but will be).
+ *
+ * @param {Array<{domain: string, content: string}>} scaffoldFiles
+ * @returns {string[]}
+ */
+export function extractScaffoldTranslationKeys(scaffoldFiles) {
+  const keys = [];
+  for (const file of scaffoldFiles) {
+    if (file.domain !== 'translations' || !file.content) continue;
+    try {
+      const parsed = yamlLoad(file.content);
+      if (typeof parsed !== 'object' || parsed === null) continue;
+      // Top-level keys are locale codes (e.g. 'en') — strip them
+      for (const localeObj of Object.values(parsed)) {
+        if (typeof localeObj === 'object' && localeObj !== null) {
+          flattenYamlKeys(localeObj, '', keys);
+        }
+      }
+    } catch { /* invalid YAML — skip silently */ }
+  }
+  return keys;
+}
+
+// ---------------------------------------------------------------------------
 // Scaffold normalisation (Track A)
 // ---------------------------------------------------------------------------
 
+/**
+ * Normalise a scaffold result into a Track-A validation input.
+ *
+ * Before Phase 2.4 this function produced changes with empty references{},
+ * so the orphan_partial check (P5) fired on every scaffold-created partial —
+ * intra-plan renders were invisible. Fix: parse every liquid file's content
+ * (scaffold includes it verbatim) and populate references.partials with the
+ * resolved render targets. Sibling renders like {% render 'form' %} inside
+ * blog_posts/new.liquid are resolved to 'blog_posts/form' via the same
+ * resolveRenderName helper the scanner uses, so P5 can cross-reference them.
+ *
+ * GraphQL references are populated on every role, not skipped for partials —
+ * if scaffold ever regresses and emits a {% graphql %} inside a partial, we
+ * WANT P1 (partial_invokes_graphql) to fire. Hiding it here would hide a bug.
+ */
 export function normalizeScaffoldInput(scaffoldOutput) {
   const files = scaffoldOutput.files ?? [];
   const summary = scaffoldOutput.summary ?? 'Scaffold output';
 
   const changes = files.map(file => {
     const role = DOMAIN_TO_ROLE[file.domain] ?? 'lib';
+    const references = {};
+
+    if (file.content && file.path.endsWith('.liquid')) {
+      const ast = parseLiquidFile(file.content);
+      if (ast) {
+        const extracted = extractAllFromAST(ast);
+
+        // Resolve relative render names against the caller's partial directory
+        // so P5's referencedPartials set uses the same keys as the partial map.
+        // Modules refs are dropped — P3 cross-change checks only cover app-local
+        // partials, and module refs trigger their own module_ref_not_installed
+        // path in validateProjectState via a different branch.
+        const partialRefs = [];
+        for (const renderName of extracted.renders) {
+          if (renderName.startsWith('modules/')) continue;
+          partialRefs.push(resolveRenderName(file.path, renderName));
+        }
+        if (partialRefs.length > 0) references.partials = [...new Set(partialRefs)];
+
+        // GraphQL refs — populate on every role including partials. A partial
+        // with a GraphQL ref is a scaffold regression; P1 (partial_invokes_graphql)
+        // catches it explicitly with an educational error.
+        const gqlRefs = extracted.graphql
+          .map(g => (typeof g === 'string' ? g : g.queryName))
+          .filter(name => typeof name === 'string' && !name.startsWith('modules/'));
+        if (gqlRefs.length > 0) references.graphql = [...new Set(gqlRefs)];
+      }
+    }
+
+    // Scaffold marks files it deep-merges into an existing artifact with
+    // `existed: true` (today: the single `app/translations/<locale>.yml`).
+    // Those are conceptually updates, not creates — we surface that so
+    // validateProjectState can treat them like any other in-place edit.
+    const action = file.existed ? 'update' : 'create';
+
     return {
       path: file.path,
       role,
-      action: 'create',
-      references: {},
+      action,
+      references,
     };
   });
 
@@ -960,8 +1066,30 @@ function collectPendingFiles(changes) {
   return files;
 }
 
-function collectPendingTranslations(changes) {
-  const keys = new Set();
+const VALIDATION_ORDER = [
+  /^app\/schema\//,
+  /^app\/graphql\//,
+  /^app\/lib\/commands\//,
+  /^app\/lib\/queries\//,
+  /^app\/translations\//,
+  /^app\/views\/layouts\//,
+  /^app\/views\/pages\//,
+  /^app\/views\/partials\//,
+];
+
+export function suggestValidationOrder(pendingFiles) {
+  if (!pendingFiles || pendingFiles.length === 0) return [];
+  function priority(path) {
+    for (let i = 0; i < VALIDATION_ORDER.length; i++) {
+      if (VALIDATION_ORDER[i].test(path)) return i;
+    }
+    return VALIDATION_ORDER.length;
+  }
+  return [...pendingFiles].sort((a, b) => priority(a) - priority(b) || a.localeCompare(b));
+}
+
+function collectPendingTranslations(changes, extraKeys = []) {
+  const keys = new Set(extraKeys);
   for (const c of changes) {
     for (const key of c.references?.translations ?? []) {
       keys.add(key);
@@ -970,7 +1098,8 @@ function collectPendingTranslations(changes) {
   return [...keys];
 }
 
-function makeSuccess(changes, warnings, goal, projectMap) {
+function makeSuccess(changes, warnings, goal, projectMap, extraTranslationKeys = [], opts = {}) {
+  const { trustedScaffold = false } = opts;
   const pendingFiles = collectPendingFiles(changes);
 
   // Build per-file generation context for create actions
@@ -1015,18 +1144,35 @@ function makeSuccess(changes, warnings, goal, projectMap) {
     generation_context[change.path] = ctx;
   }
 
+  const pendingTranslations = collectPendingTranslations(changes, extraTranslationKeys);
+
+  // Trust boundary: scaffold output is verified here (schema, paths, project state,
+  // policy, cross-refs, parsed render graph). Once it passes Track A, agents MUST
+  // write files verbatim — no per-file validate_code. That's the whole point of a
+  // deterministic generator: calling validate_code on its output re-lints content
+  // the generator already guarantees, producing false-positive loops.
+  //
+  // Manual plans (Track B) get the opposite contract: they declare intent but haven't
+  // produced content yet, so each file MUST pass validate_code before write.
+  const nextStep = trustedScaffold
+    ? `Plan validated (trusted scaffold). Write every file in scaffold output EXACTLY as generated — do NOT call validate_code on scaffold-produced files. ` +
+      `pending_files and pending_translations have been recorded in session; any manual edit you make after writing must pass validate_code with session pending merged.`
+    : (pendingFiles.length > 0
+        ? `Plan validated. Draft each file, then call validate_code on the full content before writing. session.pending (pending_files + pending_translations) is set — validate_code merges it automatically, you do not need to re-pass it.`
+        : 'Plan validated. Proceed with the plan.');
+
   return {
     ok: true,
     plan_id: buildPlanId(changes),
     summary: buildSummary(changes, warnings),
     pending_files: pendingFiles,
-    pending_translations: collectPendingTranslations(changes),
+    suggested_validation_order: suggestValidationOrder(pendingFiles),
+    pending_translations: pendingTranslations,
     generation_context: Object.keys(generation_context).length > 0 ? generation_context : undefined,
     warnings,
     validated_at: new Date().toISOString(),
-    next_step: pendingFiles.length > 0
-      ? `Plan validated. Proceed to write files. MUST pass pending_files (${pendingFiles.length} path(s)) to every validate_code call to suppress false-positive cross-file errors.`
-      : 'Plan validated. Proceed to write files.',
+    write_directly: trustedScaffold,
+    next_step: nextStep,
   };
 }
 
@@ -1058,12 +1204,23 @@ function makeFailure(errors, warnings) {
  * @param {string} projectDir - absolute path to project root
  */
 export async function validateIntent(input, projectDir) {
+  // Agents using the MCP stdio transport receive tool results as JSON-encoded text and may
+  // pass scaffold_output as a string. Normalise it to an object before processing.
+  if (input !== null && typeof input === 'object' && typeof input.scaffold_output === 'string') {
+    try {
+      input = { ...input, scaffold_output: JSON.parse(input.scaffold_output) };
+    } catch {
+      // Invalid JSON — let validation fail naturally with the string value
+    }
+  }
+
   const isScaffold = input !== null &&
     typeof input === 'object' &&
     'scaffold_output' in input;
 
   if (isScaffold) {
     const { changes, goal } = normalizeScaffoldInput(input.scaffold_output);
+    const scaffoldTranslationKeys = extractScaffoldTranslationKeys(input.scaffold_output.files ?? []);
     const projectMap = await getProjectMap(projectDir);
 
     const stateResult  = validateProjectState(changes, projectMap, {
@@ -1077,7 +1234,7 @@ export async function validateIntent(input, projectDir) {
     const warnings = [...stateResult.warnings, ...policyResult.warnings, ...goalWarnings];
 
     if (errors.length > 0) return makeFailure(errors, warnings);
-    return makeSuccess(changes, warnings, goal, projectMap);
+    return makeSuccess(changes, warnings, goal, projectMap, scaffoldTranslationKeys, { trustedScaffold: true });
   }
 
   // Manual track (Track B)

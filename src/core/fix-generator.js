@@ -13,25 +13,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { extractVarName } from './objects-index.js';
 import { isShopifyObject, isShopifyFilter } from './knowledge-loader.js';
-
-// ── Offset ↔ Line:Col conversion ────────────────────────────────────────────
-
-function offsetToLineCol(content, offset) {
-  let line = 0, col = 0;
-  for (let i = 0; i < offset && i < content.length; i++) {
-    if (content[i] === '\n') { line++; col = 0; } else { col++; }
-  }
-  return { line, character: col };
-}
-
-function lineColToOffset(content, line, col) {
-  const lines = content.split('\n');
-  let offset = 0;
-  for (let i = 0; i < line && i < lines.length; i++) {
-    offset += lines[i].length + 1;
-  }
-  return offset + Math.min(col, (lines[line] ?? '').length);
-}
+import { offsetToLineCol, lineColToOffset, slugFromPath } from './position-utils.js';
+import { POSITION_FUZZY_TOLERANCE } from './constants.js';
 
 // ── AST helpers ─────────────────────────────────────────────────────────────
 
@@ -273,7 +256,7 @@ function findVarAt(varIndex, line, col, varName) {
   }
   // Fuzzy: same line, within a few chars (pos-cli positions may differ slightly)
   for (const v of varIndex) {
-    if (v.name === varName && v.start.line === line && Math.abs(v.start.character - col) <= 3) return v;
+    if (v.name === varName && v.start.line === line && Math.abs(v.start.character - col) <= POSITION_FUZZY_TOLERANCE) return v;
   }
   return null;
 }
@@ -283,7 +266,7 @@ function findVarAt(varIndex, line, col, varName) {
  */
 function findFilterAt(filterIndex, line, col, filterName) {
   for (const f of filterIndex) {
-    if (f.name === filterName && f.start.line === line && Math.abs(f.start.character - col) <= 3) return f;
+    if (f.name === filterName && f.start.line === line && Math.abs(f.start.character - col) <= POSITION_FUZZY_TOLERANCE) return f;
   }
   return null;
 }
@@ -999,16 +982,6 @@ function fixMissingDocBlockInsert(diagnostic, content, ast) {
     description: 'Add `{% doc %}` block to document parameters',
     _source: 'MissingDocBlock',
   };
-}
-
-function slugFromPath(filePath) {
-  if (!filePath) return 'your-page-url';
-  const rel = filePath
-    .replace(/^app\/views\/pages\//, '')
-    .replace(/\.html\.liquid$/, '')
-    .replace(/\.liquid$/, '');
-  if (rel === 'index') return '';
-  return rel;
 }
 
 function fixMissingSlugInsert(diagnostic, content, filePath) {

@@ -76,3 +76,10 @@ bun test tests/
 # Start server directly
 npm start
 ```
+
+## Observability
+
+```
+# pos-supervisor dashboard
+http://localhost:13900/dashboard
+```

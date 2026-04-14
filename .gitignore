@@ -1,4 +1,9 @@
 /bkp
+/docs
+/modules
+/prompts
+/.claude
+IDEAS.md
 node_modules/
 *.log
 *.jsonl

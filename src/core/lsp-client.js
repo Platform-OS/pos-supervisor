@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { LSP_DIAGNOSTICS_TIMEOUT_MS, LSP_BARRIER_TIMEOUT_MS, DIAGNOSTICS_SETTLE_MS } from './constants.js';
 
 export class PlatformOSLSPClient {
   #proc       = null;
@@ -114,7 +115,9 @@ export class PlatformOSLSPClient {
       const body = this.#buf.slice(bodyStart, bodyStart + len);
       this.#buf = this.#buf.slice(bodyStart + len);
 
-      try { this.#handle(JSON.parse(body)); } catch {}
+      try { this.#handle(JSON.parse(body)); } catch (e) {
+        this.#onRequest?.({ method: 'lsp:message_parse', durationMs: 0, success: false, error: e.message });
+      }
     }
   }
 
@@ -186,13 +189,13 @@ export class PlatformOSLSPClient {
     this.#send({ jsonrpc: '2.0', method, params });
   }
 
-  async initialize(rootUri) {
+  async initialize(rootUri, { version } = {}) {
     this.#rootUri = rootUri;
     await this.#req(
       'initialize',
       {
         processId: process.pid,
-        clientInfo: { name: 'pos-supervisor', version: '0.2.0' },
+        clientInfo: { name: 'pos-supervisor', version: version ?? '0.0.0' },
         rootUri,
         capabilities: {
           textDocument: {
@@ -229,6 +232,19 @@ export class PlatformOSLSPClient {
         textDocument: { uri, languageId: langId, version: 1, text },
       });
     }
+  }
+
+  /**
+   * Public wrapper for workspace/didChangeWatchedFiles notifications.
+   *
+   * LSP change types: 1=Created, 2=Changed, 3=Deleted. The pos-cli LSP may or
+   * may not honor this method; sending it is cheap and it is the spec-correct
+   * way to hint at out-of-band file changes from a filesystem watcher.
+   */
+  notifyDidChangeWatched(uri, type = 2) {
+    this.#notify('workspace/didChangeWatchedFiles', {
+      changes: [{ uri, type }],
+    });
   }
 
   diags(uri) {
@@ -269,7 +285,7 @@ export class PlatformOSLSPClient {
    * the settle timer resets on each arrival and we resolve with the
    * latest (fresh) set.
    */
-  awaitDiagnostics(uri, text, timeoutMs = 5000) {
+  awaitDiagnostics(uri, text, timeoutMs = LSP_DIAGNOSTICS_TIMEOUT_MS) {
     this.syncDoc(uri, text);
     this.#diagnostics.delete(uri);
 
@@ -278,7 +294,7 @@ export class PlatformOSLSPClient {
     const barrierId = ++this.#reqId;
     const barrierTimer = setTimeout(() => {
       if (this.#pending.delete(barrierId)) barrierPassed = true;
-    }, Math.min(timeoutMs, 3000));
+    }, Math.min(timeoutMs, LSP_BARRIER_TIMEOUT_MS));
 
     this.#pending.set(barrierId, {
       resolve: () => { clearTimeout(barrierTimer); barrierPassed = true; },
@@ -291,7 +307,7 @@ export class PlatformOSLSPClient {
     });
 
     // ── Diagnostic waiter: barrier gate + settle window ──
-    const SETTLE_MS = 500;
+    const SETTLE_MS = DIAGNOSTICS_SETTLE_MS;
     return new Promise((resolve) => {
       let latestDiags = null;
       let settleTimer = null;

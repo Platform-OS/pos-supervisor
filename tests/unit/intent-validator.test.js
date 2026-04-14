@@ -11,12 +11,14 @@ import {
   validatePolicy,
   checkGoalForShopify,
   normalizeScaffoldInput,
+  extractScaffoldTranslationKeys,
   buildPlanId,
   buildPendingResolution,
   coerceIntent,
   partialPathToName,
   graphqlPathToName,
   schemaPathToName,
+  suggestValidationOrder,
 } from '../../src/core/intent-validator.js';
 
 // ---------------------------------------------------------------------------
@@ -930,5 +932,142 @@ describe('output format', () => {
     const { warnings } = validatePolicy(changes, MOCK_PROJECT_MAP);
     expect(errors.some(e => e.type === 'partial_invokes_graphql')).toBe(true);
     expect(warnings.some(w => w.type === 'schema_deletion')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractScaffoldTranslationKeys
+// ---------------------------------------------------------------------------
+
+describe('extractScaffoldTranslationKeys', () => {
+  it('extracts dot-notation keys from a nested translation YML, stripping the locale prefix', () => {
+    const files = [{
+      domain: 'translations',
+      path: 'app/translations/en/products.yml',
+      content: `en:\n  app:\n    products:\n      list:\n        add: Add\n        total: Total\n      attr:\n        title: Title\n`,
+    }];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toContain('app.products.list.add');
+    expect(keys).toContain('app.products.list.total');
+    expect(keys).toContain('app.products.attr.title');
+    // Locale prefix must NOT appear in keys
+    expect(keys.every(k => !k.startsWith('en.'))).toBe(true);
+  });
+
+  it('handles multiple translation files', () => {
+    const files = [
+      {
+        domain: 'translations',
+        path: 'app/translations/en/orders.yml',
+        content: `en:\n  app:\n    orders:\n      create: Create\n`,
+      },
+      {
+        domain: 'translations',
+        path: 'app/translations/en/users.yml',
+        content: `en:\n  app:\n    users:\n      login: Login\n`,
+      },
+    ];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toContain('app.orders.create');
+    expect(keys).toContain('app.users.login');
+  });
+
+  it('ignores non-translation scaffold files', () => {
+    const files = [
+      { domain: 'pages', path: 'app/views/pages/index.html.liquid', content: '---\nslug: index\n---' },
+      { domain: 'graphql', path: 'app/graphql/search.graphql', content: 'query { records { results { id } } }' },
+    ];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toHaveLength(0);
+  });
+
+  it('ignores translation files with no content', () => {
+    const files = [{ domain: 'translations', path: 'app/translations/en/empty.yml', content: '' }];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toHaveLength(0);
+  });
+
+  it('ignores translation files with missing content field', () => {
+    const files = [{ domain: 'translations', path: 'app/translations/en/missing.yml' }];
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(keys).toHaveLength(0);
+  });
+
+  it('skips files with invalid YAML without throwing', () => {
+    const files = [{ domain: 'translations', path: 'app/translations/en/bad.yml', content: 'en:\n  : [unclosed' }];
+    expect(() => extractScaffoldTranslationKeys(files)).not.toThrow();
+    const keys = extractScaffoldTranslationKeys(files);
+    expect(Array.isArray(keys)).toBe(true);
+  });
+
+  it('returns empty array for empty file list', () => {
+    expect(extractScaffoldTranslationKeys([])).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// suggestValidationOrder
+// ---------------------------------------------------------------------------
+
+describe('suggestValidationOrder', () => {
+  it('sorts files by dependency layer: schema → graphql → commands → queries → translations → layouts → pages → partials', () => {
+    const files = [
+      'app/views/partials/blog_posts/list.liquid',
+      'app/views/pages/blog_posts/index.html.liquid',
+      'app/lib/commands/blog_posts/create.liquid',
+      'app/schema/blog_post.yml',
+      'app/graphql/blog_posts/search.graphql',
+      'app/lib/queries/blog_posts/search.liquid',
+      'app/translations/en.yml',
+      'app/views/layouts/application.liquid',
+    ];
+    const ordered = suggestValidationOrder(files);
+    expect(ordered[0]).toBe('app/schema/blog_post.yml');
+    expect(ordered[1]).toBe('app/graphql/blog_posts/search.graphql');
+    expect(ordered[2]).toBe('app/lib/commands/blog_posts/create.liquid');
+    expect(ordered[3]).toBe('app/lib/queries/blog_posts/search.liquid');
+    expect(ordered[4]).toBe('app/translations/en.yml');
+    expect(ordered[5]).toBe('app/views/layouts/application.liquid');
+    expect(ordered[6]).toBe('app/views/pages/blog_posts/index.html.liquid');
+    expect(ordered[7]).toBe('app/views/partials/blog_posts/list.liquid');
+  });
+
+  it('sorts alphabetically within the same layer', () => {
+    const files = [
+      'app/views/partials/z.liquid',
+      'app/views/partials/a.liquid',
+      'app/views/partials/m.liquid',
+    ];
+    const ordered = suggestValidationOrder(files);
+    expect(ordered).toEqual([
+      'app/views/partials/a.liquid',
+      'app/views/partials/m.liquid',
+      'app/views/partials/z.liquid',
+    ]);
+  });
+
+  it('puts unrecognized paths after all known layers', () => {
+    const files = [
+      'app/views/partials/x.liquid',
+      'app/config.yml',
+      'app/schema/note.yml',
+    ];
+    const ordered = suggestValidationOrder(files);
+    expect(ordered[0]).toBe('app/schema/note.yml');
+    expect(ordered[1]).toBe('app/views/partials/x.liquid');
+    expect(ordered[2]).toBe('app/config.yml');
+  });
+
+  it('returns empty array for empty or null input', () => {
+    expect(suggestValidationOrder([])).toEqual([]);
+    expect(suggestValidationOrder(null)).toEqual([]);
+    expect(suggestValidationOrder(undefined)).toEqual([]);
+  });
+
+  it('does not mutate the input array', () => {
+    const files = ['app/views/partials/a.liquid', 'app/schema/b.yml'];
+    const copy = [...files];
+    suggestValidationOrder(files);
+    expect(files).toEqual(copy);
   });
 });

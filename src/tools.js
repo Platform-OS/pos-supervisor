@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { validateCodeTool } from './tools/validate-code.js';
 import { enrichErrorTool } from './tools/enrich-error.js';
 import { domainGuideTool } from './tools/domain-guide.js';
@@ -8,6 +9,7 @@ import { projectMapTool } from './tools/project-map.js';
 import { scaffoldTool } from './tools/scaffold.js';
 import { moduleInfoTool } from './tools/module-info.js';
 import { validateIntentTool } from './tools/validate-intent.js';
+import { loadDevelopmentGuideTool } from './tools/load-development-guide.js';
 
 /**
  * All available MCP tools with their definitions and handler factories.
@@ -23,16 +25,48 @@ const TOOL_DEFS = [
   scaffoldTool,
   moduleInfoTool,
   validateIntentTool,
+  loadDevelopmentGuideTool,
 ];
 
 /**
- * Build tool registry: { name → { definition, handler } }
+ * Convert a Zod shape (ZodRawShape) to JSON Schema for MCP protocol.
+ * Returns the full JSON Schema object with type: 'object'.
+ *
+ * Uses Zod v4's native `z.toJSONSchema()` (shipped with zod 4.x). The
+ * external `zod-to-json-schema@3.x` package does NOT handle Zod v4 schemas
+ * and silently returns `{}` — that bug previously erased every tool's
+ * inputSchema from the HTTP `/tools` response, leaving clients blind to
+ * required parameters (e.g. scaffold's `properties` field).
  */
-export function createToolRegistry(ctx) {
+function zodShapeToJsonSchema(shape) {
+  if (!shape || Object.keys(shape).length === 0) {
+    return { type: 'object', properties: {} };
+  }
+  const schema = z.toJSONSchema(z.object(shape));
+  // toJSONSchema tags its output with $schema — MCP clients don't need that.
+  delete schema.$schema;
+  // additionalProperties:false is valid JSON Schema but breaks some clients
+  // that treat unknown fields as errors when the agent sends extras.
+  delete schema.additionalProperties;
+  return schema;
+}
+
+/**
+ * Build tool registry: Map<name, { definition, handler }>
+ *
+ * The registry is the source of truth for both MCP (stdio) and HTTP dispatch.
+ * - `definition` uses JSON Schema (converted from Zod) for protocol compatibility
+ * - `handler` is wrapped with telemetry and session tracking
+ *
+ * If an McpServer instance is provided, tools are also registered on it
+ * via registerTool() for the official MCP SDK stdio transport.
+ */
+export function createToolRegistry(ctx, mcpServer = null) {
   const registry = new Map();
 
   for (const tool of TOOL_DEFS) {
     const rawHandler = tool.createHandler(ctx);
+
     // Wrap handler with timing telemetry + session tracking
     const timedHandler = async (args) => {
       const start = Date.now();
@@ -43,7 +77,7 @@ export function createToolRegistry(ctx) {
         ctx.emit?.('tool_call', { tool: tool.name, durationMs, success, input: args, output: result });
 
         // Session tracking (non-blocking, best-effort)
-        try { updateSession(ctx.session, tool.name, args, result); } catch { /* must never break tool calls */ }
+        try { updateSession(ctx.session, tool.name, args, result); } catch (e) { ctx.log?.(`Session tracking error: ${e.message}`); }
 
         // Tool avoidance detection: if there's a validated plan with unvalidated files
         // and the agent is calling tools other than validation, add an advisory note
@@ -58,7 +92,7 @@ export function createToolRegistry(ctx) {
               }
             }
           }
-        } catch { /* advisory only */ }
+        } catch (e) { ctx.log?.(`Supervision note error: ${e.message}`); }
 
         return result;
       } catch (e) {
@@ -69,21 +103,43 @@ export function createToolRegistry(ctx) {
       }
     };
 
+    // Convert Zod shape to JSON Schema for registry definition
+    const jsonSchema = zodShapeToJsonSchema(tool.inputSchema);
+
     registry.set(tool.name, {
       definition: {
         name: tool.name,
         description: tool.description,
-        inputSchema: tool.inputSchema,
+        inputSchema: jsonSchema,
       },
       handler: timedHandler,
     });
+
+    // Register on McpServer for SDK-managed stdio transport
+    if (mcpServer) {
+      const inputSchema = tool.inputSchema;
+      mcpServer.tool(
+        tool.name,
+        tool.description,
+        // Pass Zod shape if tool has parameters, omit for parameterless tools
+        ...(Object.keys(inputSchema).length > 0 ? [inputSchema] : []),
+        async (args) => {
+          try {
+            const result = await timedHandler(args);
+            return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+          } catch (e) {
+            return { content: [{ type: 'text', text: JSON.stringify({ error: e.message }) }], isError: true };
+          }
+        }
+      );
+    }
   }
 
   return registry;
 }
 
 /**
- * Get tool list in MCP format.
+ * Get tool list in MCP format (JSON Schema).
  */
 export function getToolList(registry) {
   return [...registry.values()].map(t => t.definition);
@@ -109,17 +165,23 @@ function updateSession(session, toolName, args, result) {
 
   // Track validated plans
   if (toolName === 'validate_intent' && result?.ok === true) {
+    const files = new Set(result.pending_files ?? []);
+    // Scaffold-generated files are valid by construction — pre-mark them as validated.
+    // Only manually-declared intent leaves validatedFiles empty (those need explicit validate_code).
+    const preValidated = args?.scaffold_output ? new Set(files) : new Set();
     session.validatedPlan = {
       planId: result.plan_id,
-      pendingFiles: new Set(result.pending_files ?? []),
-      validatedFiles: new Set(),
+      pendingFiles: files,
+      validatedFiles: preValidated,
+      source: args?.scaffold_output ? 'scaffold' : 'manual',
     };
   }
 
   // Track per-file validation history
   if (toolName === 'validate_code' && args?.file_path) {
-    const fp = args.file_path;
-    const errorCount = result?.errors?.length ?? 0;
+    const fp           = args.file_path;
+    const errorCount   = result?.errors?.length   ?? 0;
+    const warningCount = result?.warnings?.length ?? 0;
     const prev = session.fileHistory.get(fp);
 
     if (prev) {
@@ -129,17 +191,22 @@ function updateSession(session, toolName, args, result) {
       } else {
         prev.consecutiveNonDecreasing = 0;
       }
-      prev.lastErrorCount = errorCount;
+      prev.lastErrorCount   = errorCount;
+      prev.lastWarningCount = warningCount;
     } else {
       session.fileHistory.set(fp, {
         calls: 1,
         lastErrorCount: errorCount,
+        lastWarningCount: warningCount,
         consecutiveNonDecreasing: 0,
       });
     }
 
-    // Mark file as validated in current plan — only if validation passed
-    if (session.validatedPlan && result?.status === 'ok') {
+    // Mark file as validated in current plan.
+    // 'ok' = clean; 'warning' = has warnings agent must review but no errors.
+    // Both mean the agent has validated the file and can act on the result.
+    // 'error' stays pending — the agent must fix errors and re-validate.
+    if (session.validatedPlan && result?.status !== 'error') {
       session.validatedPlan.validatedFiles.add(fp);
     }
   }

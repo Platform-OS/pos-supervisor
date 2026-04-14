@@ -5,7 +5,7 @@ import { join } from 'node:path';
  * Structured JSONL logger for pos-supervisor server events.
  * Same pattern as the OpenCode plugin logger.
  */
-export function createLogger({ directory, version = '0.1.0' }) {
+export function createLogger({ directory, version }) {
   const logPath = join(directory, 'pos-supervisor.jsonl');
   let stream = null;
 

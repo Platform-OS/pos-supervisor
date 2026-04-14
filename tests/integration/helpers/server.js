@@ -44,9 +44,12 @@ export async function startServer(projectDir, { timeoutMs = 20_000 } = {}) {
       }
     });
 
-    // Send initialize on stdin so stdio server doesn't block
+    // MCP protocol: initialize then notify initialized
     proc.stdin.write(
-      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n',
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'test', version: '1.0' } } }) + '\n',
+    );
+    proc.stdin.write(
+      JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n',
     );
 
     setTimeout(() => {

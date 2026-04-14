@@ -1,7 +1,8 @@
 Translation key '{{key}}' not found in translation files.
 
-NOTE: High false-positive rate — keys added in the same session may not be indexed yet.
-  IF you created '{{key}}' just now: ignore this info — it clears on next indexing pass.
+NOTE: If you are creating translation files as part of a multi-file plan, pass pending_translations
+  (from validate_intent) to validate_code — this suppresses TranslationKeyExists for keys that
+  will exist once the plan is written to disk.
 
 STEP 1 — Check the suggestion field for a typo fix.
   HAS suggestion (Did you mean '...'?):

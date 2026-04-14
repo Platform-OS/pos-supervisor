@@ -1,31 +1,16 @@
+import { z } from 'zod';
 import { readFile } from 'node:fs/promises';
 import { toUri, sanitizePath } from '../core/utils.js';
+import { ToolError } from '../core/tool-error.js';
 
 export const lookupTool = {
   name: 'lookup',
   description: 'Direct access to platformOS LSP intelligence at a specific position in a file. Returns hover documentation, completions, definitions, references, or dependencies. Use for precise information about any Liquid tag, filter, object, or GraphQL element.',
   inputSchema: {
-    type: 'object',
-    properties: {
-      file_path: {
-        type: 'string',
-        description: 'File path (relative to project root)',
-      },
-      line: {
-        type: 'number',
-        description: 'Line number (0-based)',
-      },
-      character: {
-        type: 'number',
-        description: 'Column number (0-based)',
-      },
-      mode: {
-        type: 'string',
-        enum: ['hover', 'completions', 'definition', 'references', 'dependencies'],
-        description: 'LSP operation to perform',
-      },
-    },
-    required: ['file_path', 'mode'],
+    file_path: z.string().describe('File path (relative to project root)'),
+    line: z.number().optional().describe('Line number (0-based)'),
+    character: z.number().optional().describe('Column number (0-based)'),
+    mode: z.enum(['hover', 'completions', 'definition', 'references', 'dependencies']).describe('LSP operation to perform'),
   },
 
   createHandler(ctx) {
@@ -34,17 +19,17 @@ export const lookupTool = {
 
       // Input validation
       if (!file_path || typeof file_path !== 'string') {
-        return { error: 'file_path is required' };
+        throw new ToolError('file_path is required');
       }
       if (!mode || typeof mode !== 'string') {
-        return { error: 'mode is required' };
+        throw new ToolError('mode is required');
       }
 
       let absPath;
       try {
         absPath = sanitizePath(ctx.directory, file_path);
       } catch (e) {
-        return { error: e.message };
+        throw new ToolError(e.message);
       }
 
       const uri = toUri(absPath);
@@ -53,7 +38,7 @@ export const lookupTool = {
       await ctx.awaitLsp();
 
       if (!ctx.lsp?.initialized) {
-        return { error: 'LSP not initialized. The language server failed to start.' };
+        throw new ToolError('LSP not initialized. The language server failed to start.', { status: 503 });
       }
 
       // Sync file content to LSP
@@ -61,23 +46,23 @@ export const lookupTool = {
         const content = await readFile(absPath, 'utf8');
         ctx.lsp.syncDoc(uri, content);
       } catch (e) {
-        return { error: `Cannot read file: ${e.message}` };
+        throw new ToolError(`Cannot read file: ${e.message}`, { status: 404 });
       }
 
       try {
         switch (mode) {
           case 'hover': {
-            if (line == null) return { error: 'line is required for hover' };
+            if (line == null) throw new ToolError('line is required for hover');
             const result = await ctx.lsp.hover(uri, line, character ?? 0);
             return formatHover(result);
           }
           case 'completions': {
-            if (line == null) return { error: 'line is required for completions' };
+            if (line == null) throw new ToolError('line is required for completions');
             const result = await ctx.lsp.completions(uri, line, character ?? 0);
             return formatCompletions(result);
           }
           case 'definition': {
-            if (line == null) return { error: 'line is required for definition' };
+            if (line == null) throw new ToolError('line is required for definition');
             const result = await ctx.lsp.definition(uri, line, character ?? 0);
             return formatDefinitions(result);
           }
@@ -90,10 +75,11 @@ export const lookupTool = {
             return formatReferences(result, 'Dependencies');
           }
           default:
-            return { error: `Unknown mode: ${mode}` };
+            throw new ToolError(`Unknown mode: ${mode}`);
         }
       } catch (e) {
-        return { error: `LSP ${mode} failed: ${e.message}` };
+        if (e instanceof ToolError) throw e;
+        throw new ToolError(`LSP ${mode} failed: ${e.message}`);
       }
     };
   },

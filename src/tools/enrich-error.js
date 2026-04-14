@@ -1,44 +1,25 @@
+import { z } from 'zod';
 import { enrichError } from '../core/error-enricher.js';
 import { toUri, sanitizePath } from '../core/utils.js';
+import { ToolError } from '../core/tool-error.js';
 
 export const enrichErrorTool = {
   name: 'enrich_error',
-  description: [
-    'PURPOSE:',
-    'Deep analysis of a specific linter error using LSP intelligence. Returns hint text,',
-    'hover documentation, completion suggestions, closest filter/object matches, and references.',
-    '',
-    'WHEN TO CALL:',
-    'Call this after validate_code (mode: full) returns an error or warning that you cannot',
-    'resolve from the diagnostic message alone. It provides maximum context for a single error.',
-    'Not a substitute for validate_code — use it to go deeper on a specific line after',
-    'validate_code has already identified the problem.',
-  ].join('\n'),
+  description: `PURPOSE:
+Deep analysis of a specific linter error using LSP intelligence. Returns hint text,
+hover documentation, completion suggestions, closest filter/object matches, and references.
+
+WHEN TO CALL:
+Call this after validate_code (mode: full) returns an error or warning that you cannot
+resolve from the diagnostic message alone. It provides maximum context for a single error.
+Not a substitute for validate_code — use it to go deeper on a specific line after
+validate_code has already identified the problem.`,
   inputSchema: {
-    type: 'object',
-    properties: {
-      file_path: {
-        type: 'string',
-        description: 'File path (relative to project root)',
-      },
-      check_name: {
-        type: 'string',
-        description: 'Linter check name (e.g. "UnknownFilter", "UndefinedObject", "GraphQLCheck")',
-      },
-      line: {
-        type: 'number',
-        description: 'Error line number (0-based)',
-      },
-      character: {
-        type: 'number',
-        description: 'Error column (0-based)',
-      },
-      error_message: {
-        type: 'string',
-        description: 'The error message text',
-      },
-    },
-    required: ['file_path', 'check_name', 'error_message'],
+    file_path: z.string().describe('File path (relative to project root)'),
+    check_name: z.string().describe('Linter check name (e.g. "UnknownFilter", "UndefinedObject", "GraphQLCheck")'),
+    line: z.number().optional().describe('Error line number (0-based)'),
+    character: z.number().optional().describe('Error column (0-based)'),
+    error_message: z.string().describe('The error message text'),
   },
 
   createHandler(ctx) {
@@ -47,20 +28,20 @@ export const enrichErrorTool = {
 
       // Input validation
       if (!file_path || typeof file_path !== 'string') {
-        return { error: 'file_path is required' };
+        throw new ToolError('file_path is required');
       }
       if (!check_name || typeof check_name !== 'string') {
-        return { error: 'check_name is required' };
+        throw new ToolError('check_name is required');
       }
       if (!error_message || typeof error_message !== 'string') {
-        return { error: 'error_message is required' };
+        throw new ToolError('error_message is required');
       }
 
       let absPath;
       try {
         absPath = sanitizePath(ctx.directory, file_path);
       } catch (e) {
-        return { error: e.message };
+        throw new ToolError(e.message);
       }
 
       const uri = toUri(absPath);

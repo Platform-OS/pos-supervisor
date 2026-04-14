@@ -137,6 +137,20 @@ export function isShopifyObject(name) {
 }
 
 /**
+ * Return the set of module partial paths KNOWN to be missing {% doc %} blocks.
+ *
+ * Used by diagnostic-pipeline.js:suppressModuleTargetParams to distinguish
+ * "known offender — silently suppressed" from "new offender — surface in the
+ * module_doc_missing advisory so the agent can report upstream." Empty set
+ * when knowledge.json lacks the list entirely.
+ */
+export function getKnownModulesMissingDocs() {
+  const kb = load();
+  const list = kb?.modules_missing_docs?.known ?? [];
+  return new Set(list);
+}
+
+/**
  * Check if a filter name is a Shopify-only filter.
  */
 export function isShopifyFilter(name) {
