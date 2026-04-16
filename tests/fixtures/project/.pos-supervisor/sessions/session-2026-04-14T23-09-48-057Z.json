@@ -1,0 +1,25 @@
+{
+  "id": "session-2026-04-14T23-09-48-057Z",
+  "startedAt": "2026-04-14T23:09:48.004Z",
+  "endedAt": "2026-04-14T23:09:55.576Z",
+  "projectDir": "/home/ecgtheow/Work/pos-ai-tools/pos-mcp/tests/fixtures/project",
+  "version": "0.5.2",
+  "toolCalls": 3,
+  "toolErrors": 0,
+  "filesValidated": 3,
+  "checkFrequency": {
+    "pos-supervisor:ShopifyObject": 4,
+    "pos-supervisor:MissingDocBlock": 3,
+    "OrphanedPartial": 2
+  },
+  "checkEffectiveness": {},
+  "hintEffectiveness": {},
+  "scaffoldRuns": 0,
+  "stats": {
+    "validate_code": {
+      "calls": 3,
+      "errors": 0,
+      "totalMs": 7482
+    }
+  }
+}

@@ -111,6 +111,7 @@ export async function scanProject(projectDir) {
     queries,
     pages,
     partials,
+    layouts,
     translations,
     assets,
     summary: {

@@ -1,0 +1,15 @@
+{
+  "id": "session-2026-04-14T23-10-34-024Z",
+  "startedAt": "2026-04-14T23:10:33.969Z",
+  "endedAt": "2026-04-14T23:10:34.247Z",
+  "projectDir": "/home/ecgtheow/Work/pos-ai-tools/pos-mcp",
+  "version": "0.5.2",
+  "toolCalls": 0,
+  "toolErrors": 0,
+  "filesValidated": 0,
+  "checkFrequency": {},
+  "checkEffectiveness": {},
+  "hintEffectiveness": {},
+  "scaffoldRuns": 0,
+  "stats": {}
+}

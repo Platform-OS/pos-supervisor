@@ -37,6 +37,7 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import yaml from 'js-yaml';
 import { getKnownModulesMissingDocs } from './knowledge-loader.js';
 import { buildAssetIndex, resolveAssetPath } from './asset-index.js';
 import { buildTranslationIndex } from './translation-index.js';
@@ -66,80 +67,97 @@ export function runDiagnosticPipeline(result, opts) {
     projectDir,
   } = opts;
 
+  // Pipeline trace (D2 — pipeline step inspector). Each step records what changed.
+  const trace = [];
+  function traceStep(name, fn) {
+    const eBefore = result.errors.length;
+    const wBefore = result.warnings.length;
+    fn();
+    const eRemoved = eBefore - result.errors.length;
+    const wRemoved = wBefore - result.warnings.length;
+    const eAdded = result.errors.length - (eBefore - eRemoved);
+    trace.push({
+      step: name,
+      errorsRemoved: eRemoved,
+      warningsRemoved: wRemoved,
+      errorsAfter: result.errors.length,
+      warningsAfter: result.warnings.length,
+    });
+  }
+
   // Accumulate suppression summaries into one info diagnostic — the agent sees a single line.
   const suppressionNotes = [];
 
+  // 0. Apply user-defined suppressions from .pos-supervisor-ignore.yml (A3)
+  if (projectDir) {
+    traceStep('userSuppressions', () => applyUserSuppressions(result, filePath, projectDir));
+  }
+
   // 1. Suppress UndefinedObject for declared @param names
   if (docParamNames.size > 0) {
-    suppressDocParams(result, docParamNames);
+    traceStep('suppressDocParams', () => suppressDocParams(result, docParamNames));
   }
 
   // 2. Suppress UnusedDocParam when param is used as named argument
   if (docParamNames.size > 0) {
-    suppressUnusedDocParams(result, docParamNames, content);
+    traceStep('suppressUnusedDocParams', () => suppressUnusedDocParams(result, docParamNames, content));
   }
 
   // 3. Elevate Shopify contamination from warning to error
-  elevateShopify(result);
+  traceStep('elevateShopify', () => elevateShopify(result));
 
   // 4. Deduplicate MissingRenderPartialArguments + MetadataParamsCheck
-  deduplicateArgChecks(result);
+  traceStep('deduplicateArgChecks', () => deduplicateArgChecks(result));
 
   // 5. Suppress MetadataParamsCheck when the called target has no {% doc %} block.
-  //    The LSP infers required params from usage patterns when no contract is declared,
-  //    producing false positives for every optional param. Module partials (modules/*)
-  //    are always treated as undocumented (they are excluded from lint by config AND
-  //    overwhelmingly lack doc blocks in practice). App partials/commands/queries are
-  //    confirmed by reading the target file from disk — if it has no {% doc %}, we
-  //    suppress and emit an advisory info pointing at the root fix (add {% doc %}).
-  suppressUndocumentedTargetParams(result, content, projectDir);
+  traceStep('suppressUndocumentedTargetParams', () => suppressUndocumentedTargetParams(result, content, projectDir));
 
   // 6. Suppress required-param diagnostics whose target partial defaults the param.
-  //    The target's {% doc %} declared it required, but its body does `| default:`,
-  //    so callers that omit the param still receive a valid value. This covers the
-  //    common pattern where authors forgot to bracket the @param name.
-  suppressRequiredParamsWithDefault(result, content, projectDir);
+  traceStep('suppressRequiredParamsWithDefault', () => suppressRequiredParamsWithDefault(result, content, projectDir));
 
   // 7. Suppress DeprecatedTag for module helper includes
-  suppressModuleHelpers(result, content);
+  traceStep('suppressModuleHelpers', () => suppressModuleHelpers(result, content));
 
-  // 8. Suppress OrphanedPartial for commands/queries and for partials in
-  //    multi-file creation plans (callers may be pending and not on disk yet).
-  suppressOrphanedPartial(result, filePath, pendingFiles, pendingPages);
+  // 8. Suppress OrphanedPartial for commands/queries and pending plans
+  traceStep('suppressOrphanedPartial', () => suppressOrphanedPartial(result, filePath, pendingFiles, pendingPages));
 
-  // 8. Suppress MissingPartial for pending files
+  // 9. Suppress MissingPartial for pending files
   if (pendingFiles.length > 0) {
-    const n = suppressByPending(result, {
-      check: 'MissingPartial',
-      pendingSet: buildPendingPartialNames(pendingFiles),
-      extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+    traceStep('suppressPendingPartials', () => {
+      const n = suppressByPending(result, {
+        check: 'MissingPartial',
+        pendingSet: buildPendingPartialNames(pendingFiles),
+        extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+      });
+      if (n > 0) suppressionNotes.push(`${n} MissingPartial(s) for pending files`);
     });
-    if (n > 0) suppressionNotes.push(`${n} MissingPartial(s) for pending files`);
   }
 
-  // 9. Suppress MissingPage for pending pages
+  // 10. Suppress MissingPage for pending pages
   if (pendingPages.length > 0) {
-    const n = suppressByPending(result, {
-      check: 'MissingPage',
-      pendingSet: buildPendingPageKeys(pendingPages),
-      extractKey: (d) => {
-        // MissingPage messages look like: Page 'blog_posts/show' not found
-        // or: Missing page at slug 'blog_posts'
-        const m = d.message?.match(/['"]([^'"]+)['"]/);
-        return m ? m[1] : null;
-      },
+    traceStep('suppressPendingPages', () => {
+      const n = suppressByPending(result, {
+        check: 'MissingPage',
+        pendingSet: buildPendingPageKeys(pendingPages),
+        extractKey: (d) => {
+          const m = d.message?.match(/['"]([^'"]+)['"]/);
+          return m ? m[1] : null;
+        },
+      });
+      if (n > 0) suppressionNotes.push(`${n} MissingPage(s) for pending pages`);
     });
-    if (n > 0) suppressionNotes.push(`${n} MissingPage(s) for pending pages`);
   }
 
-  // 10. Suppress TranslationKeyExists for pending translations
+  // 11. Suppress TranslationKeyExists for pending translations
   if (pendingTranslations.length > 0) {
-    const n = suppressByPending(result, {
-      check: 'TranslationKeyExists',
-      pendingSet: new Set(pendingTranslations),
-      extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+    traceStep('suppressPendingTranslations', () => {
+      const n = suppressByPending(result, {
+        check: 'TranslationKeyExists',
+        pendingSet: new Set(pendingTranslations),
+        extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+      });
+      if (n > 0) suppressionNotes.push(`${n} TranslationKeyExists for pending translations`);
     });
-    if (n > 0) suppressionNotes.push(`${n} TranslationKeyExists for pending translations`);
   }
 
   if (suppressionNotes.length > 0) {
@@ -150,43 +168,68 @@ export function runDiagnosticPipeline(result, opts) {
     });
   }
 
-  // 11. Verify MissingAsset against filesystem
+  // 12. Verify MissingAsset against filesystem
   if (projectDir) {
-    verifyMissingAssets(result, projectDir);
+    traceStep('verifyMissingAssets', () => verifyMissingAssets(result, projectDir));
   }
 
-  // 12. Verify TranslationKeyExists against filesystem. The LSP's translation
-  //     cache lags behind disk just like its asset cache — after the agent
-  //     writes a key to app/translations/<locale>.yml the LSP keeps reporting
-  //     "key not found" until it re-indexes. Cross-check against the real
-  //     YAML files so the agent does not need to pass `pending_translations`
-  //     for keys that already exist on disk.
+  // 13. Verify TranslationKeyExists against filesystem
   if (projectDir) {
-    verifyTranslationKeysOnDisk(result, projectDir);
+    traceStep('verifyTranslationKeysOnDisk', () => verifyTranslationKeysOnDisk(result, projectDir));
   }
 
-  // 13. Verify MissingPage against filesystem. validate_code analyses one
-  //     file at a time, so any link in a partial pointing to a route defined
-  //     in OTHER pages fires MissingPage. Cross-check against the real page
-  //     files (slug from frontmatter or path-derived) so a header partial
-  //     linking to /notes does not flag the route as missing when
-  //     app/views/pages/notes/index.html.liquid clearly exists.
+  // 14. Verify MissingPage against filesystem
   if (projectDir) {
-    verifyPageRoutesOnDisk(result, projectDir);
+    traceStep('verifyPageRoutesOnDisk', () => verifyPageRoutesOnDisk(result, projectDir));
   }
 
-  // 14. Verify OrphanedPartial against filesystem. validate_code analyses
-  //     one file at a time, so the checker has no cross-file render graph.
-  //     After scaffold(write:true) writes all files and clears pending state,
-  //     the checker still reports OrphanedPartial because its index hasn't
-  //     re-indexed the new pages yet. Cross-check by scanning all .liquid
-  //     files on disk for a render/function reference to this partial.
+  // 15. Verify OrphanedPartial against filesystem
   if (projectDir) {
-    verifyOrphanedPartialOnDisk(result, filePath, projectDir);
+    traceStep('verifyOrphanedPartialOnDisk', () => verifyOrphanedPartialOnDisk(result, filePath, projectDir));
   }
+
+  // Attach pipeline trace for dashboard inspector (D2)
+  result._pipelineTrace = trace;
 }
 
 // ── Individual filters ──────────────────────────────────────────────────────
+
+function applyUserSuppressions(result, filePath, projectDir) {
+  const suppressFile = join(projectDir, '.pos-supervisor-ignore.yml');
+  if (!existsSync(suppressFile)) return;
+  let rules;
+  try {
+    const parsed = yaml.load(readFileSync(suppressFile, 'utf-8'));
+    rules = parsed?.suppressions;
+  } catch { return; }
+  if (!Array.isArray(rules) || rules.length === 0) return;
+
+  const matchRule = (d) => rules.some(r => {
+    if (r.check !== d.check) return false;
+    if (r.file_pattern) {
+      if (r.file_pattern.includes('*')) {
+        const re = new RegExp('^' + r.file_pattern.replace(/\*/g, '.*') + '$');
+        if (!re.test(filePath)) return false;
+      } else if (!filePath.includes(r.file_pattern)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const errBefore = result.errors.length;
+  const warnBefore = result.warnings.length;
+  result.errors = result.errors.filter(d => !matchRule(d));
+  result.warnings = result.warnings.filter(d => !matchRule(d));
+  const suppressed = (errBefore - result.errors.length) + (warnBefore - result.warnings.length);
+  if (suppressed > 0) {
+    result.infos.push({
+      check: 'pos-supervisor:UserSuppressed',
+      severity: 'info',
+      message: `Suppressed ${suppressed} diagnostic(s) via .pos-supervisor-ignore.yml`,
+    });
+  }
+}
 
 function suppressDocParams(result, docParamNames) {
   const match = (diag) => {

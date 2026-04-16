@@ -1,0 +1,49 @@
+{
+  "id": "session-2026-04-15T10-33-15-107Z",
+  "startedAt": "2026-04-15T10:33:15.058Z",
+  "endedAt": "2026-04-15T10:33:22.556Z",
+  "projectDir": "/home/ecgtheow/Work/pos-ai-tools/pos-mcp/tests/fixtures/project",
+  "version": "0.5.2",
+  "toolCalls": 14,
+  "toolErrors": 0,
+  "filesValidated": 3,
+  "checkFrequency": {
+    "MissingRenderPartialArguments": 2,
+    "pos-supervisor:HtmlInPage": 1
+  },
+  "checkEffectiveness": {},
+  "hintEffectiveness": {},
+  "scaffoldRuns": 2,
+  "stats": {
+    "project_map": {
+      "calls": 4,
+      "errors": 0,
+      "totalMs": 332
+    },
+    "validate_code": {
+      "calls": 3,
+      "errors": 0,
+      "totalMs": 7052
+    },
+    "scaffold": {
+      "calls": 2,
+      "errors": 0,
+      "totalMs": 6
+    },
+    "validate_intent": {
+      "calls": 2,
+      "errors": 0,
+      "totalMs": 3
+    },
+    "domain_guide": {
+      "calls": 1,
+      "errors": 0,
+      "totalMs": 0
+    },
+    "module_info": {
+      "calls": 2,
+      "errors": 0,
+      "totalMs": 4
+    }
+  }
+}

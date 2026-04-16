@@ -9,3 +9,4 @@ node_modules/
 *.jsonl
 .mcp.json
 CLAUDE.md
+./pos-supervisor

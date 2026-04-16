@@ -1,0 +1,21 @@
+{
+  "id": "session-2026-04-14T23-02-47-719Z",
+  "startedAt": "2026-04-14T23:02:47.681Z",
+  "endedAt": "2026-04-14T23:02:47.782Z",
+  "projectDir": "/home/ecgtheow/Work/pos-ai-tools/pos-mcp/tests/fixtures/project",
+  "version": "0.5.2",
+  "toolCalls": 4,
+  "toolErrors": 0,
+  "filesValidated": 0,
+  "checkFrequency": {},
+  "checkEffectiveness": {},
+  "hintEffectiveness": {},
+  "scaffoldRuns": 4,
+  "stats": {
+    "scaffold": {
+      "calls": 4,
+      "errors": 0,
+      "totalMs": 12
+    }
+  }
+}

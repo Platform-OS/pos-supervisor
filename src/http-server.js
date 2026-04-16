@@ -1,18 +1,20 @@
 import { createServer } from 'node:http';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { join, resolve, relative, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { getToolList, dispatchTool } from './tools.js';
 import { ToolError } from './core/tool-error.js';
 import { HTTP_MAX_BODY } from './core/constants.js';
 import { buildDashboardHtml } from './dashboard.js';
+import { getProjectMap } from './tools/project-map.js';
+import { buildDependencyGraph } from './core/dependency-graph.js';
 
 /**
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
  * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir }) {
+export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary }) {
   if (!port) return null;
 
   const dashboardHtml = buildDashboardHtml();
@@ -70,6 +72,22 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       return handleGetEnvs(projectDir, res);
     }
 
+    if (method === 'GET' && url.pathname === '/api/suppressions') {
+      return handleGetSuppressions(projectDir, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/sessions') {
+      return handleGetSessions(sessionsDir, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/file') {
+      return handleGetFile(projectDir, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/dependency-tree') {
+      return handleGetDependencyTree(projectDir, getStatus, res);
+    }
+
     // ── POST routes (need body parsing) ─────────────────────────────────
     if (method === 'POST') {
       let body;
@@ -93,6 +111,15 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
 
       if (url.pathname === '/api/pos-cli/deploy') {
         return handlePosCliCommand(posCliPath, projectDir, body, 'deploy', log, res);
+      }
+
+      if (url.pathname === '/api/suppressions') {
+        return handlePostSuppression(projectDir, body, log, res);
+      }
+
+      if (url.pathname === '/api/sessions/save') {
+        if (saveSessionSummary) { saveSessionSummary(); }
+        return sendJson(res, 200, { ok: true });
       }
     }
 
@@ -264,6 +291,157 @@ function handleSse(subscribeToEvents, req, res) {
     clearInterval(ping);
     unsubscribe();
   });
+}
+
+// ── Suppression file (A3 — false positive manager) ───────────────────────
+
+const SUPPRESS_FILE = '.pos-supervisor-ignore.yml';
+
+function handleGetSuppressions(projectDir, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  const filePath = join(projectDir, SUPPRESS_FILE);
+  if (!existsSync(filePath)) return sendJson(res, 200, { suppressions: [] });
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    const parsed = yaml.load(content);
+    sendJson(res, 200, { suppressions: parsed?.suppressions || [] });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handlePostSuppression(projectDir, body, log, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  const { check, file_pattern, reason, action } = body;
+
+  if (!check || typeof check !== 'string') {
+    return sendJson(res, 400, { error: 'Missing or invalid "check" field' });
+  }
+
+  const filePath = join(projectDir, SUPPRESS_FILE);
+  let existing = { suppressions: [] };
+  if (existsSync(filePath)) {
+    try {
+      existing = yaml.load(readFileSync(filePath, 'utf-8')) || { suppressions: [] };
+    } catch { existing = { suppressions: [] }; }
+  }
+  if (!existing.suppressions) existing.suppressions = [];
+
+  if (action === 'remove') {
+    existing.suppressions = existing.suppressions.filter(s =>
+      !(s.check === check && (s.file_pattern || '') === (file_pattern || ''))
+    );
+  } else {
+    const dup = existing.suppressions.find(s =>
+      s.check === check && (s.file_pattern || '') === (file_pattern || '')
+    );
+    if (!dup) {
+      const entry = { check };
+      if (file_pattern) entry.file_pattern = file_pattern;
+      if (reason) entry.reason = reason;
+      entry.added_at = new Date().toISOString();
+      existing.suppressions.push(entry);
+    }
+  }
+
+  try {
+    writeFileSync(filePath, yaml.dump(existing, { lineWidth: 120 }));
+    log?.(`Suppression ${action === 'remove' ? 'removed' : 'added'}: ${check}${file_pattern ? ' (' + file_pattern + ')' : ''}`);
+    sendJson(res, 200, { ok: true, suppressions: existing.suppressions });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Session history (D3 — comparative session view) ──────────────────────
+
+function handleGetSessions(sessionsDir, res) {
+  if (!sessionsDir) return sendJson(res, 200, { sessions: [] });
+  if (!existsSync(sessionsDir)) return sendJson(res, 200, { sessions: [] });
+  try {
+    const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json')).sort().reverse();
+    const sessions = files.slice(0, 50).map(f => {
+      try { return JSON.parse(readFileSync(join(sessionsDir, f), 'utf-8')); }
+      catch { return null; }
+    }).filter(Boolean);
+    sendJson(res, 200, { sessions });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Project file reader (D1 — live diagnostic console) ──────────────────
+
+const FILE_READ_MAX_BYTES = 512 * 1024;
+const FILE_READ_EXTS = new Set(['.liquid', '.graphql', '.yml', '.yaml', '.md', '.html', '.css', '.js', '.json']);
+
+function handleGetFile(projectDir, url, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  const rel = url.searchParams.get('path');
+  if (!rel || typeof rel !== 'string') return sendJson(res, 400, { error: 'Missing path parameter' });
+  if (isAbsolute(rel)) return sendJson(res, 400, { error: 'Path must be relative to project root' });
+
+  const projectRoot = resolve(projectDir);
+  const target = resolve(projectRoot, rel);
+  const relCheck = relative(projectRoot, target);
+  if (relCheck.startsWith('..') || isAbsolute(relCheck)) {
+    return sendJson(res, 403, { error: 'Path escapes project root' });
+  }
+
+  const dotIdx = target.lastIndexOf('.');
+  const ext = dotIdx >= 0 ? target.slice(dotIdx).toLowerCase() : '';
+  if (!FILE_READ_EXTS.has(ext)) {
+    return sendJson(res, 415, { error: 'File extension not allowed for preview: ' + ext });
+  }
+
+  if (!existsSync(target)) return sendJson(res, 404, { error: 'File not found' });
+
+  try {
+    const st = statSync(target);
+    if (!st.isFile()) return sendJson(res, 400, { error: 'Not a regular file' });
+    if (st.size > FILE_READ_MAX_BYTES) {
+      return sendJson(res, 413, { error: 'File too large (max 512 KB)' });
+    }
+    const content = readFileSync(target, 'utf-8');
+    sendJson(res, 200, { path: rel, ext, content });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Dependency impact tree ───────────────────────────────────────────────
+
+async function handleGetDependencyTree(projectDir, getStatus, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  try {
+    const projectMap = await getProjectMap(projectDir);
+    const graph = buildDependencyGraph(projectMap);
+
+    const fileHistory = getStatus ? (getStatus()?.fileHistory || []) : [];
+    const stateByPath = Object.create(null);
+    for (const f of fileHistory) {
+      const errors = f.lastErrorCount || 0;
+      const warnings = f.lastWarningCount || 0;
+      const state = errors > 0 ? 'dirty'
+                  : warnings > 0 ? 'warned'
+                  : (f.calls || 0) > 1 ? 'fixed'
+                  : 'clean';
+      stateByPath[f.path] = { state, calls: f.calls || 0, errors, warnings, streak: f.consecutiveNonDecreasing || 0 };
+    }
+
+    const nodes = {};
+    for (const [path, edges] of Object.entries(graph)) {
+      nodes[path] = {
+        depends_on: edges.depends_on,
+        referenced_by: edges.referenced_by,
+        validation: stateByPath[path] || null,
+      };
+    }
+
+    sendJson(res, 200, { nodes, total: Object.keys(nodes).length, generated_at: new Date().toISOString() });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

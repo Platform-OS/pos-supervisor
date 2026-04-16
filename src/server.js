@@ -1,5 +1,5 @@
 import { realpath } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -72,6 +72,12 @@ export async function createServer({ projectDir, httpPort = 0 }) {
         if (input?.file_path) m.file_path = input.file_path;
         if (Array.isArray(output?.errors))   m.error_count   = output.errors.length;
         if (Array.isArray(output?.warnings)) m.warning_count = output.warnings.length;
+        { const checks = [];
+          for (const d of [...(output?.errors ?? []), ...(output?.warnings ?? [])]) {
+            if (d.check && !checks.includes(d.check)) checks.push(d.check);
+          }
+          if (checks.length) m.checks = checks;
+        }
         break;
       case 'validate_intent':
         if (Array.isArray(output?.pending_files)) m.file_count = output.pending_files.length;
@@ -112,6 +118,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     broadcastSse({ event, ts: new Date().toISOString(), ...data });
   }
 
+  const serverStartMs = Date.now();
   rawEmit('server_start', { projectDir, httpPort });
   log(`Starting pos-supervisor v${VERSION} for ${projectDir}`);
 
@@ -347,7 +354,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   // validate_code/analyze_project read it and merge with explicit params.
   // scaffold(write:true) clears it after the files land on disk.
   const session = {
-    fileHistory: new Map(),    // filePath → { calls, lastErrorCount, consecutiveNonDecreasing }
+    fileHistory: new Map(),    // filePath → { calls, lastErrorCount, consecutiveNonDecreasing, lastChecks }
     validatedPlan: null,       // { planId, pendingFiles: Set, validatedFiles: Set } (legacy — see pending)
     pending: {
       files:         new Set(),
@@ -357,6 +364,11 @@ export async function createServer({ projectDir, httpPort = 0 }) {
       validatedAt:   null,
       writeDirectly: false,      // true after successful scaffold_output validation (trusted track)
     },
+    checkEffectiveness: {},    // check → { fixed, stuck } — transitions between consecutive validate_code calls
+    scaffoldRuns: [],          // [{ ts, model, type, files: string[] }]
+    enrichHistory: [],         // [{ file, check, ts }] — pending enrich_error calls awaiting validate_code
+    hintEffectiveness: {},     // check → { hinted, fixedAfterHint } — hint-then-fix correlation
+    pipelineTraces: new Map(), // filePath → trace[] — most recent pipeline trace per file
   };
 
   const ctx = {
@@ -400,6 +412,41 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     setTimeout(() => shutdown('stdin-closed'), 200);
   });
 
+  // ── Session persistence (D3 — comparative session view) ───────────────────
+  const sessionsDir = join(projectDir, '.pos-supervisor', 'sessions');
+  const sessionId = `session-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+
+  function saveSessionSummary() {
+    try {
+      mkdirSync(sessionsDir, { recursive: true });
+      const stats = sessionStats.byTool;
+      let totalCalls = 0, totalErrors = 0;
+      for (const s of Object.values(stats)) {
+        totalCalls += s.calls || 0;
+        totalErrors += s.errors || 0;
+      }
+      const summary = {
+        id: sessionId,
+        startedAt: new Date(serverStartMs).toISOString(),
+        endedAt: new Date().toISOString(),
+        projectDir,
+        version: VERSION,
+        toolCalls: totalCalls,
+        toolErrors: totalErrors,
+        filesValidated: session.fileHistory.size,
+        checkFrequency: sessionStats.checkFrequency,
+        checkEffectiveness: session.checkEffectiveness,
+        hintEffectiveness: session.hintEffectiveness,
+        scaffoldRuns: session.scaffoldRuns.length,
+        stats,
+      };
+      writeFileSync(join(sessionsDir, `${sessionId}.json`), JSON.stringify(summary, null, 2));
+      log(`Session summary saved: ${sessionId}`);
+    } catch (e) {
+      log(`Session save failed: ${e.message}`);
+    }
+  }
+
   // ── Start HTTP transport (optional, for REST consumers and tests) ─────────
   if (httpPort > 0) {
     const startMs = Date.now();
@@ -426,17 +473,25 @@ export async function createServer({ projectDir, httpPort = 0 }) {
           calls: h.calls,
           lastErrorCount: h.lastErrorCount,
           lastWarningCount: h.lastWarningCount ?? 0,
+          lastChecks: h.lastChecks || [],
+          prevChecks: h.prevChecks || [],
+          consecutiveNonDecreasing: h.consecutiveNonDecreasing ?? 0,
         })),
+        checkEffectiveness: session.checkEffectiveness,
+        scaffoldRuns: session.scaffoldRuns,
+        hintEffectiveness: session.hintEffectiveness,
+        pipelineTraces: [...session.pipelineTraces.entries()].map(([path, trace]) => ({ path, trace })),
       };
     }
     const dataRoot = join(__dirname, 'data');
-    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir });
+    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────
   function shutdown(reason) {
     emit('server_stop', { reason });
     log(`Shutting down (${reason})...`);
+    try { saveSessionSummary(); } catch {}
     try { fsWatcher?.close(); } catch {}
     lsp.stop();
     closeLogger();
