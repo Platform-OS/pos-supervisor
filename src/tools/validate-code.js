@@ -15,7 +15,11 @@ import { partitionCallersByPending } from '../core/pending-callers.js';
 import { toUri, sanitizePath } from '../core/utils.js';
 import { fingerprint, templateFingerprint, messageTemplate } from '../core/diagnostic-record.js';
 import { getProjectMap } from './project-map.js';
+import { buildFactGraph } from '../core/project-fact-graph.js';
+import { loadAllRules } from '../core/rules/index.js';
 import { LSP_DIAGNOSTICS_TIMEOUT_MS, CONSECUTIVE_ERROR_THRESHOLD } from '../core/constants.js';
+
+loadAllRules();
 
 /**
  * Warnings that MUST block a write even when result.status is 'warning'.
@@ -220,6 +224,9 @@ explicitly only if you are validating a file that is NOT part of the most recent
           await ctx.awaitLsp();
         }
 
+        const projectMap = await getProjectMap(ctx.directory);
+        const factGraph = buildFactGraph(projectMap);
+
         const enrichCtx = {
           uri,
           lsp: ctx.lsp,
@@ -228,6 +235,8 @@ explicitly only if you are validating a file that is NOT part of the most recent
           tagsIndex: ctx.tagsIndex,
           schemaIndex: ctx.schemaIndex,
           content,
+          factGraph,
+          filePath: file_path,
         };
 
         // Enrich all diagnostics in both quick and full modes.
@@ -668,7 +677,7 @@ explicitly only if you are validating a file that is NOT part of the most recent
               file: file_path,
               content_hash: contentHash,
               hint_md_hash: hintHash,
-              hint_rule_id: d.check || null,
+              hint_rule_id: d.rule_id || d.check || null,
               proposed_fixes: fixes,
             });
           }

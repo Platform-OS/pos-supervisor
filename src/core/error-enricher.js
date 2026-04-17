@@ -1,6 +1,7 @@
 import { getHint } from './hint-loader.js';
 import { extractParams } from './diagnostic-record.js';
 import { isShopifyObject, isShopifyFilter, getShopifyObject, getShopifyFilter } from './knowledge-loader.js';
+import { runRules, hasRules } from './rules/engine.js';
 
 /**
  * Extract readable text from LSP hover result.
@@ -27,7 +28,7 @@ function extractHoverText(result) {
  * @param {object} ctx.schemaIndex
  * @returns {Promise<object>} Enriched diagnostic
  */
-export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsIndex, tagsIndex, schemaIndex, content, _hoverCache }) {
+export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsIndex, tagsIndex, schemaIndex, content, _hoverCache, factGraph, filePath }) {
   const result = { ...diagnostic };
 
   // 1. Hint set per-check below with template vars; fallback for unhandled checks at end
@@ -47,6 +48,24 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
       } catch {
         // LSP hover failed — skip
       }
+    }
+  }
+
+  // 2b. Rule engine — when rules exist for this check and a fact graph is
+  //     available, run rules first. If a rule matches, use its output for
+  //     hint/see_also/rule_id and skip the regex-based enrichment below.
+  if (factGraph && hasRules(diagnostic.check)) {
+    const params = extractParams(diagnostic.check, diagnostic.message);
+    const diag = { check: diagnostic.check, params, message: diagnostic.message, file: filePath, line: diagnostic.line };
+    const facts = { graph: factGraph };
+    const ruleResult = runRules(diag, facts);
+    if (ruleResult) {
+      result.hint = ruleResult.hint_md;
+      result.rule_id = ruleResult.rule_id;
+      if (ruleResult.see_also) result.see_also = ruleResult.see_also;
+      if (ruleResult.confidence != null) result.confidence = ruleResult.confidence;
+      attachSeeAlso(result, content);
+      return result;
     }
   }
 

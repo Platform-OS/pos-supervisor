@@ -1,0 +1,1 @@
+Create missing file: `app/views/partials/contract_test/nonexistent_xyz.liquid`. Use `scaffold` tool or create manually with appropriate `{% doc %}` block.
