@@ -1,0 +1,3 @@
+{{ 1999 | money }}
+{{ 'now' | date: '%Y' }}
+{{ product.url | img_url: '300x' }}

@@ -13,6 +13,7 @@ import { checkSchemaProperties } from '../core/schema-property-checker.js';
 import { runDiagnosticPipeline } from '../core/diagnostic-pipeline.js';
 import { partitionCallersByPending } from '../core/pending-callers.js';
 import { toUri, sanitizePath } from '../core/utils.js';
+import { fingerprint, templateFingerprint, messageTemplate } from '../core/diagnostic-record.js';
 import { getProjectMap } from './project-map.js';
 import { LSP_DIAGNOSTICS_TIMEOUT_MS, CONSECUTIVE_ERROR_THRESHOLD } from '../core/constants.js';
 
@@ -644,6 +645,34 @@ explicitly only if you are validating a file that is NOT part of the most recent
       // entirely rather than returning hint: null which looks like a bug in the output.
       for (const d of [...result.errors, ...result.warnings, ...result.infos]) {
         if (d.hint === null || d.hint === undefined) delete d.hint;
+      }
+
+      // 13. Emit validator_emit events — one per diagnostic shown to the agent.
+      // Best-effort: failures never propagate into the tool response.
+      if (ctx.sessionBus) {
+        try {
+          const contentHash = ctx.blobStore ? ctx.blobStore.put(content) : null;
+          for (const d of [...result.errors, ...result.warnings]) {
+            const tmpl = messageTemplate(d.message || '');
+            const fp = fingerprint(d.check, file_path, tmpl);
+            const tFp = templateFingerprint(d.check, tmpl);
+            const hintHash = d.hint && ctx.blobStore ? ctx.blobStore.put(d.hint) : null;
+            const fixes = (d.proposed_fixes || []).map(f => ({
+              range: f.range ?? null,
+              new_text_hash: ctx.blobStore ? ctx.blobStore.put(f.newText || '') : '',
+              kind: f.kind || 'unknown',
+            }));
+            ctx.sessionBus.emit('validator_emit', {
+              fp,
+              template_fp: tFp,
+              file: file_path,
+              content_hash: contentHash,
+              hint_md_hash: hintHash,
+              hint_rule_id: d.check || null,
+              proposed_fixes: fixes,
+            });
+          }
+        } catch { /* best-effort telemetry */ }
       }
 
       return result;

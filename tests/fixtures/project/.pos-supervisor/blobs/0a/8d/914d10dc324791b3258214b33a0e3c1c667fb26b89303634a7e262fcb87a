@@ -1,0 +1,1 @@
+{{ "hello" | totally_nonexistent_filter }}

@@ -103,11 +103,12 @@ const ToolCallPayload = z.object({
 });
 
 // validator_emit (Phase A5) — schema reserved here so the upgrader registry
-// stays in one place; A5 will populate its writer wiring.
+// stays in one place; A5 populates its writer wiring.
 const ValidatorEmitPayload = z.object({
   fp: z.string(),
   template_fp: z.string().optional(),
   file: z.string(),
+  content_hash: z.string().optional(),
   hint_md_hash: z.string().nullable().optional(),
   hint_rule_id: z.string().nullable().optional(),
   proposed_fixes: z.array(z.object({

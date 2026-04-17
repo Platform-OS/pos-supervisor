@@ -1,0 +1,6 @@
+Module path 'modules/core/validations/presence' cannot be resolved.
+
+ Path is unresolvable.
+ CALL project_map to see installed modules and their available function paths.
+
+MUST NOT: Remove the {% function %} call — the feature silently breaks.

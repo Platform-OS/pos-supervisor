@@ -1,0 +1,9 @@
+'{% include %}' is deprecated in platformOS.
+
+ → Replace: {% include 'x' %} → {% render 'x' %}
+ → '{% render %}' has ISOLATED scope — variables from the parent template are NOT inherited.
+ Pass every variable the partial needs explicitly:
+ {% render 'partial', var1: value1, var2: value2 %}
+ → Fix ALL '{% include %}' tags in this file in one edit, not one at a time.
+
+MUST NOT: Leave '{% include %}' tags — they will trigger this error on every write.

@@ -1,0 +1,2 @@
+{{ cart.item_count }}
+{{ product.price }}

@@ -1,0 +1,12 @@
+{% doc %}
+  @param object {object} - form params to reshape
+{% enddoc %}
+
+{% liquid
+  assign object['id'] = object.id
+  assign object['name'] = object.name
+  assign object['date'] = object.date
+  assign object['capacity'] = object.capacity
+
+  return object
+%}

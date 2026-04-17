@@ -1,0 +1,4 @@
+{% doc %}
+  @param t {string}
+{% enddoc %}
+{{ mystery_var_name }}

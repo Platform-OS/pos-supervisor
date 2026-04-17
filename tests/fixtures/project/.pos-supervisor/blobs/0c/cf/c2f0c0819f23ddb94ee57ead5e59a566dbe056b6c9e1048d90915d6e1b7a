@@ -1,0 +1,6 @@
+Module path 'modules/common-styling/forms/error_input_handler' cannot be resolved.
+
+ Path is unresolvable.
+ CALL project_map to see installed modules and their available function paths.
+
+MUST NOT: Remove the {% function %} call — the feature silently breaks.

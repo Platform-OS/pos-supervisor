@@ -1,0 +1,4 @@
+---
+slug: blog
+---
+{% render 'nonexistent/partial' %}

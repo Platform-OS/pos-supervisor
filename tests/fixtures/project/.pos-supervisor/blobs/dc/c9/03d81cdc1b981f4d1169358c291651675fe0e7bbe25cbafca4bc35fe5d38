@@ -1,0 +1,7 @@
+---
+slug: test
+authorization_policies: admin
+cache: true
+title: Wrong Place
+---
+{% render 'test' %}

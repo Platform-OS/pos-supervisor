@@ -1,0 +1,12 @@
+---
+slug: events/:id
+layout: application
+---
+{% liquid
+  function object = 'queries/events/find', id: context.params.id
+  if object.id
+    render 'events/show', object: object
+  else
+    response_status 404
+  endif
+%}

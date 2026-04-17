@@ -1,0 +1,4 @@
+{% parse_json data %}
+  {"key": "value"}
+{% endparse_json %}
+{{ data.key }}

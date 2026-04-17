@@ -1,0 +1,4 @@
+---
+slug: render_test
+---
+{% render 'blog_posts/card' %}

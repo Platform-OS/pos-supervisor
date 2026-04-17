@@ -14,6 +14,7 @@ import {
 import { buildDependencyGraph, detectDeadCode } from '../core/dependency-graph.js';
 import { findOrphanPartials } from '../core/orphan-detector.js';
 import { resolveRenderName } from '../core/project-scanner.js';
+import { buildFactGraph } from '../core/project-fact-graph.js';
 
 export const analyzeProjectTool = {
   name: 'analyze_project',
@@ -36,17 +37,15 @@ export const analyzeProjectTool = {
       const SEV_RANK = { error: 3, warning: 2, info: 1 };
       const minRank = SEV_RANK[min_severity] ?? 2;
 
-      // If no files specified, discover all .liquid and .graphql files in app/
+      // Fetch the project map once up front — used for file listing, dep graph,
+      // and integrity checks. Cached by getProjectMap so this is near-free.
+      const projectMap = await getProjectMap(ctx.directory);
+      const factGraph = buildFactGraph(projectMap);
+
+      // If no files specified, use the fact graph's indexed file list instead of
+      // re-walking app/ (eliminates the parallel-walk class of bugs).
       if (!files || !Array.isArray(files) || files.length === 0) {
-        const appDir = join(ctx.directory, 'app');
-        try {
-          const entries = await readdir(appDir, { recursive: true });
-          files = entries
-            .filter(e => e.endsWith('.liquid') || e.endsWith('.graphql'))
-            .map(e => join('app', e));
-        } catch {
-          throw new ToolError('No files specified and could not scan app/ directory', { status: 404 });
-        }
+        files = factGraph.allCheckableFiles();
         if (files.length === 0) {
           throw new ToolError('No .liquid or .graphql files found in app/', { status: 404 });
         }
@@ -170,10 +169,6 @@ export const analyzeProjectTool = {
           }
         }
       }
-
-      // Fetch the project map once — both the dep graph and the integrity
-      // checks consume it.
-      const projectMap = await getProjectMap(ctx.directory);
 
       // projectMap-derived graph merged with LSP overlay. This is the
       // authoritative graph surfaced to the agent.

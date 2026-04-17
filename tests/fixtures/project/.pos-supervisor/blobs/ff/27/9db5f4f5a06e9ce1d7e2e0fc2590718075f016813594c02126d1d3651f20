@@ -1,0 +1,2 @@
+{% parse_json x %}{"a":1}{% endparse_json %}
+{{ x }}

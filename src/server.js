@@ -17,6 +17,7 @@ import { startHttp } from './http-server.js';
 import { createLogger } from './core/logger.js';
 import { LSP_READY_TIMEOUT_MS } from './core/constants.js';
 import { startSessionEventBus } from './core/session-event-bus.js';
+import { openBlobStore } from './core/blob-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -52,6 +53,14 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     log(`session-event-bus: writing events to ${sessionBus.eventsPath}`);
   }
   sessionBus.startInvariantInterval();
+
+  // ── Content blob store (Phase A4/A5) ──────────────────────────────────────
+  let blobStore = null;
+  try {
+    blobStore = openBlobStore(join(projectDir, '.pos-supervisor', 'blobs'));
+  } catch (e) {
+    log(`blob-store: failed to open (${e.message}); content hashes will not be stored`);
+  }
 
   // ── In-memory session stats (not written to JSONL to keep log entries small) ──
   const sessionStats = {
@@ -496,6 +505,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     tagsIndex,
     session,
     sessionBus,
+    blobStore,
     log,
     emit,
   };

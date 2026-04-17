@@ -1,0 +1,10 @@
+{% doc %}
+{% enddoc %}
+
+{% liquid
+  function items = 'queries/blog_posts/search', query: 'default'
+%}
+
+{% for item in items.results %}
+  {% render 'blog_posts/card', blog_post: item %}
+{% endfor %}

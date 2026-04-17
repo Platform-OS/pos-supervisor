@@ -1,0 +1,5 @@
+---
+slug: perf_test_full
+---
+{% render 'blog_posts/list' %}
+{{ 'blog_posts.title' | t }}

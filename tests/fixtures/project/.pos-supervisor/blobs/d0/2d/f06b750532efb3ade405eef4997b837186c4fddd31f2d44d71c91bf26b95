@@ -1,0 +1,10 @@
+{% doc %}
+  Empty state shown when no events exist.
+{% enddoc %}
+
+<div class="pos-card" style="text-align:center;">
+  <p class="pos-supplementary">{{ 'app.events.list.empty_state' | t }}</p>
+  {% if context.current_user.id %}
+    <a href="/events/new" class="pos-button pos-button-primary">{{ 'app.events.list.add' | t }}</a>
+  {% endif %}
+</div>

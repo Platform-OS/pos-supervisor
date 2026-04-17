@@ -1,0 +1,8 @@
+{% doc %}
+  @param object {object} - empty object or command result with errors
+{% enddoc %}
+
+<section style="max-width:48rem; margin-inline:auto;">
+  <h1 class="pos-heading-1">{{ 'app.events.new.new' | t }}</h1>
+  {% render 'events/form', object: object %}
+</section>

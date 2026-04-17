@@ -1,0 +1,4 @@
+---
+layout: application
+---
+{{ context.page.metadata.title }}

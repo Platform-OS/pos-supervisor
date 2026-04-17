@@ -1,0 +1,14 @@
+{% doc %}
+  @param object {object} - form params
+{% enddoc %}
+
+{% liquid
+  function object = 'commands/order_approves/create/build', object: object
+  function object = 'commands/order_approves/create/check', object: object
+
+  if object.valid
+    function object = 'modules/core/commands/execute', mutation_name: 'order_approves/create', selection: 'record', object: object
+  endif
+
+  return object
+%}

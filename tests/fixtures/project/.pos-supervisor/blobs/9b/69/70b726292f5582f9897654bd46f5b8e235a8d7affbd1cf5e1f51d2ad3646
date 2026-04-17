@@ -1,0 +1,3 @@
+{{ unknown_var }}
+{{ 'test' | fake_filter }}
+{% include 'old_partial' %}

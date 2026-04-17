@@ -11,7 +11,7 @@
 import { walk, NodeTypes } from '@platformos/liquid-html-parser';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { extractVarName } from './objects-index.js';
+import { extractParams } from './diagnostic-record.js';
 import { isShopifyObject, isShopifyFilter } from './knowledge-loader.js';
 import { offsetToLineCol, lineColToOffset, slugFromPath } from './position-utils.js';
 import { POSITION_FUZZY_TOLERANCE } from './constants.js';
@@ -271,24 +271,13 @@ function findFilterAt(filterIndex, line, col, filterName) {
   return null;
 }
 
-// ── Extract names from diagnostic messages ──────────────────────────────────
-
-function extractFilterName(message) {
-  if (!message) return null;
-  const m = message.match(/`([^`]+)`/) || message.match(/"([^"]+)"/) || message.match(/'([^']+)'/);
-  return m ? m[1] : null;
-}
-
-function extractPartialPath(message) {
-  if (!message) return null;
-  const m = message.match(/['"`]([^'"`]+)['"`]/);
-  return m ? m[1] : null;
-}
+// Extraction functions (extractFilterName, extractPartialPath) have been
+// centralized into diagnostic-record.js extractParams(). See roadmap §A2.
 
 // ── Fix handlers per check type ─────────────────────────────────────────────
 
 function fixUndefinedObject(diagnostic, varIndex, isPartialLike, objectsIndex) {
-  const varName = extractVarName(diagnostic.message);
+  const varName = extractParams(diagnostic.check, diagnostic.message).variable ?? null;
   if (!varName) return null;
 
   // Shopify object — don't suggest a platformOS replacement (semantic mismatch)
@@ -339,7 +328,7 @@ function fixUndefinedObject(diagnostic, varIndex, isPartialLike, objectsIndex) {
 }
 
 function fixUnknownFilter(diagnostic, filterIndex, filtersIndex, tagsIndex) {
-  const filterName = extractFilterName(diagnostic.message);
+  const filterName = extractParams(diagnostic.check, diagnostic.message).filter ?? null;
   if (!filterName) return null;
 
   // Tag-as-filter (highest priority)
@@ -386,7 +375,7 @@ function fixUnknownFilter(diagnostic, filterIndex, filtersIndex, tagsIndex) {
 }
 
 function fixMissingPartial(diagnostic, projectDir, ast, content) {
-  const partialPath = extractPartialPath(diagnostic.message);
+  const partialPath = extractParams(diagnostic.check, diagnostic.message).partial ?? null;
   if (!partialPath) return null;
 
   // Determine the correct directory based on the partial path

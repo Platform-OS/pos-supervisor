@@ -1,0 +1,7 @@
+---
+slug: assign_test
+---
+{% liquid
+  assign unused_var = 'hello'
+%}
+<p>nothing</p>

@@ -1,0 +1,14 @@
+---
+slug: events
+method: put
+layout: application
+---
+{% liquid
+  function object = 'commands/events/update', object: context.params.event
+
+  if object.valid
+    redirect_to '/events'
+  else
+    render 'events/edit', object: object
+  endif
+%}

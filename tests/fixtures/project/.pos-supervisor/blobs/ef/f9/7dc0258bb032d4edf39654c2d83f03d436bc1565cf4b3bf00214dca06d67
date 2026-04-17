@@ -1,0 +1,13 @@
+{% doc %}
+  @param object {object} - object with id
+{% enddoc %}
+
+{% liquid
+  function object = 'commands/events/delete/check', object: object
+
+  if object.valid
+    function object = 'modules/core/commands/execute', mutation_name: 'events/delete', selection: 'record', object: object
+  endif
+
+  return object
+%}

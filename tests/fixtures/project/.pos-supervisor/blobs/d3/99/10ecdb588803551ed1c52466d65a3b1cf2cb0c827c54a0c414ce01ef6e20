@@ -1,0 +1,8 @@
+---
+slug: events
+layout: application
+---
+{% liquid
+  function events = 'queries/events/search', page: context.params.page, limit: 20
+  render 'events/index', events: events
+%}

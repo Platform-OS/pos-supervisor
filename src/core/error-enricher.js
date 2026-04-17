@@ -1,5 +1,5 @@
 import { getHint } from './hint-loader.js';
-import { extractVarName } from './objects-index.js';
+import { extractParams } from './diagnostic-record.js';
 import { isShopifyObject, isShopifyFilter, getShopifyObject, getShopifyFilter } from './knowledge-loader.js';
 
 /**
@@ -52,7 +52,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
 
   // 3. Index lookup for suggestions + Shopify awareness
   if (diagnostic.check === 'UnknownFilter') {
-    const filterName = extractFilterName(diagnostic.message);
+    const filterName = extractParams(diagnostic.check, diagnostic.message).filter ?? null;
     let suggestion = null;
     if (filterName) {
       if (tagsIndex?.isTag(filterName)) {
@@ -85,7 +85,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'UndefinedObject') {
-    const varName = extractVarName(diagnostic.message);
+    const varName = extractParams(diagnostic.check, diagnostic.message).variable ?? null;
     const isPartial = uri?.includes('/partials/');
     // Compute suggestion first so has_suggestion can be passed to hint template
     let suggestion = null;
@@ -123,9 +123,9 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'TranslationKeyExists') {
-    const key = extractTranslationKey(diagnostic.message);
-    // Check if the linter message already contains a typo suggestion ("Did you mean...")
-    const hasSuggestion = key && /did you mean/i.test(diagnostic.message);
+    const _tp = extractParams(diagnostic.check, diagnostic.message);
+    const key = _tp.key ?? null;
+    const hasSuggestion = _tp.has_typo_suggestion === 'true';
     if (key) {
       result.hint = getHint(diagnostic.check, null, {
         key,
@@ -137,7 +137,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'MissingPartial') {
-    const partialName = extractPartialName(diagnostic.message);
+    const partialName = extractParams(diagnostic.check, diagnostic.message).partial ?? null;
     const objType = detectObjectType(partialName);
     const createPath = buildCreatePath(objType, partialName);
     const tag = objType === 'partial' ? 'render' : 'function';
@@ -186,7 +186,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'UnknownProperty') {
-    const { propertyName, objectName } = extractPropertyAndObject(diagnostic.message);
+    const { property: propertyName = null, object: objectName = null } = extractParams(diagnostic.check, diagnostic.message);
     const propVariant = uri?.includes('/partials/') ? 'partial' : null;
     result.hint = (propertyName && objectName)
       ? getHint(diagnostic.check, propVariant, {
@@ -197,7 +197,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'DeprecatedTag') {
-    const { tagName, replacementTag } = extractDeprecatedTagInfo(diagnostic.message);
+    const { tag: tagName = null, replacement: replacementTag = null } = extractParams(diagnostic.check, diagnostic.message);
     result.hint = tagName
       ? getHint(diagnostic.check, null, {
           tag_name: tagName,
@@ -222,7 +222,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'MissingRenderPartialArguments') {
-    const { partialName, missingParam } = extractMissingArgInfo(diagnostic.message);
+    const { partial: partialName = null, missing_param: missingParam = null } = extractParams(diagnostic.check, diagnostic.message);
     result.hint = (partialName || missingParam)
       ? getHint(diagnostic.check, null, {
           partial_name: partialName ?? 'unknown',
@@ -240,7 +240,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'UnusedAssign') {
-    const varName = extractVarName(diagnostic.message);
+    const varName = extractParams(diagnostic.check, diagnostic.message).variable ?? null;
     result.hint = varName
       ? getHint(diagnostic.check, null, { var_name: varName })
       : getHint(diagnostic.check, null);
@@ -416,66 +416,10 @@ function classifyGraphQLError(message) {
   return { category_generic: true };
 }
 
-/**
- * Extract property name and object name from an UnknownProperty error message.
- * Handles: "Unknown property 'foo' on 'bar'", "property `foo` ... `bar`", etc.
- */
-function extractPropertyAndObject(message) {
-  if (!message) return { propertyName: null, objectName: null };
-  const bt = message.match(/`([^`]+)`[^`]*`([^`]+)`/);
-  const dq = message.match(/"([^"]+)"[^"]*"([^"]+)"/);
-  const sq = message.match(/'([^']+)'[^']*'([^']+)'/);
-  const m = bt || dq || sq;
-  return m ? { propertyName: m[1], objectName: m[2] } : { propertyName: null, objectName: null };
-}
-
-/**
- * Extract tag name and replacement from a DeprecatedTag error message.
- */
-function extractDeprecatedTagInfo(message) {
-  if (!message) return { tagName: null, replacementTag: null };
-  const tagMatch = message.match(/[`'"](\w+)[`'"]/) || message.match(/\btag\s+[`'"]?(\w+)[`'"]?/i);
-  const tagName = tagMatch ? tagMatch[1] : null;
-  // Match "replaced by `render`" or "use `render`" — but NOT "use the way" or "reduces"
-  const replMatch = message.match(/replaced\s+by\s+\[?[`'"](\w+)[`'"]\]?/i)
-                 || message.match(/\buse\s+[`'"](\w+)[`'"]/i);
-  const replacementTag = replMatch ? replMatch[1] : (tagName === 'include' ? 'render' : null);
-  return { tagName, replacementTag };
-}
-
-/**
- * Extract partial name and missing param from a MissingRenderPartialArguments error message.
- */
-function extractMissingArgInfo(message) {
-  if (!message) return { partialName: null, missingParam: null };
-  // Partial name: quoted path containing a slash, e.g. 'products/card'
-  const partialMatch = message.match(/[`'"]([^`'"]+\/[^`'"]+)[`'"]/);
-  const partialName = partialMatch ? partialMatch[1] : null;
-  // Parameter name: matches "argument 'name'" in the actual linter message format:
-  // "Missing required argument 'email' in render tag for partial 'sessions/form'"
-  const paramMatch = message.match(/\bargument\s+['"`](\w+)['"`]/i);
-  const missingParam = paramMatch ? paramMatch[1] : null;
-  return { partialName, missingParam };
-}
-
-/**
- * Extract filter name from an UnknownFilter error message.
- */
-function extractFilterName(message) {
-  if (!message) return null;
-  const m = message.match(/`([^`]+)`/) || message.match(/"([^"]+)"/) || message.match(/'([^']+)'/);
-  return m ? m[1] : null;
-}
-
-/**
- * Extract translation key from a TranslationKeyExists error message.
- * Message format: "Translation key 'some.key' not found." or similar.
- */
-function extractTranslationKey(message) {
-  if (!message) return null;
-  const m = message.match(/['"`]([^'"`]+)['"`]/);
-  return m ? m[1] : null;
-}
+// Extraction functions (extractFilterName, extractTranslationKey,
+// extractPartialName, extractPropertyAndObject, extractDeprecatedTagInfo,
+// extractMissingArgInfo) have been centralized into diagnostic-record.js
+// extractParams(). See roadmap §A2.
 
 /**
  * Build an indented YAML snippet showing where to add a translation key.
@@ -496,14 +440,6 @@ function buildYamlSnippet(key) {
   return lines.join('\n');
 }
 
-/**
- * Extract partial name from a MissingPartial error message.
- */
-function extractPartialName(message) {
-  if (!message) return null;
-  const m = message.match(/['"]([^'"]+)['"]/);
-  return m ? m[1] : null;
-}
 
 /**
  * Normalize LSP completion result to an array of label strings.

@@ -1,0 +1,5 @@
+---
+slug: /
+layout: application
+---
+{% render 'home/hero' %}

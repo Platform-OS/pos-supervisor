@@ -1,0 +1,9 @@
+{% doc %}
+  @param object {object} - form params to reshape
+{% enddoc %}
+
+{% liquid
+  assign object['archived_at'] = object.archived_at
+
+  return object
+%}

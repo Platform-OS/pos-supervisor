@@ -1,0 +1,4 @@
+---
+layout: application
+---
+{% render 'home/hero' %}

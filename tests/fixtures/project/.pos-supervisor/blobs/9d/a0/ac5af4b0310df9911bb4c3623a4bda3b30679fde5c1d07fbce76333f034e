@@ -1,0 +1,43 @@
+{% doc %}
+  @param events {object} - query result with results array
+{% enddoc %}
+
+{% if context.current_user.id %}
+  <div style="margin-block-end:var(--pos-gap-section-section);">
+    <a href="/events/new" class="pos-button pos-button-primary">{{ 'app.events.list.add' | t }}</a>
+  </div>
+{% endif %}
+
+{% if events.results.size > 0 %}
+  <section class="pos-table">
+    <header>
+      <div>Name</div>
+      <div>Actions</div>
+    </header>
+    <div class="pos-table-content pos-card">
+      {% for event in events.results %}
+        <ul>
+          <li>
+            <span class="pos-table-content-heading">Name</span>
+            <a href="/events/{{ event.id }}">{{ event.name }}</a>
+          </li>
+          <li>
+            <span class="pos-table-content-heading">Actions</span>
+            <a href="/events/{{ event.id }}" class="pos-button pos-button-small">View</a>
+            {% if context.current_user.id %}
+              <a href="/events/edit?id={{ event.id }}" class="pos-button pos-button-small">{{ 'app.events.list.edit' | t }}</a>
+              <form action="/events" method="post" style="display:inline">
+                <input type="hidden" name="authenticity_token" value="{{ context.authenticity_token }}">
+                <input type="hidden" name="_method" value="delete">
+                <input type="hidden" name="id" value="{{ event.id }}">
+                <button type="submit" class="pos-button pos-button-small">{{ 'app.events.list.delete' | t }}</button>
+              </form>
+            {% endif %}
+          </li>
+        </ul>
+      {% endfor %}
+    </div>
+  </section>
+{% else %}
+  {% render 'events/empty_state' %}
+{% endif %}

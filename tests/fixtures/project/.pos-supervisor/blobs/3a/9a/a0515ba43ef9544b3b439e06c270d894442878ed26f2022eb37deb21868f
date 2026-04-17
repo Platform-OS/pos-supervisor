@@ -1,0 +1,23 @@
+'totally_unknown_page_var' is undefined in this context.
+
+STEP 1 — Identify what 'totally_unknown_page_var' should be.
+ Context data? → Use context.totally_unknown_page_var — common properties:
+ context.params (URL/form parameters)
+ context.session (session data)
+ context.current_user (authenticated user, nil if guest)
+ context.page, context.location, context.environment
+ GraphQL result? → {% graphql totally_unknown_page_var = 'queries/...' %} then access totally_unknown_page_var.records.results
+ Function result? → {% function totally_unknown_page_var = 'lib/...' %} then use return value
+ Loop variable? → {% for totally_unknown_page_var in collection %} — loop variables are declared by the
+ for-tag itself. If linter fires here, 'totally_unknown_page_var' is likely used
+ outside the loop body (after {% endfor %}).
+ Passed by caller? → You are likely in a partial — see UndefinedObject-partial hint.
+
+STEP 2 — Apply the fix.
+
+ → NO suggestion: check hover_docs field, or call domain_guide for the relevant domain.
+
+
+Do not use bare 'totally_unknown_page_var' — it must come from an assignment, context, GraphQL result, function return, loop variable, or caller parameter.
+Fixing existing code: if 'totally_unknown_page_var' is from another platform, replace it with the correct platformOS data source.
+Building new code: identify where the data comes from and wire it in before using it.

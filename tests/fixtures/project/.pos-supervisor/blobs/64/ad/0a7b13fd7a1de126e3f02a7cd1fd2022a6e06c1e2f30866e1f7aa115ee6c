@@ -1,0 +1,5 @@
+{% doc %}
+  @param {object} post
+  @param {string} title
+{% enddoc %}
+<p>{{ post.title }}</p>

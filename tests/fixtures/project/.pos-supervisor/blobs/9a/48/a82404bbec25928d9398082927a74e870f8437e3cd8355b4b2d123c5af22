@@ -1,0 +1,11 @@
+{% doc %}
+  @param [page] {number} - page number (defaults to 1 via the | default filter)
+  @param [limit] {number} - items per page (defaults to 20 via the | default filter)
+{% enddoc %}
+
+{% liquid
+  assign page = page | default: 1
+  assign limit = limit | default: 20
+  graphql result = 'notifications/search', page: page, limit: limit
+  return result.records
+%}

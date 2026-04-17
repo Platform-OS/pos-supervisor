@@ -1,0 +1,6 @@
+name: MissingPartial
+summary: Referenced partial/command/query file does not exist
+hint:
+  default: >-
+    Create the missing file. Partials: app/views/partials/. Commands: app/lib/commands/ (referenced as lib/commands/).
+    Queries: app/lib/queries/ (referenced as lib/queries/). Do NOT remove the render/function tag to silence this error.
