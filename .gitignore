@@ -10,3 +10,5 @@ node_modules/
 .mcp.json
 CLAUDE.md
 /.pos-supervisor
+# Test-generated session logs (integration tests spawn servers against fixtures)
+**/.pos-supervisor/sessions/

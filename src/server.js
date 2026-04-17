@@ -16,6 +16,7 @@ import { createToolRegistry } from './tools.js';
 import { startHttp } from './http-server.js';
 import { createLogger } from './core/logger.js';
 import { LSP_READY_TIMEOUT_MS } from './core/constants.js';
+import { startSessionEventBus } from './core/session-event-bus.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -30,6 +31,27 @@ const VERSION = pkg.version;
  */
 export async function createServer({ projectDir, httpPort = 0 }) {
   const { emit: rawEmit, log, close: closeLogger, logPath } = createLogger({ directory: projectDir, version: VERSION });
+
+  // ── Session id + event bus (Phase A1) ─────────────────────────────────────
+  //
+  // The bus owns the append-only NDJSON log + the in-memory projection. It
+  // runs in PARALLEL with the legacy session.* state during Phase 2 so the
+  // existing dashboard/tests keep working unchanged. Phase 3's acceptance
+  // gate compares projection-from-disk to the live projection; once we
+  // trust that match the legacy mutation paths come out (separate change).
+  //
+  // Bus creation is best-effort: if the writer can't open (read-only fs,
+  // permission denied), the bus runs in-memory only and the live request
+  // path is never affected.
+  const sessionsDir = join(projectDir, '.pos-supervisor', 'sessions');
+  const sessionId = `session-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  const sessionBus = startSessionEventBus({ sessionId, sessionsDir, log });
+  if (sessionBus.writerError) {
+    log(`session-event-bus: running in-memory only (${sessionBus.writerError})`);
+  } else {
+    log(`session-event-bus: writing events to ${sessionBus.eventsPath}`);
+  }
+  sessionBus.startInvariantInterval();
 
   // ── In-memory session stats (not written to JSONL to keep log entries small) ──
   const sessionStats = {
@@ -96,10 +118,95 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     return m;
   }
 
+  // Mirror a legacy emit() call into the typed session-event bus. Returns
+  // void; never throws. Unmapped legacy events are silently dropped (the
+  // bus only persists kinds it knows how to project — extra log/diagnostic
+  // events still go to the JSONL logger via rawEmit).
+  function mirrorToBus(event, data, ts) {
+    if (sessionBus.isClosed) return;
+    switch (event) {
+      case 'server_start':
+        sessionBus.emit('server_start', {
+          project_dir: data.projectDir ?? projectDir,
+          version: VERSION,
+          http_port: data.httpPort ?? null,
+          started_at: ts,
+        }, ts);
+        return;
+      case 'server_stop':
+        sessionBus.emit('server_stop', { reason: data.reason ?? 'unknown' }, ts);
+        return;
+      case 'pos_cli_found':
+        sessionBus.emit('pos_cli_resolved', {
+          found: true,
+          path: data.path ?? null,
+          data_dir: data.dataDir ?? null,
+        }, ts);
+        return;
+      case 'pos_cli_error':
+        sessionBus.emit('pos_cli_resolved', { found: false, error: data.error ?? null }, ts);
+        return;
+      case 'lsp_ready':
+        sessionBus.emit('lsp_event', { phase: 'ready', duration_ms: data.durationMs }, ts);
+        return;
+      case 'lsp_warmed_up':
+        sessionBus.emit('lsp_event', {
+          phase: 'warmed_up', duration_ms: data.durationMs, index_ready: data.indexReady,
+        }, ts);
+        return;
+      case 'lsp_crash':
+        sessionBus.emit('lsp_event', {
+          phase: 'crash',
+          code: data.code ?? null,
+          signal: data.signal ?? null,
+          restart_count: data.restartCount ?? 0,
+        }, ts);
+        return;
+      case 'lsp_init_failed':
+        sessionBus.emit('lsp_event', { phase: 'init_failed', error: data.error ?? '' }, ts);
+        return;
+      case 'lsp_restart_requested':
+        sessionBus.emit('lsp_event', { phase: 'restart_requested' }, ts);
+        return;
+      case 'lsp_restart_failed':
+        sessionBus.emit('lsp_event', { phase: 'restart_failed', error: data.error ?? '' }, ts);
+        return;
+      case 'index_ready': {
+        const payload = { index: data.index, status: 'ready' };
+        if (data.count != null)     payload.count = data.count;
+        if (data.queries != null)   payload.queries = data.queries;
+        if (data.mutations != null) payload.mutations = data.mutations;
+        sessionBus.emit('index_event', payload, ts);
+        return;
+      }
+      case 'index_failed':
+        sessionBus.emit('index_event', { index: data.index, status: 'failed', error: data.error ?? '' }, ts);
+        return;
+      case 'tool_call':
+        sessionBus.emit('tool_call', {
+          tool: data.tool,
+          duration_ms: data.durationMs ?? 0,
+          success: data.success !== false,
+          input: data.input,
+          output: data.output,
+          ...(data.error ? { error: data.error } : {}),
+        }, ts);
+        return;
+      // fs_change is emitted directly by the watcher via the bus — no mirror.
+      // Other legacy events (lsp_request, fs_watcher_start_failed, etc.) are
+      // diagnostic-only and not part of the projection.
+    }
+  }
+
   // Wrap emit: track in-memory stats, add lightweight metadata, strip large payloads.
   // lsp_request events are very frequent and not useful in the log file.
   function emit(event, data = {}) {
     if (event === 'lsp_request') return; // too noisy
+    const ts = new Date().toISOString();
+    // Mirror to the typed bus FIRST (before any payload stripping below).
+    // Wrapped in try/catch so a bus issue can never break the live request path.
+    try { mirrorToBus(event, data, ts); } catch (e) { log(`session-event-bus mirror error: ${e.message}`); }
+
     if (event === 'tool_call') {
       trackStats(data.tool, data.durationMs, data.success, data.output);
       const meta = extractLogMeta(data.tool, data.input, data.output);
@@ -111,15 +218,17 @@ export async function createServer({ projectDir, httpPort = 0 }) {
         ...meta,
       };
       rawEmit(event, entry);
-      broadcastSse({ event, ts: new Date().toISOString(), ...entry });
+      broadcastSse({ event, ts, ...entry });
       return;
     }
     rawEmit(event, data);
-    broadcastSse({ event, ts: new Date().toISOString(), ...data });
+    broadcastSse({ event, ts, ...data });
   }
 
   const serverStartMs = Date.now();
-  rawEmit('server_start', { projectDir, httpPort });
+  // emit() mirrors to the session bus; rawEmit would skip the bus and we'd
+  // miss server_start in the NDJSON log (and replay would never see it).
+  emit('server_start', { projectDir, httpPort });
   log(`Starting pos-supervisor v${VERSION} for ${projectDir}`);
 
   // ── Resolve pos-cli paths ─────────────────────────────────────────────────
@@ -386,6 +495,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     filtersIndex,
     tagsIndex,
     session,
+    sessionBus,
     log,
     emit,
   };
@@ -413,8 +523,8 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   });
 
   // ── Session persistence (D3 — comparative session view) ───────────────────
-  const sessionsDir = join(projectDir, '.pos-supervisor', 'sessions');
-  const sessionId = `session-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  // sessionsDir + sessionId are declared above (Phase A1 event bus) so the
+  // bus can open its NDJSON writer before the first emit fires.
 
   function saveSessionSummary() {
     try {
@@ -493,6 +603,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     log(`Shutting down (${reason})...`);
     try { saveSessionSummary(); } catch {}
     try { fsWatcher?.close(); } catch {}
+    try { sessionBus.close(); } catch {} // runs final replay-vs-projection invariant + closes NDJSON
     lsp.stop();
     closeLogger();
     mcpServer.close().catch(() => {});
