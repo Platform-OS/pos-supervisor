@@ -1,0 +1,1 @@
+Variable `undefined_var` is not defined in the current scope. Use `context.undefined_var` for built-in objects, or ensure it's assigned before use with `{% assign %}`, `{% graphql %}`, or `{% function %}`.

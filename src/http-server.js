@@ -9,12 +9,13 @@ import { HTTP_MAX_BODY } from './core/constants.js';
 import { buildDashboardHtml } from './dashboard.js';
 import { getProjectMap } from './tools/project-map.js';
 import { buildDependencyGraph } from './core/dependency-graph.js';
+import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams } from './core/analytics-queries.js';
 
 /**
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
  * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary }) {
+export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore }) {
   if (!port) return null;
 
   const dashboardHtml = buildDashboardHtml();
@@ -121,6 +122,32 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
         if (saveSessionSummary) { saveSessionSummary(); }
         return sendJson(res, 200, { ok: true });
       }
+
+      if (url.pathname === '/api/analytics/rebuild') {
+        return handleAnalyticsRebuild(analyticsStore, sessionsDir, res);
+      }
+    }
+
+    // ── Analytics GET routes ──────────────────────────────────────────────
+    if (method === 'GET' && url.pathname === '/api/analytics/stats') {
+      if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+      return sendJson(res, 200, analyticsStore.stats());
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/scorecards') {
+      return handleAnalyticsScorecards(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/sessions') {
+      return handleAnalyticsSessions(analyticsStore, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/recommendations') {
+      return handleAnalyticsRecommendations(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/bigrams') {
+      return handleAnalyticsBigrams(analyticsStore, url, res);
     }
 
     // ── Fallback ────────────────────────────────────────────────────────
@@ -466,6 +493,63 @@ function readLogTail(logPath, limit) {
       .filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+// ── Analytics handlers (Phase B) ───────────────────────────────────────────
+
+function handleAnalyticsRebuild(analyticsStore, sessionsDir, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  if (!sessionsDir) return sendJson(res, 400, { error: 'sessions dir not configured' });
+  try {
+    const result = analyticsStore.rebuild(sessionsDir);
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleAnalyticsScorecards(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const sessionId = url.searchParams.get('session_id') || undefined;
+    const minCohort = parseInt(url.searchParams.get('min_cohort') || '10', 10);
+    const cards = checkScorecards(analyticsStore, { sessionId, minCohort });
+    sendJson(res, 200, { scorecards: cards });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleAnalyticsSessions(analyticsStore, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const summaries = sessionSummaries(analyticsStore);
+    sendJson(res, 200, { sessions: summaries });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleAnalyticsRecommendations(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const threshold = parseFloat(url.searchParams.get('threshold') || '0.3');
+    const recs = recommendations(analyticsStore, threshold);
+    sendJson(res, 200, { recommendations: recs });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleAnalyticsBigrams(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const sessionId = url.searchParams.get('session_id') || undefined;
+    const bigrams = toolSequenceBigrams(analyticsStore, { sessionId });
+    sendJson(res, 200, { bigrams });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
   }
 }
 

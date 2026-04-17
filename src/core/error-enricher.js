@@ -57,7 +57,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   if (factGraph && hasRules(diagnostic.check)) {
     const params = extractParams(diagnostic.check, diagnostic.message);
     const diag = { check: diagnostic.check, params, message: diagnostic.message, file: filePath, line: diagnostic.line };
-    const facts = { graph: factGraph };
+    const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex };
     const ruleResult = runRules(diag, facts);
     if (ruleResult) {
       result.hint = ruleResult.hint_md;

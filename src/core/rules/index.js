@@ -7,9 +7,15 @@
  */
 import { registerRules, clearRules, ruleCount } from './engine.js';
 import { rules as MissingPartialRules } from './MissingPartial.js';
+import { rules as UndefinedObjectRules } from './UndefinedObject.js';
+import { rules as UnknownFilterRules } from './UnknownFilter.js';
+import { rules as TranslationKeyExistsRules } from './TranslationKeyExists.js';
 
 const ALL_RULE_MODULES = [
   MissingPartialRules,
+  UndefinedObjectRules,
+  UnknownFilterRules,
+  TranslationKeyExistsRules,
 ];
 
 let _loaded = false;

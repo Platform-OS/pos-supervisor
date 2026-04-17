@@ -1,0 +1,1 @@
+`money` is a Shopify-specific filter — not in platformOS. Format manually: value | divided_by: 100.0 | round: 2

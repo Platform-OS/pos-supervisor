@@ -520,6 +520,68 @@ export function buildDashboardHtml() {
   .he-pct.mid { color: var(--yellow); }
   .he-pct.bad { color: var(--red); }
 
+  /* ── Analytics tab ────────────────────────────────────────────────── */
+  .an-section { margin-bottom: 28px; }
+  .an-section-title { font-size: 12px; text-transform: uppercase; color: var(--text); font-weight: bold; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+  .an-section-title::before { content: "=== "; color: var(--blue); }
+  .an-section-title::after { content: " ==="; color: var(--blue); }
+  .an-legend { font-size: 11px; color: var(--muted); line-height: 1.55; margin-bottom: 12px; padding: 8px 10px; background: var(--surface); border-left: 3px solid var(--blue); }
+  .an-legend code { background: var(--bg); padding: 1px 4px; border: 1px solid var(--border); font-size: 10px; color: var(--text); }
+  .an-legend b { color: var(--text); }
+  .an-empty { color: var(--muted); font-size: 12px; padding: 12px 0; }
+
+  .an-stats-row { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .an-stat { background: var(--bg); border: 1px solid var(--border); padding: 10px 16px; min-width: 140px; box-shadow: 2px 2px 0 var(--border); }
+  .an-stat .label { color: var(--muted); font-size: 10px; text-transform: uppercase; margin-bottom: 6px; }
+  .an-stat .value { font-size: 14px; font-weight: bold; color: var(--blue); }
+
+  .an-sc-table { width: 100%; border-collapse: collapse; border: 1px solid var(--border); }
+  .an-sc-table th { text-align: left; color: var(--muted); font-size: 10px; font-weight: bold; padding: 6px 10px; border-bottom: 1px dashed var(--border); background: var(--surface); text-transform: uppercase; }
+  .an-sc-table td { padding: 6px 10px; border-bottom: 1px solid var(--surface2); font-size: 11px; vertical-align: middle; }
+  .an-sc-table tr:last-child td { border-bottom: none; }
+  .an-sc-table tr:hover td { background: var(--surface); }
+
+  .an-ci-bar { display: flex; align-items: center; gap: 4px; min-width: 160px; }
+  .an-ci-track { flex: 1; height: 10px; background: var(--surface2); position: relative; overflow: hidden; border: 1px solid var(--border); }
+  .an-ci-fill { position: absolute; top: 0; height: 100%; }
+  .an-ci-fill.good { background: var(--green); }
+  .an-ci-fill.mid { background: var(--yellow); }
+  .an-ci-fill.bad { background: var(--red); }
+  .an-ci-fill.neutral { background: var(--blue); }
+  .an-ci-marker { position: absolute; top: -1px; bottom: -1px; width: 2px; background: var(--text); }
+  .an-ci-val { font-size: 10px; font-weight: bold; min-width: 36px; text-align: right; }
+  .an-ci-val.good { color: var(--green); }
+  .an-ci-val.mid { color: var(--yellow); }
+  .an-ci-val.bad { color: var(--red); }
+  .an-ci-val.neutral { color: var(--blue); }
+
+  .an-rec-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); margin-bottom: 8px; box-shadow: 2px 2px 0 var(--border); }
+  .an-rec-icon { font-size: 12px; color: var(--yellow); flex-shrink: 0; padding-top: 1px; }
+  .an-rec-body { flex: 1; }
+  .an-rec-check { font-size: 12px; font-weight: bold; color: var(--text); text-transform: uppercase; margin-bottom: 4px; }
+  .an-rec-text { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  .an-rec-text code { background: var(--bg); padding: 1px 4px; border: 1px solid var(--border); font-size: 10px; color: var(--text); }
+  .an-rec-rate { font-size: 11px; font-weight: bold; color: var(--red); flex-shrink: 0; }
+
+  .an-sess-table { width: 100%; border-collapse: collapse; border: 1px solid var(--border); }
+  .an-sess-table th { text-align: left; color: var(--muted); font-size: 10px; font-weight: bold; padding: 6px 10px; border-bottom: 1px dashed var(--border); background: var(--surface); text-transform: uppercase; }
+  .an-sess-table td { padding: 6px 10px; border-bottom: 1px solid var(--surface2); font-size: 11px; }
+  .an-sess-table tr:last-child td { border-bottom: none; }
+  .an-sess-table tr:hover td { background: var(--surface); }
+  .an-sess-id { color: var(--blue); font-weight: bold; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
+
+  .an-bigram-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--surface2); }
+  .an-bigram-row:last-child { border-bottom: none; }
+  .an-bigram-seq { font-size: 11px; color: var(--text); flex: 1; text-transform: uppercase; }
+  .an-bigram-arrow { color: var(--muted); }
+  .an-bigram-metric { font-size: 10px; color: var(--muted); min-width: 50px; text-align: right; }
+  .an-bigram-metric b { color: var(--text); }
+
+  .an-explain { font-size: 11px; color: var(--muted); line-height: 1.7; padding: 14px; background: #1d2021; border: 1px solid var(--border); }
+  .an-explain dt { color: var(--blue); font-weight: bold; text-transform: uppercase; margin-top: 10px; }
+  .an-explain dt:first-child { margin-top: 0; }
+  .an-explain dd { margin-left: 16px; margin-bottom: 6px; }
+
   /* ── Tool Lab (A5) ────────────────────────────────────────────────── */
   .tl-browser { display: grid; grid-template-columns: 220px 1fr; gap: 16px; }
   .tl-sidebar { background: var(--bg); border: 1px solid var(--border); padding: 12px; height: fit-content; max-height: 600px; overflow-y: auto; box-shadow: 2px 2px 0 var(--border); }
@@ -673,6 +735,7 @@ export function buildDashboardHtml() {
   <div class="tab" data-tab="explorer">Explorer</div>
   <div class="tab" data-tab="health">Health</div>
   <div class="tab" data-tab="insights">Tool Insights</div>
+  <div class="tab" data-tab="analytics">Analytics</div>
   <div class="tab" data-tab="toollab">Tool Lab</div>
   <div class="tab" data-tab="lsp">LSP</div>
   <div class="tab" data-tab="pos-cli">POS-CLI</div>
@@ -976,6 +1039,63 @@ export function buildDashboardHtml() {
   </div>
 </div>
 
+<!-- ── Analytics ────────────────────────────────────────────────────── -->
+<div class="tab-content" id="tab-analytics">
+  <div class="ex-refresh-bar">
+    <button id="an-refresh-btn">Refresh</button>
+    <button id="an-rebuild-btn" class="danger" title="Rebuild analytics DB from session event logs">Rebuild DB</button>
+    <span class="ts" id="an-last-fetched"></span>
+  </div>
+
+  <div class="an-stats-row" id="an-stats">
+    <span class="an-empty">Loading analytics...</span>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Check Scorecards</div>
+    <div class="an-legend">Per-check performance across all sessions. <b>Resolution rate</b> = how often a diagnostic disappears after the agent edits. <b>Mislead rate</b> = how often a fix introduces new diagnostics (regression). <b>Adoption rate</b> = how often the agent applies the proposed fix verbatim. Bars show the 95% credible interval (Beta-binomial posterior, Beta(2,2) prior).</div>
+    <div id="an-scorecards"><span class="an-empty">No analytics data yet — rebuild the database or wait for sessions to accumulate.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Recommendations</div>
+    <div class="an-legend">Checks with a <b>mislead rate above 30%</b> — the hint or fix text is actively harmful. Prioritize rewriting these hints in <code>src/data/hints/&lt;check&gt;.md</code> or adjusting the rule in <code>src/core/rules/&lt;check&gt;.js</code>.</div>
+    <div id="an-recommendations"><span class="an-empty">No recommendations yet.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Session Improvement Report</div>
+    <div class="an-legend">Per-session summary showing tool usage, diagnostics emitted, and outcomes (resolved vs regressed). Use this to compare session quality over time and identify which sessions had the best resolution rates.</div>
+    <div id="an-sessions"><span class="an-empty">No session data yet.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Tool Sequence Patterns</div>
+    <div class="an-legend">Frequently observed tool-call pairs across all sessions with <b>lift</b> (how much more likely than chance) and <b>confidence</b> (probability of B following A). High lift + high confidence = strong workflow pattern.</div>
+    <div id="an-bigrams"><span class="an-empty">No sequence data yet.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">How to Read This</div>
+    <div class="an-explain">
+      <dl>
+        <dt>Resolution Rate</dt>
+        <dd>Fraction of diagnostics that disappear between consecutive validate_code calls on the same file. A resolved diagnostic means the agent successfully acted on the hint. Higher is better.</dd>
+        <dt>Mislead Rate</dt>
+        <dd>Fraction of outcomes where new diagnostics appeared that weren't in the previous call (regressions). This means the agent's fix introduced new problems. Lower is better. Above 30% = the hint is actively harmful.</dd>
+        <dt>Adoption Rate</dt>
+        <dd>Of diagnostics with proposed fixes, how often the agent applied the fix verbatim (exact text match). Low adoption may mean the fix text is wrong, or the agent prefers its own approach.</dd>
+        <dt>Credible Intervals</dt>
+        <dd>The bars show 95% Bayesian credible intervals using a Beta(2,2) prior. With few observations, intervals are wide (uncertain). As data accumulates, they narrow. The marker shows the posterior mean.</dd>
+        <dt>Collateral</dt>
+        <dd>Average net new diagnostics introduced per regression: max(0, new_diags - resolved_diags). High collateral = the fix is causing cascading failures.</dd>
+        <dt>Lift (Bigrams)</dt>
+        <dd>How much more likely a tool pair occurs vs random chance. Lift > 1 = tools are used together more than expected. Lift = 1 = no association.</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+
 <!-- ── Tool Lab (merged: tool browser + executor + live diagnostic console) ── -->
 <div class="tab-content" id="tab-toollab">
   <div class="ti-legend" style="margin-bottom:12px">
@@ -1099,6 +1219,7 @@ const TAB_LOADERS = {
   explorer: () => { if (!explorerLoaded) fetchExplorerData(); },
   health:   () => { if (!analysisLoaded) fetchAnalysisData(); if (!suppressionsLoaded) fetchSuppressions(); },
   insights: () => { fetchInsightsData(); if (!hintsLoaded) fetchHints(); },
+  analytics: () => { fetchAnalytics(); },
   toollab:  () => { if (!toolsLoaded) fetchTools(); fetchToolLab(); },
   'pos-cli': () => { if (!cliEnvsLoaded) fetchCliEnvs(); },
   // overview, activity, lsp: eagerly loaded via boot sequence / SSE
@@ -3011,6 +3132,210 @@ function renderSchemaGqlMatrix() {
     + '</tbody></table>';
 }
 
+// ── Analytics tab ────────────────────────────────────────────────────────
+let analyticsData = null;
+
+async function fetchAnalytics() {
+  const tsEl = document.getElementById('an-last-fetched');
+  tsEl.textContent = 'refreshing...';
+
+  try {
+    const [statsR, scorecardsR, sessionsR, recsR, bigramsR] = await Promise.all([
+      fetch(BASE + '/api/analytics/stats').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/scorecards?min_cohort=1').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/sessions').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/recommendations').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/bigrams').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+
+    analyticsData = {
+      stats: statsR,
+      scorecards: scorecardsR?.scorecards || [],
+      sessions: sessionsR?.sessions || [],
+      recommendations: recsR?.recommendations || [],
+      bigrams: bigramsR?.bigrams || [],
+    };
+
+    renderAnalyticsStats();
+    renderAnalyticsScorecards();
+    renderAnalyticsRecommendations();
+    renderAnalyticsSessions();
+    renderAnalyticsBigrams();
+    tsEl.textContent = fmtTime(Date.now());
+  } catch (e) {
+    tsEl.textContent = 'error: ' + e.message;
+    document.getElementById('an-stats').innerHTML = '<span class="an-empty">Analytics store not available (requires Bun runtime).</span>';
+  }
+}
+
+async function rebuildAnalytics() {
+  const btn = document.getElementById('an-rebuild-btn');
+  btn.disabled = true;
+  btn.textContent = 'REBUILDING...';
+  try {
+    const r = await fetch(BASE + '/api/analytics/rebuild', { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      btn.textContent = 'REBUILT (' + d.sessions + ' sessions, ' + d.events + ' events)';
+      setTimeout(() => { btn.textContent = 'REBUILD DB'; btn.disabled = false; }, 3000);
+      await fetchAnalytics();
+    } else {
+      btn.textContent = 'FAILED: ' + (d.error || 'unknown');
+      setTimeout(() => { btn.textContent = 'REBUILD DB'; btn.disabled = false; }, 5000);
+    }
+  } catch (e) {
+    btn.textContent = 'FAILED';
+    setTimeout(() => { btn.textContent = 'REBUILD DB'; btn.disabled = false; }, 3000);
+  }
+}
+
+function renderAnalyticsStats() {
+  const el = document.getElementById('an-stats');
+  const s = analyticsData?.stats;
+  if (!s) {
+    el.innerHTML = '<span class="an-empty">Analytics store not available.</span>';
+    return;
+  }
+  el.innerHTML = [
+    { label: 'Events', value: s.events ?? 0 },
+    { label: 'Diagnostics', value: s.diagnostics ?? 0 },
+    { label: 'Sessions', value: s.sessions ?? 0 },
+    { label: 'Windows', value: s.windows ?? 0 },
+    { label: 'Outcomes', value: s.outcomes ?? 0 },
+  ].map(d => '<div class="an-stat"><div class="label">' + d.label + '</div><div class="value">' + d.value + '</div></div>').join('');
+}
+
+function ciBar(rate, cssClass) {
+  if (!rate || rate.mean === 0 && rate.lower95 === 0 && rate.upper95 === 0) {
+    return '<span style="color:var(--muted);font-size:10px">--</span>';
+  }
+  const pct = (rate.mean * 100).toFixed(0);
+  const lo = (rate.lower95 * 100).toFixed(1);
+  const hi = (rate.upper95 * 100).toFixed(1);
+  const meanPx = (rate.mean * 100).toFixed(1);
+  const cls = cssClass === 'auto'
+    ? (rate.mean >= 0.6 ? 'good' : rate.mean >= 0.3 ? 'mid' : 'bad')
+    : cssClass;
+  const invCls = cssClass === 'auto-inv'
+    ? (rate.mean <= 0.1 ? 'good' : rate.mean <= 0.3 ? 'mid' : 'bad')
+    : cls;
+  const actualCls = cssClass === 'auto-inv' ? invCls : cls;
+  return '<div class="an-ci-bar" title="' + lo + '% – ' + hi + '%">'
+    + '<div class="an-ci-track">'
+    + '<div class="an-ci-fill ' + actualCls + '" style="left:' + lo + '%;width:' + ((rate.upper95 - rate.lower95) * 100).toFixed(1) + '%"></div>'
+    + '<div class="an-ci-marker" style="left:' + meanPx + '%"></div>'
+    + '</div>'
+    + '<span class="an-ci-val ' + actualCls + '">' + pct + '%</span>'
+    + '</div>';
+}
+
+function renderAnalyticsScorecards() {
+  const el = document.getElementById('an-scorecards');
+  const cards = analyticsData?.scorecards || [];
+  if (!cards.length) {
+    el.innerHTML = '<span class="an-empty">No scorecard data yet. Rebuild the database after sessions accumulate.</span>';
+    return;
+  }
+
+  el.innerHTML = '<table class="an-sc-table">'
+    + '<thead><tr>'
+    + '<th>Check</th><th>Emitted</th><th>Sample</th>'
+    + '<th style="min-width:180px">Resolution Rate</th>'
+    + '<th style="min-width:180px">Mislead Rate</th>'
+    + '<th style="min-width:180px">Adoption Rate</th>'
+    + '<th>Collateral</th>'
+    + '</tr></thead><tbody>'
+    + cards.map(c => {
+      const resCls = c.resolution_rate.mean >= 0.6 ? 'good' : c.resolution_rate.mean >= 0.3 ? 'mid' : 'bad';
+      const misCls = c.mislead_rate.mean <= 0.1 ? 'good' : c.mislead_rate.mean <= 0.3 ? 'mid' : 'bad';
+      const adoptCls = c.adoption_rate.mean >= 0.6 ? 'good' : c.adoption_rate.mean >= 0.3 ? 'mid' : 'neutral';
+      return '<tr>'
+        + '<td style="color:var(--text);font-weight:bold;text-transform:uppercase">' + escHtml(c.check) + '</td>'
+        + '<td style="color:var(--muted)">' + c.emitted + '</td>'
+        + '<td style="color:var(--muted)">' + c.sample_size + '</td>'
+        + '<td>' + ciBar(c.resolution_rate, resCls) + '</td>'
+        + '<td>' + ciBar(c.mislead_rate, misCls) + '</td>'
+        + '<td>' + ciBar(c.adoption_rate, adoptCls) + '</td>'
+        + '<td style="color:' + (c.avg_collateral > 1 ? 'var(--red)' : 'var(--muted)') + '">'
+        + (c.avg_collateral > 0 ? c.avg_collateral.toFixed(1) : '--') + '</td>'
+        + '</tr>';
+    }).join('')
+    + '</tbody></table>';
+}
+
+function renderAnalyticsRecommendations() {
+  const el = document.getElementById('an-recommendations');
+  const recs = analyticsData?.recommendations || [];
+  if (!recs.length) {
+    el.innerHTML = '<span class="an-empty">No checks above the mislead threshold. All hints are performing within acceptable bounds.</span>';
+    return;
+  }
+
+  el.innerHTML = recs.map(r =>
+    '<div class="an-rec-item">'
+    + '<span class="an-rec-icon">[!]</span>'
+    + '<div class="an-rec-body">'
+    + '<div class="an-rec-check">' + escHtml(r.check) + '</div>'
+    + '<div class="an-rec-text">' + escHtml(r.recommendation) + '</div>'
+    + '</div>'
+    + '<span class="an-rec-rate">' + (r.mislead_rate * 100).toFixed(0) + '% MISLEAD</span>'
+    + '</div>'
+  ).join('');
+}
+
+function renderAnalyticsSessions() {
+  const el = document.getElementById('an-sessions');
+  const sessions = analyticsData?.sessions || [];
+  if (!sessions.length) {
+    el.innerHTML = '<span class="an-empty">No sessions recorded yet.</span>';
+    return;
+  }
+
+  el.innerHTML = '<table class="an-sess-table">'
+    + '<thead><tr>'
+    + '<th>Session</th><th>Start</th><th>Events</th><th>Tools</th>'
+    + '<th>VC Calls</th><th>Intent</th><th>Diagnostics</th>'
+    + '<th>Resolved</th><th>Regressed</th><th>Net</th>'
+    + '</tr></thead><tbody>'
+    + sessions.map(s => {
+      const net = (s.outcomes_resolved ?? 0) - (s.outcomes_regressed ?? 0);
+      const netCls = net > 0 ? 'var(--green)' : net < 0 ? 'var(--red)' : 'var(--muted)';
+      const netSign = net > 0 ? '+' : '';
+      return '<tr>'
+        + '<td><span class="an-sess-id">' + escHtml((s.session_id || '').slice(0, 8)) + '</span></td>'
+        + '<td class="ts">' + fmtTime(s.first_event) + '</td>'
+        + '<td style="color:var(--muted)">' + (s.event_count ?? 0) + '</td>'
+        + '<td style="color:var(--muted)">' + (s.tool_calls ?? 0) + '</td>'
+        + '<td style="color:var(--blue)">' + (s.validate_code_calls ?? 0) + '</td>'
+        + '<td>' + (s.used_validate_intent ? dot('green') : dot('red')) + '</td>'
+        + '<td style="color:var(--muted)">' + (s.diagnostics_emitted ?? 0) + '</td>'
+        + '<td style="color:var(--green)">' + (s.outcomes_resolved ?? 0) + '</td>'
+        + '<td style="color:var(--red)">' + (s.outcomes_regressed ?? 0) + '</td>'
+        + '<td style="color:' + netCls + ';font-weight:bold">' + netSign + net + '</td>'
+        + '</tr>';
+    }).join('')
+    + '</tbody></table>';
+}
+
+function renderAnalyticsBigrams() {
+  const el = document.getElementById('an-bigrams');
+  const bigrams = analyticsData?.bigrams || [];
+  if (!bigrams.length) {
+    el.innerHTML = '<span class="an-empty">No tool sequence data yet.</span>';
+    return;
+  }
+
+  const top = bigrams.slice(0, 20);
+  el.innerHTML = top.map(b =>
+    '<div class="an-bigram-row">'
+    + '<span class="an-bigram-seq">' + escHtml(b.bigram[0]) + ' <span class="an-bigram-arrow">-></span> ' + escHtml(b.bigram[1]) + '</span>'
+    + '<span class="an-bigram-metric"><b>' + b.count + '</b>x</span>'
+    + '<span class="an-bigram-metric">lift <b>' + b.lift.toFixed(1) + '</b></span>'
+    + '<span class="an-bigram-metric">conf <b>' + (b.confidence * 100).toFixed(0) + '%</b></span>'
+    + '</div>'
+  ).join('');
+}
+
 // ── A5: Tool Lab ────────────────────────────────────────────────────────
 let toolLabLoaded = false;
 
@@ -3539,6 +3864,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Tool Insights refresh
   document.getElementById('ti-refresh-btn').addEventListener('click', fetchInsightsData);
+
+  // Analytics tab
+  document.getElementById('an-refresh-btn').addEventListener('click', fetchAnalytics);
+  document.getElementById('an-rebuild-btn').addEventListener('click', rebuildAnalytics);
 
   // False Positive Manager
   document.getElementById('fp-add-btn').addEventListener('click', addSuppression);

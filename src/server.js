@@ -18,6 +18,7 @@ import { createLogger } from './core/logger.js';
 import { LSP_READY_TIMEOUT_MS } from './core/constants.js';
 import { startSessionEventBus } from './core/session-event-bus.js';
 import { openBlobStore } from './core/blob-store.js';
+import { openAnalyticsStore } from './core/analytics-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -60,6 +61,15 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     blobStore = openBlobStore(join(projectDir, '.pos-supervisor', 'blobs'));
   } catch (e) {
     log(`blob-store: failed to open (${e.message}); content hashes will not be stored`);
+  }
+
+  // ── Analytics store (Phase B — derived from NDJSON, disposable) ────────────
+  let analyticsStore = null;
+  try {
+    analyticsStore = openAnalyticsStore(join(projectDir, '.pos-supervisor', 'analytics.db'));
+    log('analytics-store: opened');
+  } catch (e) {
+    log(`analytics-store: failed to open (${e.message}); analytics will not be available`);
   }
 
   // ── In-memory session stats (not written to JSONL to keep log entries small) ──
@@ -506,6 +516,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     session,
     sessionBus,
     blobStore,
+    analyticsStore,
     log,
     emit,
   };
@@ -601,10 +612,11 @@ export async function createServer({ projectDir, httpPort = 0 }) {
         scaffoldRuns: session.scaffoldRuns,
         hintEffectiveness: session.hintEffectiveness,
         pipelineTraces: [...session.pipelineTraces.entries()].map(([path, trace]) => ({ path, trace })),
+        analytics: analyticsStore ? analyticsStore.stats() : null,
       };
     }
     const dataRoot = join(__dirname, 'data');
-    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary });
+    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────
@@ -613,6 +625,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     log(`Shutting down (${reason})...`);
     try { saveSessionSummary(); } catch {}
     try { fsWatcher?.close(); } catch {}
+    try { analyticsStore?.close(); } catch {}
     try { sessionBus.close(); } catch {} // runs final replay-vs-projection invariant + closes NDJSON
     lsp.stop();
     closeLogger();

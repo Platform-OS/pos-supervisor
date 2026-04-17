@@ -1,0 +1,4 @@
+Add translation key `greeting` to `app/translations/en.yml`:
+```yaml
+greeting: "TODO"
+```
