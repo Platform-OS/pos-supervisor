@@ -1,1 +1,0 @@
-`img_url` is a Shopify filter — not in platformOS. Use `asset_url` instead. For static assets; for dynamic image resizing use external CDN or CSS

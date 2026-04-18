@@ -1,1 +1,0 @@
-Variable `totally_unknown_page_var` is not defined in the current scope. Use `context.totally_unknown_page_var` for built-in objects, or ensure it's assigned before use with `{% assign %}`, `{% graphql %}`, or `{% function %}`.

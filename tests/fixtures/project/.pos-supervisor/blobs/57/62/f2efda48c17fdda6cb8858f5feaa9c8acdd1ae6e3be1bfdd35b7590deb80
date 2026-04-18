@@ -1,6 +1,0 @@
-'money' is not a valid filter in platformOS Liquid.
-
- → APPLY: `money` is a Shopify-specific filter — not in platformOS. Format manually: value | divided_by: 100.0 | round: 2
-
-Fixing existing code: if this filter is from Shopify or another platform, replace the entire expression with the platformOS equivalent — there may not be a 1:1 filter replacement.
-Building new code: find the correct platformOS filter via lookup.

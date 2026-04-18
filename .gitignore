@@ -10,5 +10,14 @@ node_modules/
 .mcp.json
 CLAUDE.md
 /.pos-supervisor
-# Test-generated session logs (integration tests spawn servers against fixtures)
+
+# Test artifacts — integration tests write to fixture .pos-supervisor dirs
 **/.pos-supervisor/sessions/
+**/.pos-supervisor/blobs/
+**/.pos-supervisor/analytics.db
+**/.pos-supervisor/analytics.db-wal
+**/.pos-supervisor/analytics.db-shm
+
+# Stray test/scratch files
+/t
+/2026-*.txt

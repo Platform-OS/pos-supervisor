@@ -1,4 +1,0 @@
----
-slug: test_valid
----
-{% render 'blog_posts/list' %}

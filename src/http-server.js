@@ -10,6 +10,7 @@ import { buildDashboardHtml } from './dashboard.js';
 import { getProjectMap } from './tools/project-map.js';
 import { buildDependencyGraph } from './core/dependency-graph.js';
 import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams } from './core/analytics-queries.js';
+import { ruleScores, suggestedRules, retrieveCasesByCheck, generateRuleTemplate } from './core/case-base.js';
 
 /**
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
@@ -89,8 +90,22 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       return handleGetDependencyTree(projectDir, getStatus, res);
     }
 
-    // ── POST routes (need body parsing) ─────────────────────────────────
+    // ── POST routes (no body) ────────────────────────────────────────────
     if (method === 'POST') {
+      if (url.pathname === '/api/lsp/restart') {
+        return handleLspRestart(restartLsp, res);
+      }
+
+      if (url.pathname === '/api/sessions/save') {
+        if (saveSessionSummary) { saveSessionSummary(); }
+        return sendJson(res, 200, { ok: true });
+      }
+
+      if (url.pathname === '/api/analytics/rebuild') {
+        return handleAnalyticsRebuild(analyticsStore, sessionsDir, res);
+      }
+
+      // ── POST routes (need body parsing) ───────────────────────────────
       let body;
       try {
         body = await readJsonBody(req);
@@ -100,10 +115,6 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
 
       if (url.pathname === '/call') {
         return handleCall(registry, body, res);
-      }
-
-      if (url.pathname === '/api/lsp/restart') {
-        return handleLspRestart(restartLsp, res);
       }
 
       if (url.pathname === '/api/pos-cli/data-clean') {
@@ -116,15 +127,6 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
 
       if (url.pathname === '/api/suppressions') {
         return handlePostSuppression(projectDir, body, log, res);
-      }
-
-      if (url.pathname === '/api/sessions/save') {
-        if (saveSessionSummary) { saveSessionSummary(); }
-        return sendJson(res, 200, { ok: true });
-      }
-
-      if (url.pathname === '/api/analytics/rebuild') {
-        return handleAnalyticsRebuild(analyticsStore, sessionsDir, res);
       }
     }
 
@@ -148,6 +150,18 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
 
     if (method === 'GET' && url.pathname === '/api/analytics/bigrams') {
       return handleAnalyticsBigrams(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/rule-scores') {
+      return handleRuleScores(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/suggested-rules') {
+      return handleSuggestedRules(analyticsStore, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/cases') {
+      return handleCases(analyticsStore, url, res);
     }
 
     // ── Fallback ────────────────────────────────────────────────────────
@@ -548,6 +562,42 @@ function handleAnalyticsBigrams(analyticsStore, url, res) {
     const sessionId = url.searchParams.get('session_id') || undefined;
     const bigrams = toolSequenceBigrams(analyticsStore, { sessionId });
     sendJson(res, 200, { bigrams });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleRuleScores(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const minEmitted = parseInt(url.searchParams.get('min_emitted') || '5', 10);
+    const scores = ruleScores(analyticsStore, { minEmitted });
+    sendJson(res, 200, { scores });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleSuggestedRules(analyticsStore, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const suggestions = suggestedRules(analyticsStore).map(s => ({
+      ...s,
+      template: generateRuleTemplate(s),
+    }));
+    sendJson(res, 200, { suggestions });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleCases(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const check = url.searchParams.get('check');
+    if (!check) return sendJson(res, 400, { error: 'check parameter required' });
+    const cases = retrieveCasesByCheck(analyticsStore, check, { minCases: 1 });
+    sendJson(res, 200, { cases });
   } catch (e) {
     sendJson(res, 500, { error: e.message });
   }

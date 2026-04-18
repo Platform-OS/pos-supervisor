@@ -26,6 +26,7 @@ export function extractAllFromAST(ast) {
   let method = null;
   const seenRenders = new Set();
   const renders = [];
+  const renderCalls = [];
   const seenGQL = new Set();
   const graphql = [];
   const filters = new Set();
@@ -53,22 +54,29 @@ export function extractAllFromAST(ast) {
       case NodeTypes.LiquidTag: {
         tags.add(node.name);
         if (node.name === NamedTags.render || node.name === 'include') {
-          // Track both render and include — include is deprecated but still used
-          // by module APIs (modules/*/helpers/*) for scope sharing.
           if (typeof node.markup === 'string') {
             const partialMatch = node.markup.match(/^["']([^"']+)['"]/);
-            if (partialMatch && !seenRenders.has(partialMatch[1])) {
-              seenRenders.add(partialMatch[1]);
-              renders.push(partialMatch[1]);
+            if (partialMatch) {
+              const partialName = partialMatch[1];
+              if (!seenRenders.has(partialName)) {
+                seenRenders.add(partialName);
+                renders.push(partialName);
+              }
+              const args = extractArgsFromMarkupString(node.markup);
+              renderCalls.push({ partial: partialName, args });
             }
             for (const km of node.markup.matchAll(/["']([^"']+)['"]\s*\|\s*t\b/g)) {
               transKeys.add(km[1]);
             }
           } else {
             const partial = node.markup?.partial;
-            if (partial?.type === NodeTypes.String && !seenRenders.has(partial.value)) {
-              seenRenders.add(partial.value);
-              renders.push(partial.value);
+            if (partial?.type === NodeTypes.String) {
+              if (!seenRenders.has(partial.value)) {
+                seenRenders.add(partial.value);
+                renders.push(partial.value);
+              }
+              const args = extractArgsFromMarkup(node.markup);
+              renderCalls.push({ partial: partial.value, args });
             }
           }
         } else if (node.name === NamedTags.graphql) {
@@ -116,7 +124,23 @@ export function extractAllFromAST(ast) {
     }
   });
 
-  return { slug, layout, method, renders, graphql, filters, tags, transKeys, prompts, docParams };
+  return { slug, layout, method, renders, renderCalls, graphql, filters, tags, transKeys, prompts, docParams };
+}
+
+function extractArgsFromMarkup(markup) {
+  if (!markup?.args) return [];
+  return markup.args
+    .filter(a => a.type === NodeTypes.NamedArgument && typeof a.name === 'string')
+    .map(a => a.name);
+}
+
+function extractArgsFromMarkupString(markupStr) {
+  const args = [];
+  const afterPartial = markupStr.replace(/^["'][^"']+["']\s*,?\s*/, '');
+  for (const m of afterPartial.matchAll(/(\w+)\s*:/g)) {
+    args.push(m[1]);
+  }
+  return args;
 }
 
 /**

@@ -1,1 +1,0 @@
-{% render 'products/nonexistent_card' %}

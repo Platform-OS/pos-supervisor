@@ -1,4 +1,5 @@
 import { VALID_DOMAINS } from '../core/domain-detector.js';
+import { ruleScores } from '../core/case-base.js';
 
 export const serverStatusTool = {
   name: 'server_status',
@@ -8,6 +9,14 @@ export const serverStatusTool = {
   createHandler(ctx) {
     return async () => {
       const pending = ctx.session?.pending ?? null;
+      let disabledRules = [];
+      if (ctx.analyticsStore) {
+        try {
+          disabledRules = ruleScores(ctx.analyticsStore, { minEmitted: 10 })
+            .filter(s => s.disabled)
+            .map(s => ({ rule_id: s.rule_id, effectiveness: s.effectiveness, total_outcomes: s.total_outcomes }));
+        } catch { /* non-fatal */ }
+      }
       return {
         server: 'pos-supervisor',
         version: ctx.version,
@@ -42,6 +51,8 @@ export const serverStatusTool = {
           contains: 'Section 0 mandatory workflow, MUST/MUST NOT rules, and full platform reference. Single source of truth for platformOS agent sessions.',
         },
         tip: 'MUST call load_development_guide and domain_guide(domain) for every domain you touch BEFORE writing code. Covers gotchas, patterns, and auth rules not in training data. Skipping these is the #1 cause of broken platformOS code.',
+
+        disabled_rules: disabledRules,
 
         session_pending: pending ? {
           files:        [...pending.files],

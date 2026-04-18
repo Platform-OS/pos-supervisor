@@ -1,8 +1,0 @@
----
-slug: events/edit
-layout: application
----
-{% liquid
-  function object = 'queries/events/find', id: context.params.id
-  render 'events/edit', object: object
-%}

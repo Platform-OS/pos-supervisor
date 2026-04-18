@@ -11,9 +11,11 @@ class ProjectFactGraph {
     this._byType = new Map();
     this._dependsOn = new Map();
     this._referencedBy = new Map();
+    this._renderCalls = new Map();
 
     this._indexNodes();
     this._buildEdges();
+    this._indexRenderCalls();
   }
 
   _addNode(type, key, path, props = {}) {
@@ -38,13 +40,15 @@ class ProjectFactGraph {
     for (const [key, page] of Object.entries(m.pages ?? {})) {
       this._addNode('page', key, page.path, {
         slug: page.slug, method: page.method, layout: page.layout,
-        renders: page.renders, function_calls: page.function_calls,
+        renders: page.renders, render_calls: page.render_calls,
+        function_calls: page.function_calls,
       });
     }
 
     for (const [name, partial] of Object.entries(m.partials ?? {})) {
       this._addNode('partial', name, partial.path, {
         params: partial.params, renders: partial.renders,
+        render_calls: partial.render_calls,
         function_calls: partial.function_calls, rendered_by: partial.rendered_by,
       });
     }
@@ -74,7 +78,11 @@ class ProjectFactGraph {
     }
 
     for (const [path, layout] of Object.entries(m.layouts ?? {})) {
-      this._addNode('layout', path, layout.path);
+      this._addNode('layout', path, layout.path, {
+        renders: layout.renders,
+        render_calls: layout.render_calls,
+        function_calls: layout.function_calls,
+      });
     }
 
     for (const [locale, keys] of Object.entries(m.translations ?? {})) {
@@ -93,6 +101,16 @@ class ProjectFactGraph {
   _buildEdges() {
     const m = this._map;
 
+    const layoutsByName = {};
+    for (const layout of Object.values(m.layouts ?? {})) {
+      if (!layout?.path) continue;
+      const name = layout.path
+        .replace(/^app\/views\/layouts\//, '')
+        .replace(/\.html\.liquid$/, '')
+        .replace(/\.liquid$/, '');
+      layoutsByName[name] = layout.path;
+    }
+
     for (const page of Object.values(m.pages ?? {})) {
       if (!page?.path) continue;
       for (const r of page.renders ?? []) {
@@ -100,6 +118,20 @@ class ProjectFactGraph {
       }
       for (const fc of page.function_calls ?? []) {
         this._addEdge(page.path, resolveFunctionTarget(fc.path));
+      }
+      if (page.layout) {
+        const layoutPath = layoutsByName[page.layout];
+        if (layoutPath) this._addEdge(page.path, layoutPath);
+      }
+    }
+
+    for (const layout of Object.values(m.layouts ?? {})) {
+      if (!layout?.path) continue;
+      for (const r of layout.renders ?? []) {
+        this._addEdge(layout.path, resolveRenderTarget(r, m, layout.path));
+      }
+      for (const fc of layout.function_calls ?? []) {
+        this._addEdge(layout.path, resolveFunctionTarget(fc.path));
       }
     }
 
@@ -130,6 +162,15 @@ class ProjectFactGraph {
       for (const g of q.graphql_calls ?? []) {
         const opName = typeof g === 'string' ? g : g?.queryName;
         this._addEdge(qPath, resolveGraphqlTarget(opName));
+      }
+    }
+  }
+
+  _indexRenderCalls() {
+    for (const [path, node] of this._nodes) {
+      const calls = node.render_calls;
+      if (calls && calls.length > 0) {
+        this._renderCalls.set(path, calls);
       }
     }
   }
@@ -215,5 +256,27 @@ class ProjectFactGraph {
       }
     }
     return missing;
+  }
+
+  renderCallsFrom(filePath) {
+    return this._renderCalls.get(filePath) ?? [];
+  }
+
+  renderCallsTo(partialKey) {
+    const results = [];
+    for (const [callerPath, calls] of this._renderCalls) {
+      for (const call of calls) {
+        if (call.partial === partialKey) {
+          results.push({ callerPath, args: call.args });
+        }
+      }
+    }
+    return results;
+  }
+
+  partialSignature(partialKey) {
+    const node = this.nodeByKey('partial', partialKey);
+    if (!node) return null;
+    return node.params ?? [];
   }
 }

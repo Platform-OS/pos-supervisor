@@ -10,12 +10,22 @@ import { rules as MissingPartialRules } from './MissingPartial.js';
 import { rules as UndefinedObjectRules } from './UndefinedObject.js';
 import { rules as UnknownFilterRules } from './UnknownFilter.js';
 import { rules as TranslationKeyExistsRules } from './TranslationKeyExists.js';
+import { rules as UnusedAssignRules } from './UnusedAssign.js';
+import { rules as MissingRenderPartialArgumentsRules } from './MissingRenderPartialArguments.js';
+import { rules as UnknownPropertyRules } from './UnknownProperty.js';
+import { rules as MetadataParamsCheckRules } from './MetadataParamsCheck.js';
+import { rules as GraphQLCheckRules } from './GraphQLCheck.js';
 
 const ALL_RULE_MODULES = [
   MissingPartialRules,
   UndefinedObjectRules,
   UnknownFilterRules,
   TranslationKeyExistsRules,
+  UnusedAssignRules,
+  MissingRenderPartialArgumentsRules,
+  UnknownPropertyRules,
+  MetadataParamsCheckRules,
+  GraphQLCheckRules,
 ];
 
 let _loaded = false;

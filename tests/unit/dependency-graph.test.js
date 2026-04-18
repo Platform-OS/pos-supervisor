@@ -1,5 +1,5 @@
 /**
- * dependency-graph unit tests — pins the edge resolution and dead code
+ * dependency-graph unit tests — pins the edge resolution and orphaned file
  * classification that Phase 2.2 introduces. These are pure-function tests
  * against a synthetic project_map shape — no LSP, no filesystem.
  */
@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   buildDependencyGraph,
-  detectDeadCode,
+  detectOrphanedFiles,
   resolveRenderTarget,
   resolveFunctionTarget,
   resolveGraphqlTarget,
@@ -193,9 +193,9 @@ describe('dependency-graph: buildDependencyGraph', () => {
   });
 });
 
-// ── Dead code ────────────────────────────────────────────────────────────────
+// ── Orphaned files ───────────────────────────────────────────────────────────
 
-describe('dependency-graph: detectDeadCode', () => {
+describe('dependency-graph: detectOrphanedFiles', () => {
   it('flags a partial that nothing references', () => {
     const map = {
       pages: {}, partials: { 'unused': { path: 'app/views/partials/unused.liquid' } },
@@ -204,7 +204,7 @@ describe('dependency-graph: detectDeadCode', () => {
     const graph = {
       'app/views/partials/unused.liquid': { depends_on: [], referenced_by: [] },
     };
-    expect(detectDeadCode(graph, map)).toContain('app/views/partials/unused.liquid');
+    expect(detectOrphanedFiles(graph, map)).toContain('app/views/partials/unused.liquid');
   });
 
   it('never flags a page as dead — pages are HTTP entry points', () => {
@@ -215,7 +215,7 @@ describe('dependency-graph: detectDeadCode', () => {
     const graph = {
       'app/views/pages/p.html.liquid': { depends_on: [], referenced_by: [] },
     };
-    expect(detectDeadCode(graph, map)).not.toContain('app/views/pages/p.html.liquid');
+    expect(detectOrphanedFiles(graph, map)).not.toContain('app/views/pages/p.html.liquid');
   });
 
   it('exempts build/check/execute subphase files anywhere in the path', () => {
@@ -225,7 +225,7 @@ describe('dependency-graph: detectDeadCode', () => {
       'app/lib/commands/blog_posts/update/check.liquid': { depends_on: [], referenced_by: [] },
       'app/lib/commands/execute.liquid':                 { depends_on: [], referenced_by: [] },
     };
-    const dead = detectDeadCode(graph, map);
+    const dead = detectOrphanedFiles(graph, map);
     expect(dead).not.toContain('app/lib/commands/blog_posts/create/build.liquid');
     expect(dead).not.toContain('app/lib/commands/blog_posts/update/check.liquid');
     expect(dead).not.toContain('app/lib/commands/execute.liquid');
@@ -241,7 +241,7 @@ describe('dependency-graph: detectDeadCode', () => {
     const graph = {
       'app/lib/commands/blog_posts/create.liquid': { depends_on: [], referenced_by: [] },
     };
-    expect(detectDeadCode(graph, map)).toContain('app/lib/commands/blog_posts/create.liquid');
+    expect(detectOrphanedFiles(graph, map)).toContain('app/lib/commands/blog_posts/create.liquid');
   });
 
   it('does NOT flag a command whose caller is in the graph', () => {
@@ -255,7 +255,7 @@ describe('dependency-graph: detectDeadCode', () => {
       'app/views/pages/p.html.liquid':    { depends_on: ['app/lib/commands/x/create.liquid'], referenced_by: [] },
       'app/lib/commands/x/create.liquid': { depends_on: [], referenced_by: ['app/views/pages/p.html.liquid'] },
     };
-    expect(detectDeadCode(graph, map)).not.toContain('app/lib/commands/x/create.liquid');
+    expect(detectOrphanedFiles(graph, map)).not.toContain('app/lib/commands/x/create.liquid');
   });
 
   it('skips external module paths (they are read-only)', () => {
@@ -263,6 +263,6 @@ describe('dependency-graph: detectDeadCode', () => {
     const graph = {
       'modules/user/helpers/thing.liquid': { depends_on: [], referenced_by: [] },
     };
-    expect(detectDeadCode(graph, map)).toEqual([]);
+    expect(detectOrphanedFiles(graph, map)).toEqual([]);
   });
 });

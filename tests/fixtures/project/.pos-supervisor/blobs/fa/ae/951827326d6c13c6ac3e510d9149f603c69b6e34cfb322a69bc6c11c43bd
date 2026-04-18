@@ -1,7 +1,0 @@
----
-slug: test-page
----
-{% doc %}
-  @param new_thing {string} Something new
-{% enddoc %}
-<div>{{ new_thing }}</div>

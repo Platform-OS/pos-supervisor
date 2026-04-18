@@ -1,1 +1,0 @@
-Create missing file: `app/views/partials/does/not/exist/anywhere.liquid`. Use `scaffold` tool or create manually with appropriate `{% doc %}` block.

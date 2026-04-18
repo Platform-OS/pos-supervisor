@@ -11,14 +11,14 @@ import {
   buildPendingPartialNames,
   buildPendingPageKeys,
 } from '../core/diagnostic-pipeline.js';
-import { buildDependencyGraph, detectDeadCode } from '../core/dependency-graph.js';
+import { buildDependencyGraph, detectOrphanedFiles } from '../core/dependency-graph.js';
 import { findOrphanPartials } from '../core/orphan-detector.js';
 import { resolveRenderName } from '../core/project-scanner.js';
 import { buildFactGraph } from '../core/project-fact-graph.js';
 
 export const analyzeProjectTool = {
   name: 'analyze_project',
-  description: 'Cross-file project health overview. Returns per-file error/warning counts, dependency graph, broken references, dead code, and schema issues. Use validate_code on individual files for full diagnostics, fix proposals, and context-aware analysis.',
+  description: 'Cross-file project health overview. Returns per-file error/warning counts, dependency graph, broken references, orphaned files, and schema issues. Use validate_code on individual files for full diagnostics, fix proposals, and context-aware analysis.',
   inputSchema: {
     files: z.array(z.string()).optional().describe('List of file paths (relative to project root) to analyze. Omit to analyze all project files.'),
     min_severity: z.enum(['error', 'warning', 'info']).optional().describe('Minimum severity to include in file counts. "error" = only list files with errors, "warning" = errors + warnings (default), "info" = everything.'),
@@ -174,14 +174,14 @@ export const analyzeProjectTool = {
       // authoritative graph surfaced to the agent.
       const dependencyGraph = buildDependencyGraph(projectMap, lspOverlay);
 
-      // Cross-file integrity checks + dead code detection.
+      // Cross-file integrity checks + orphaned file detection.
       let integrity = [];
-      let dead_code = [];
+      let orphaned_files = [];
       try {
         integrity = performIntegrityChecks(projectMap);
-        dead_code = detectDeadCode(dependencyGraph, projectMap);
+        orphaned_files = detectOrphanedFiles(dependencyGraph, projectMap);
       } catch {
-        // Integrity checks and dead code detection are best-effort.
+        // Integrity checks and orphaned file detection are best-effort.
       }
 
       // Apply severity filter to integrity issues
@@ -226,7 +226,7 @@ export const analyzeProjectTool = {
         blocking_files: blockingFiles,
         diff_from_last_run: diff,
         dependency_graph: dependencyGraph,
-        dead_code,
+        orphaned_files,
         integrity,
         lint_errors: lintErrors,
         lint_warnings: lintWarnings,
@@ -441,7 +441,7 @@ function performIntegrityChecks(projectMap) {
   }
 
   // 4. Orphan partials (never rendered by anything) — shared predicate so
-  //    validate_intent P5 and dependency-graph dead-code detection use the
+  //    validate_intent P5 and dependency-graph orphaned-file detection use the
   //    same rule. See src/core/orphan-detector.js.
   for (const { name, path } of findOrphanPartials(projectMap)) {
     issues.push({

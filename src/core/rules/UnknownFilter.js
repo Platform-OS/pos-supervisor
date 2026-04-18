@@ -47,6 +47,7 @@ export const rules = [
       return {
         rule_id: 'UnknownFilter.shopify_filter',
         hint_md: suggestion,
+        suggestion,
         fixes: [],
         confidence: 0.9,
         see_also: {

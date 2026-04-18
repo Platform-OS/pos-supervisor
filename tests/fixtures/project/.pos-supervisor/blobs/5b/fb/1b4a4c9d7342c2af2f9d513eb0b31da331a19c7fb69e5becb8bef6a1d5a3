@@ -1,5 +1,0 @@
----
-slug: parity_test
----
-{{ undefined_var }}
-{{ 'hello' | nonexistent_filter }}

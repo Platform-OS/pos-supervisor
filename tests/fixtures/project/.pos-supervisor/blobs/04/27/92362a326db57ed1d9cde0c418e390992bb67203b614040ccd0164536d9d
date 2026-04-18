@@ -1,1 +1,0 @@
-Use `context.params` instead of bare `params`. In pages, all built-in objects require the `context.` prefix: `context.params`, `context.session`, `context.current_user`, `context.page`.

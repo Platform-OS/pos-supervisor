@@ -1,4 +1,0 @@
-{% graphql g = 'products/search' %}
-{% for item in g.records.results %}
-  {{ item.id }}
-{% endfor %}

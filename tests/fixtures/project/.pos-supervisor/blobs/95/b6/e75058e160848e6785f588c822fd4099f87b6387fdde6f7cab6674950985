@@ -1,2 +1,0 @@
-{{ shop.name }}
-{{ customer.email }}

@@ -1,1 +1,0 @@
-Create missing file: `app/views/partials/products/search.liquid`. Use `scaffold` tool or create manually with appropriate `{% doc %}` block.

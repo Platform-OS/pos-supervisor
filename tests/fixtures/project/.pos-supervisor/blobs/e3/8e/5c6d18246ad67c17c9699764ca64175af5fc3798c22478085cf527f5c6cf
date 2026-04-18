@@ -1,8 +1,0 @@
----
-slug: pos_test
----
-{% liquid
-  assign x = 'hello'
-  function result = 'queries/blog_posts/search'
-  assign y = result.total_entries
-%}

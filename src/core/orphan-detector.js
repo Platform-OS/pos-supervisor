@@ -6,7 +6,7 @@
  *
  *   1. `analyze-project.js` checkIntegrity → iterated `projectMap.partials`
  *       and emitted `orphan_partial` issues whenever `rendered_by.length === 0`.
- *   2. `dependency-graph.js` `detectDeadCode` → iterated the graph and
+ *   2. `dependency-graph.js` `detectOrphanedFiles` → iterated the graph and
  *       applied entry-point exemptions (pages, subphases, graphql).
  *   3. `intent-validator.js` P5 → checked one partial at a time, combining
  *       project-state evidence with plan-local `referencedPartials`.
@@ -39,7 +39,7 @@ export function isPartialRendered(partialName, projectMap) {
  * Use for:
  *   - validate_intent P5 (new partial about to be created)
  *   - analyze_project integrity (existing partials without renderers)
- *   - dependency-graph dead-code detection (partial-class files)
+ *   - dependency-graph orphaned-file detection (partial-class files)
  *
  * A partial is NOT orphaned when any of the following is true:
  *   - any file in project_map renders it
@@ -86,7 +86,7 @@ export function findOrphanPartials(projectMap, { planReferencedPartials } = {}) 
  * Subphase command/query files live under /build/, /check/, /execute/ and are
  * called by convention at runtime — parent command files rarely wire them
  * explicitly, so static analysis always marks them orphaned. They must never
- * be flagged as dead code.
+ * be flagged as orphaned.
  */
 export function isSubphaseFile(path) {
   return /\/build(\/|\.liquid$)|\/check(\/|\.liquid$)|\/execute(\/|\.liquid$)/.test(path);

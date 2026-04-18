@@ -1,1 +1,0 @@
-Variable `some_undefined_variable` is not defined. In partials, all variables must be passed explicitly. Add a `{% doc %}` block: `{% doc %} @param {object} some_undefined_variable {% enddoc %}` and pass it from the caller.

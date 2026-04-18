@@ -1,1 +1,0 @@
-{% graphql g = 'users/search', id: 1 %}

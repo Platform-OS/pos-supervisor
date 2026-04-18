@@ -1,8 +1,0 @@
-{% doc %}
-  @param {object} object
-  @param {string} id
-{% enddoc %}
-{% liquid
-  assign item = object
-  return item
-%}

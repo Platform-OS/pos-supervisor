@@ -1,4 +1,0 @@
----
-slug: clean
----
-{% assign greeting = "hello" %}

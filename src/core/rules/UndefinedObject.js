@@ -29,6 +29,7 @@ export const rules = [
       return {
         rule_id: 'UndefinedObject.shopify_object',
         hint_md: `${kb?.shopify_guidance ?? suggestion}\n\n${suggestion}`,
+        suggestion,
         fixes: [],
         confidence: 0.95,
         see_also: {

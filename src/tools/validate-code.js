@@ -38,7 +38,7 @@ const BLOCKING_WARNINGS = new Set([
   'pos-supervisor:RemovedRender',     // removing render breaks user-visible behavior
   'pos-supervisor:RemovedGraphQL',    // removing graphql call drops data fetch
   'pos-supervisor:RemovedParam',      // removing @param breaks callers
-  'OrphanedPartial',                  // not reachable — shipping means dead code
+  'OrphanedPartial',                  // not reachable — shipping means orphaned file
 ]);
 
 export const validateCodeTool = {
@@ -234,6 +234,7 @@ explicitly only if you are validating a file that is NOT part of the most recent
           objectsIndex: ctx.objectsIndex,
           tagsIndex: ctx.tagsIndex,
           schemaIndex: ctx.schemaIndex,
+          analyticsStore: ctx.analyticsStore,
           content,
           factGraph,
           filePath: file_path,

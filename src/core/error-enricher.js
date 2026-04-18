@@ -1,5 +1,5 @@
 import { getHint } from './hint-loader.js';
-import { extractParams } from './diagnostic-record.js';
+import { extractParams, templateOf } from './diagnostic-record.js';
 import { isShopifyObject, isShopifyFilter, getShopifyObject, getShopifyFilter } from './knowledge-loader.js';
 import { runRules, hasRules } from './rules/engine.js';
 
@@ -28,7 +28,7 @@ function extractHoverText(result) {
  * @param {object} ctx.schemaIndex
  * @returns {Promise<object>} Enriched diagnostic
  */
-export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsIndex, tagsIndex, schemaIndex, content, _hoverCache, factGraph, filePath }) {
+export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, content, _hoverCache, factGraph, filePath }) {
   const result = { ...diagnostic };
 
   // 1. Hint set per-check below with template vars; fallback for unhandled checks at end
@@ -56,14 +56,17 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   //     hint/see_also/rule_id and skip the regex-based enrichment below.
   if (factGraph && hasRules(diagnostic.check)) {
     const params = extractParams(diagnostic.check, diagnostic.message);
-    const diag = { check: diagnostic.check, params, message: diagnostic.message, file: filePath, line: diagnostic.line };
-    const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex };
+    const tmplFp = templateOf(diagnostic.check, diagnostic.message);
+    const diag = { check: diagnostic.check, params, message: diagnostic.message, file: filePath, line: diagnostic.line, template_fp: tmplFp };
+    const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore };
     const ruleResult = runRules(diag, facts);
     if (ruleResult) {
       result.hint = ruleResult.hint_md;
       result.rule_id = ruleResult.rule_id;
+      if (ruleResult.suggestion) result.suggestion = ruleResult.suggestion;
       if (ruleResult.see_also) result.see_also = ruleResult.see_also;
       if (ruleResult.confidence != null) result.confidence = ruleResult.confidence;
+      if (ruleResult.case_base_signal) result.case_base_signal = ruleResult.case_base_signal;
       attachSeeAlso(result, content);
       return result;
     }

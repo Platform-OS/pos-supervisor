@@ -1,4 +1,0 @@
-{% doc %}
-  @param title {string} Title text
-{% enddoc %}
-<h1>{{ title }}</h1>

@@ -1,2 +1,0 @@
-{% assign never_used = 'hello' %}
-<p>Hello</p>

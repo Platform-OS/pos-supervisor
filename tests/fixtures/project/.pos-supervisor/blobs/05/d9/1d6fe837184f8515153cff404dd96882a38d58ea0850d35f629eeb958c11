@@ -1,6 +1,0 @@
-'img_url' is not a valid filter in platformOS Liquid.
-
- → APPLY: `img_url` is a Shopify filter — not in platformOS. Use `asset_url` instead. For static assets; for dynamic image resizing use external CDN or CSS
-
-Fixing existing code: if this filter is from Shopify or another platform, replace the entire expression with the platformOS equivalent — there may not be a 1:1 filter replacement.
-Building new code: find the correct platformOS filter via lookup.

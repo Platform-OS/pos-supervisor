@@ -53,6 +53,7 @@ export async function scanProject(projectDir) {
           method,
           layout: file.structural.layout,
           renders: file.structural.renders,
+          render_calls: file.structural.renderCalls,
           function_calls: file.functionCalls,
         };
         break;
@@ -63,6 +64,7 @@ export async function scanProject(projectDir) {
           path: file.relPath,
           params: [...file.structural.docParams],
           renders: file.structural.renders,
+          render_calls: file.structural.renderCalls,
           function_calls: file.functionCalls,
           rendered_by: [],
         };
@@ -88,7 +90,12 @@ export async function scanProject(projectDir) {
         break;
       }
       case 'layouts': {
-        layouts[file.relPath] = { path: file.relPath };
+        layouts[file.relPath] = {
+          path: file.relPath,
+          renders: file.structural.renders,
+          render_calls: file.structural.renderCalls,
+          function_calls: file.functionCalls,
+        };
         break;
       }
     }
@@ -284,6 +291,7 @@ async function scanLiquidFiles(appDir) {
           layout: extracted.layout,
           method: extracted.method,
           renders: extracted.renders,
+          renderCalls: extracted.renderCalls,
           graphql: extracted.graphql,
           filters: extracted.filters,
           tags: extracted.tags,

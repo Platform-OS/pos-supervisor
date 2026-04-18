@@ -374,8 +374,8 @@ export function buildDashboardHtml() {
   .ex-sidebar-panel { background: var(--bg); border: 1px solid var(--border); margin-bottom: 16px; box-shadow: 2px 2px 0 var(--border); }
   .ex-sidebar-title { font-size: 11px; text-transform: uppercase; color: var(--blue); padding: 10px 14px; border-bottom: 1px dashed var(--border); background: var(--surface); font-weight: bold; }
   .ex-sidebar-body { padding: 12px 14px; }
-  .ex-dead-item { font-size: 10px; padding: 4px 8px; border: 1px solid var(--border); margin-bottom: 6px; color: var(--muted); word-break: break-all; background: var(--surface); }
-  .ex-dead-item::before { content: "DEL "; color: var(--red); font-weight: bold; }
+  .ex-orphan-item { font-size: 10px; padding: 4px 8px; border: 1px solid var(--border); margin-bottom: 6px; color: var(--muted); word-break: break-all; background: var(--surface); }
+  .ex-orphan-item::before { content: "ORPHAN "; color: var(--red); font-weight: bold; }
   .ex-integrity-item { border: 1px dashed var(--yellow); padding: 8px 10px; margin-bottom: 10px; }
   .ex-integrity-item:last-child { margin-bottom: 0; }
   .ex-integrity-type { font-size: 10px; font-weight: bold; text-transform: uppercase; color: var(--yellow); margin-bottom: 4px; }
@@ -746,7 +746,7 @@ export function buildDashboardHtml() {
 <div class="tab-content active" id="tab-overview">
 
   <section>
-    <h2>Session Health</h2>
+    <h2>Project Health</h2>
     <div class="compliance-grid" id="compliance-grid">
       <span class="empty">loading…</span>
     </div>
@@ -828,7 +828,7 @@ export function buildDashboardHtml() {
 
   <section>
     <h2>Project Analysis</h2>
-    <div class="ti-legend">Runs <code>analyze_project</code> for stuck files, dead code, integrity, orphans, cycles. Pair with the Project Map in the Explorer tab to interpret findings in context.</div>
+    <div class="ti-legend">Runs <code>analyze_project</code> for stuck files, orphaned files, integrity, orphans, cycles. Pair with the Project Map in the Explorer tab to interpret findings in context.</div>
     <div class="ex-refresh-bar">
       <button id="ht-refresh-btn">Run Analysis</button>
       <span class="ts" id="ht-last-fetched"></span>
@@ -1073,6 +1073,18 @@ export function buildDashboardHtml() {
     <div class="an-section-title">Tool Sequence Patterns</div>
     <div class="an-legend">Frequently observed tool-call pairs across all sessions with <b>lift</b> (how much more likely than chance) and <b>confidence</b> (probability of B following A). High lift + high confidence = strong workflow pattern.</div>
     <div id="an-bigrams"><span class="an-empty">No sequence data yet.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Rule Performance</div>
+    <div class="an-legend">Per-rule effectiveness scores. <b>Effectiveness</b> = resolution_rate - regression_rate. Rules below 15% effectiveness with 10+ outcomes are flagged for <b>disabling</b>. A disabled rule means its hint is doing more harm than good.</div>
+    <div id="an-rule-scores"><span class="an-empty">No rule score data yet.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Suggested Rules</div>
+    <div class="an-legend">Diagnostics with <b>no matching rule</b> but a clear case-base signal (high resolution rate on consistent fix patterns). These are candidates for new rules — click to see a template. <b>Never auto-merge</b>; always review.</div>
+    <div id="an-suggested-rules"><span class="an-empty">No suggestions yet.</span></div>
   </div>
 
   <div class="an-section">
@@ -1461,52 +1473,100 @@ function renderCompliance(d) {
   }).join('');
 }
 
-// ── Session Health Score ────────────────────────────────────────────────
-// Six weighted checks + error-rate penalty sum to 100. Stored on
-// lastHealth so the tooltip / export reuse the same breakdown.
+// ── Project Health Score ────────────────────────────────────────────────
+// Pure function of project state. Two modes:
+//   1. Before analysis: infrastructure-only (LSP + pos-cli) — caps at 15/100
+//   2. After analysis:  real project health from diagnostic data
+//
+// Dimensions (post-analysis):
+//   Error free     (0-30): % of files with zero errors
+//   Warning free   (0-15): % of files with zero warnings
+//   Integrity      (0-20): broken refs, missing graphql, broken function calls
+//   Orphaned files (0-10): orphaned partial ratio
+//   Schema health  (0-10): schema files passing validation
+//   Infrastructure (0-15): LSP ready + pos-cli found
 let lastHealth = null;
 
 function computeHealthScore(d) {
-  const stats = d.stats || {};
-  const fh = d.fileHistory || [];
-  const stuck = fh.filter(f => (f.consecutiveNonDecreasing || 0) >= 3 && (f.lastErrorCount || 0) > 0).length;
+  const hasAnalysis = !!analysisData;
 
-  let totalCalls = 0;
-  for (const k of Object.keys(stats)) totalCalls += stats[k].calls || 0;
-  const totalErrors = fh.reduce((n, f) => n + (f.lastErrorCount || 0), 0);
-  const dirtyFiles = fh.filter(f => (f.lastErrorCount || 0) > 0).length;
-  const dirtyRate = fh.length ? dirtyFiles / fh.length : 0;
-  // Penalize dirty files proportionally: 0% dirty → +20, 30%+ dirty → 0.
-  const errScore = fh.length ? Math.max(0, Math.round(20 * (1 - Math.min(dirtyRate / 0.3, 1)))) : 20;
+  const infraChecks = [
+    { label: 'LSP ready',    weight: 10, pass: !!d.lspReady },
+    { label: 'pos-cli found', weight: 5, pass: !!d.posCliFound },
+  ];
+  const infraScore = infraChecks.reduce((s, c) => s + (c.pass ? c.weight : 0), 0);
 
-  const noStuckWeight = 20;
-  const stuckRate = fh.length ? stuck / fh.length : 0;
-  const noStuckScore = Math.round(noStuckWeight * (1 - Math.min(stuckRate, 1)));
+  if (!hasAnalysis) {
+    return {
+      score: infraScore,
+      mode: 'infrastructure',
+      checks: infraChecks,
+      totalFiles: 0, totalErrors: 0, totalWarnings: 0,
+      dirtyFiles: 0, dirtyRate: 0,
+      integrityIssues: 0, orphanedCount: 0,
+    };
+  }
+
+  const a = analysisData;
+  const totalFiles = a.files_scanned || 0;
+  const totalErrors = a.total_errors || 0;
+  const totalWarnings = a.total_warnings || 0;
+  const filesWithErrors = (a.files || []).filter(f => f.errors > 0).length;
+  const filesWithWarnings = (a.files || []).filter(f => f.warnings > 0).length;
+  const integrityIssues = (a.integrity || []).filter(i => i.severity === 'error').length;
+  const integrityWarnings = (a.integrity || []).filter(i => i.severity === 'warning').length;
+  const orphanedCount = (a.orphaned_files || []).length;
+  const totalPartials = totalFiles > 0 ? totalFiles : 1;
+
+  // Error free (0-30): ratio of clean files
+  const errorFreeRate = totalFiles > 0 ? (totalFiles - filesWithErrors) / totalFiles : 1;
+  const errorFreeScore = Math.round(30 * errorFreeRate);
+
+  // Warning free (0-15)
+  const warningFreeRate = totalFiles > 0 ? (totalFiles - filesWithWarnings) / totalFiles : 1;
+  const warningFreeScore = Math.round(15 * warningFreeRate);
+
+  // Integrity (0-20): penalize broken references proportionally
+  // 0 issues = 20, 5+ issues = 0
+  const integrityTotal = integrityIssues + integrityWarnings;
+  const integrityScore = Math.max(0, Math.round(20 * (1 - Math.min(integrityTotal / 5, 1))));
+
+  // Orphaned files (0-10): penalize orphaned partials
+  // 0 orphans = 10, 10+ orphans = 0
+  const orphanedScore = Math.max(0, Math.round(10 * (1 - Math.min(orphanedCount / 10, 1))));
+
+  // Schema health (0-10): schema files with issues
+  const schemaFiles = (a.files || []).filter(f => f.path.startsWith('app/schema/'));
+  const schemaErrors = schemaFiles.filter(f => f.errors > 0).length;
+  const totalSchemas = schemaFiles.length;
+  const schemaScore = totalSchemas > 0
+    ? Math.round(10 * (totalSchemas - schemaErrors) / totalSchemas)
+    : 10;
+
+  const score = Math.min(100, errorFreeScore + warningFreeScore + integrityScore + orphanedScore + schemaScore + infraScore);
+
+  const dirtyRate = totalFiles > 0 ? filesWithErrors / totalFiles : 0;
 
   const checks = [
-    { label: 'LSP ready',         weight: 15, pass: !!d.lspReady },
-    { label: 'pos-cli found',     weight: 10, pass: !!d.posCliFound },
-    { label: 'validate_intent',   weight: 15, pass: (stats.validate_intent?.calls || 0) > 0 },
-    { label: 'validate_code',     weight: 10, pass: (stats.validate_code?.calls || 0) > 0 },
-    { label: 'analyze_project',   weight: 10, pass: (stats.analyze_project?.calls || 0) > 0 },
-    { label: 'no stuck files',    weight: noStuckWeight, pass: stuck === 0, partial: noStuckScore, detail: stuck ? stuck + '/' + fh.length + ' stuck' : null },
+    { label: 'error-free files',   weight: 30, partial: errorFreeScore, pass: errorFreeScore === 30, detail: filesWithErrors > 0 ? filesWithErrors + ' file(s) with errors' : null },
+    { label: 'warning-free files', weight: 15, partial: warningFreeScore, pass: warningFreeScore === 15, detail: filesWithWarnings > 0 ? filesWithWarnings + ' file(s) with warnings' : null },
+    { label: 'integrity',          weight: 20, partial: integrityScore, pass: integrityTotal === 0, detail: integrityTotal > 0 ? integrityTotal + ' issue(s)' : null },
+    { label: 'orphaned files',     weight: 10, partial: orphanedScore, pass: orphanedCount === 0, detail: orphanedCount > 0 ? orphanedCount + ' orphan(s)' : null },
+    { label: 'schema health',      weight: 10, partial: schemaScore, pass: schemaErrors === 0, detail: schemaErrors > 0 ? schemaErrors + ' schema(s) with errors' : null },
+    ...infraChecks,
   ];
-  const base = checks.reduce((acc, c) => {
-    if (typeof c.partial === 'number') return acc + c.partial;
-    return acc + (c.pass ? c.weight : 0);
-  }, 0);
-  const score = Math.min(100, base + errScore);
 
   return {
     score,
+    mode: 'project',
     checks,
-    dirtyRate,
-    dirtyFiles,
-    totalFiles: fh.length,
-    totalCalls,
+    totalFiles,
     totalErrors,
-    errScore,
-    stuck,
+    totalWarnings,
+    dirtyFiles: filesWithErrors,
+    dirtyRate,
+    integrityIssues: integrityTotal,
+    orphanedCount,
   };
 }
 
@@ -1529,7 +1589,9 @@ function renderHealthRing(d) {
 
 function showHealthTip(e) {
   if (!lastHealth) return;
-  const rows = lastHealth.checks.map(c => {
+  const h = lastHealth;
+  const title = h.mode === 'project' ? 'PROJECT HEALTH' : 'INFRASTRUCTURE (run analysis for full score)';
+  const rows = h.checks.map(c => {
     const hasPartial = typeof c.partial === 'number';
     const scored = hasPartial ? c.partial : (c.pass ? c.weight : 0);
     const icon = hasPartial ? (c.pass ? '[X]' : '[-]') : (c.pass ? '[X]' : '[ ]');
@@ -1538,13 +1600,13 @@ function showHealthTip(e) {
     return '<div class="row"><span class="' + cls + '">' + icon + ' ' + escHtml(c.label) + detail + '</span>'
       + '<span>+' + scored + '/' + c.weight + '</span></div>';
   }).join('');
-  const errLine = '<div class="row"><span>dirty files ' + (lastHealth.dirtyRate * 100).toFixed(0) + '% ('
-    + lastHealth.dirtyFiles + '/' + lastHealth.totalFiles + ')</span>'
-    + '<span>+' + lastHealth.errScore + '/20</span></div>';
+  const summaryLine = h.mode === 'project'
+    ? '<div class="row"><span>scanned ' + h.totalFiles + ' files: ' + h.totalErrors + ' errors, ' + h.totalWarnings + ' warnings</span></div>'
+    : '';
   const total = '<div class="row" style="border-top:1px dashed var(--border); padding-top:4px; margin-top:4px; font-weight:bold">'
-    + '<span>TOTAL</span><span>' + lastHealth.score + '/100</span></div>';
-  showTip(e, '<div class="health-ring-tip"><div style="color:var(--blue); font-weight:bold; margin-bottom:6px">SESSION HEALTH</div>'
-    + rows + errLine + total + '</div>');
+    + '<span>TOTAL</span><span>' + h.score + '/100</span></div>';
+  showTip(e, '<div class="health-ring-tip"><div style="color:var(--blue); font-weight:bold; margin-bottom:6px">' + title + '</div>'
+    + rows + summaryLine + total + '</div>');
 }
 
 // ── Session Export ──────────────────────────────────────────────────────
@@ -1565,7 +1627,7 @@ function exportSession() {
   lines.push('- Uptime: ' + fmtDuration(d.uptimeMs || 0));
   lines.push('- Session started: ' + (d.startedAt ? new Date(d.startedAt).toISOString() : '—'));
   lines.push('');
-  lines.push('## Health: ' + h.score + '/100');
+  lines.push('## Health: ' + h.score + '/100' + (h.mode === 'infrastructure' ? ' (infrastructure only — run analyze_project for full score)' : ''));
   lines.push('');
   lines.push('| Check | Weight | Score | Status |');
   lines.push('|---|---:|---:|---|');
@@ -1574,7 +1636,10 @@ function exportSession() {
     const status = (c.pass ? 'PASS' : (scored > 0 ? 'PARTIAL' : 'FAIL')) + (c.detail ? ' (' + c.detail + ')' : '');
     lines.push('| ' + c.label + ' | ' + c.weight + ' | ' + scored + ' | ' + status + ' |');
   }
-  lines.push('| dirty files (' + h.dirtyFiles + '/' + h.totalFiles + ', ' + (h.dirtyRate * 100).toFixed(1) + '%) | 20 | ' + h.errScore + ' | — |');
+  if (h.mode === 'project') {
+    lines.push('');
+    lines.push('Files scanned: ' + h.totalFiles + ', Errors: ' + h.totalErrors + ', Warnings: ' + h.totalWarnings);
+  }
   lines.push('');
   lines.push('## Tool usage');
   lines.push('');
@@ -1900,7 +1965,7 @@ function selectDepFile(path) {
     '<div class="dep-path">' + escHtml(path) + '<br><span style="color:var(--muted);font-size:10px">' + summary + '</span></div>' +
     '<div class="dep-cols">' +
       '<div><div class="dep-col-title">Depends on (' + deps.length + ')</div>' + renderList(deps, 'No outgoing dependencies.') + '</div>' +
-      '<div><div class="dep-col-title">Referenced by (' + refs.length + ')</div>' + renderList(refs, 'No incoming references (possibly dead code or entry point).') + '</div>' +
+      '<div><div class="dep-col-title">Referenced by (' + refs.length + ')</div>' + renderList(refs, 'No incoming references (possibly orphaned or entry point).') + '</div>' +
     '</div>';
 }
 
@@ -2277,6 +2342,7 @@ async function fetchAnalysisData() {
     analysisData = d.result;
     analysisLoaded = true;
     renderHealth();
+    if (lastStatus) renderHealthRing(lastStatus);
     const ts = document.getElementById('ht-last-fetched');
     if (ts) ts.textContent = 'FETCHED ' + fmtTime(new Date().toISOString());
   } catch (e) {
@@ -2434,11 +2500,11 @@ function renderHealth() {
         }).join(''))
     + '</div>';
 
-  const deadCode = a.dead_code || [];
-  const deadHtml = '<div class="ex-sidebar-panel"><div class="ex-sidebar-title">DEAD CODE</div><div class="ex-sidebar-body">'
-    + (deadCode.length === 0
-      ? '<span class="empty">NO DEAD CODE DETECTED.</span>'
-      : deadCode.map(p => '<div class="ex-dead-item">' + escHtml(p) + '</div>').join(''))
+  const orphanedFiles = a.orphaned_files || [];
+  const orphanedHtml = '<div class="ex-sidebar-panel"><div class="ex-sidebar-title">ORPHANED FILES</div><div class="ex-sidebar-body">'
+    + (orphanedFiles.length === 0
+      ? '<span class="empty">NO ORPHANED FILES DETECTED.</span>'
+      : orphanedFiles.map(p => '<div class="ex-orphan-item">' + escHtml(p) + '</div>').join(''))
     + '</div></div>';
 
   const integrity = a.integrity || [];
@@ -2455,7 +2521,7 @@ function renderHealth() {
   const blockingHtml = blockingFiles.length > 0
     ? '<div class="ex-sidebar-panel"><div class="ex-sidebar-title">BLOCKING FILES (' + blockingFiles.length + ')</div><div class="ex-sidebar-body">'
       + blockingFiles.map(f =>
-          '<div class="ex-dead-item" style="border-color:var(--red);color:var(--red)">' + escHtml(f.path) + ' <span style="font-size:9px;opacity:.7">' + f.total + ' ERRORS</span></div>'
+          '<div class="ex-orphan-item" style="border-color:var(--red);color:var(--red)">' + escHtml(f.path) + ' <span style="font-size:9px;opacity:.7">' + f.total + ' ERRORS</span></div>'
         ).join('')
       + '</div></div>'
     : '';
@@ -2491,7 +2557,7 @@ function renderHealth() {
   el.innerHTML = statsHtml + nextStepHtml
     + '<div class="ex-health-grid">'
     + '<div>' + fixHtml + '</div>'
-    + '<div>' + deadHtml + integrityHtml + blockingHtml + diffHtml + modulesHtml + '</div>'
+    + '<div>' + orphanedHtml + integrityHtml + blockingHtml + diffHtml + modulesHtml + '</div>'
     + '</div>';
 }
 
@@ -3140,12 +3206,14 @@ async function fetchAnalytics() {
   tsEl.textContent = 'refreshing...';
 
   try {
-    const [statsR, scorecardsR, sessionsR, recsR, bigramsR] = await Promise.all([
+    const [statsR, scorecardsR, sessionsR, recsR, bigramsR, ruleScoresR, suggestedR] = await Promise.all([
       fetch(BASE + '/api/analytics/stats').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(BASE + '/api/analytics/scorecards?min_cohort=1').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(BASE + '/api/analytics/sessions').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(BASE + '/api/analytics/recommendations').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(BASE + '/api/analytics/bigrams').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/rule-scores?min_emitted=1').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/suggested-rules').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
 
     analyticsData = {
@@ -3154,6 +3222,8 @@ async function fetchAnalytics() {
       sessions: sessionsR?.sessions || [],
       recommendations: recsR?.recommendations || [],
       bigrams: bigramsR?.bigrams || [],
+      ruleScores: ruleScoresR?.scores || [],
+      suggestedRules: suggestedR?.suggestions || [],
     };
 
     renderAnalyticsStats();
@@ -3161,6 +3231,8 @@ async function fetchAnalytics() {
     renderAnalyticsRecommendations();
     renderAnalyticsSessions();
     renderAnalyticsBigrams();
+    renderRuleScores();
+    renderSuggestedRules();
     tsEl.textContent = fmtTime(Date.now());
   } catch (e) {
     tsEl.textContent = 'error: ' + e.message;
@@ -3332,6 +3404,63 @@ function renderAnalyticsBigrams() {
     + '<span class="an-bigram-metric"><b>' + b.count + '</b>x</span>'
     + '<span class="an-bigram-metric">lift <b>' + b.lift.toFixed(1) + '</b></span>'
     + '<span class="an-bigram-metric">conf <b>' + (b.confidence * 100).toFixed(0) + '%</b></span>'
+    + '</div>'
+  ).join('');
+}
+
+function renderRuleScores() {
+  const el = document.getElementById('an-rule-scores');
+  const scores = analyticsData?.ruleScores || [];
+  if (!scores.length) {
+    el.innerHTML = '<span class="an-empty">No rule performance data yet. Rebuild the analytics database after sessions with rule-matched diagnostics accumulate.</span>';
+    return;
+  }
+
+  el.innerHTML = '<table class="an-sc-table">'
+    + '<thead><tr>'
+    + '<th>Rule</th><th>Check</th><th>Emitted</th><th>Outcomes</th>'
+    + '<th>Resolved</th><th>Regressed</th><th>Adopted</th>'
+    + '<th>Effectiveness</th><th>Status</th>'
+    + '</tr></thead><tbody>'
+    + scores.map(s => {
+      const effPct = (s.effectiveness * 100).toFixed(0);
+      const effCls = s.effectiveness >= 0.5 ? 'good' : s.effectiveness >= 0.15 ? 'mid' : 'bad';
+      return '<tr>'
+        + '<td style="color:var(--text);font-weight:bold;font-size:10px;text-transform:uppercase">' + escHtml(s.rule_id) + '</td>'
+        + '<td style="color:var(--muted)">' + escHtml(s.check) + '</td>'
+        + '<td style="color:var(--muted)">' + s.emitted + '</td>'
+        + '<td style="color:var(--muted)">' + s.total_outcomes + '</td>'
+        + '<td style="color:var(--green)">' + s.resolved + '</td>'
+        + '<td style="color:var(--red)">' + s.regressed + '</td>'
+        + '<td style="color:var(--blue)">' + s.adopted + '</td>'
+        + '<td><span class="an-ci-val ' + effCls + '">' + effPct + '%</span></td>'
+        + '<td>' + (s.disabled
+          ? '<span class="badge error">DISABLE</span>'
+          : '<span class="badge ok">ACTIVE</span>') + '</td>'
+        + '</tr>';
+    }).join('')
+    + '</tbody></table>';
+}
+
+function renderSuggestedRules() {
+  const el = document.getElementById('an-suggested-rules');
+  const suggestions = analyticsData?.suggestedRules || [];
+  if (!suggestions.length) {
+    el.innerHTML = '<span class="an-empty">No rule suggestions. Either all diagnostics have matching rules, or there is not enough case-base data yet.</span>';
+    return;
+  }
+
+  el.innerHTML = suggestions.map(s =>
+    '<div class="an-rec-item" style="cursor:pointer" onclick="this.querySelector(\\'.an-rule-tpl\\').style.display=this.querySelector(\\'.an-rule-tpl\\').style.display===\\'none\\'?\\'block\\':\\'none\\'">'
+    + '<span class="an-rec-icon">[+]</span>'
+    + '<div class="an-rec-body">'
+    + '<div class="an-rec-check">' + escHtml(s.check) + ' <span style="color:var(--muted);font-weight:normal;font-size:10px">(' + s.template_fp.slice(0, 8) + ')</span></div>'
+    + '<div class="an-rec-text">' + escHtml(s.suggestion) + '</div>'
+    + '<pre class="an-rule-tpl" style="display:none;margin-top:8px;padding:10px;background:#1d2021;border:1px solid var(--border);font-size:10px;color:var(--text);white-space:pre-wrap">'
+    + escHtml(s.template || '')
+    + '</pre>'
+    + '</div>'
+    + '<span class="an-rec-rate" style="color:var(--green)">' + (s.resolution_rate * 100).toFixed(0) + '% RESOLVED</span>'
     + '</div>'
   ).join('');
 }

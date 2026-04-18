@@ -1,5 +1,0 @@
----
-slug: blog_posts
----
-{% assign page = context.params.page | default: 1 %}
-{% render 'blog_posts/list', page: page %}

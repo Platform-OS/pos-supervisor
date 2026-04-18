@@ -1,9 +1,0 @@
-{% doc %}
-  @param object {object} - form params to reshape
-{% enddoc %}
-
-{% liquid
-  assign object['approved_at'] = object.approved_at
-
-  return object
-%}

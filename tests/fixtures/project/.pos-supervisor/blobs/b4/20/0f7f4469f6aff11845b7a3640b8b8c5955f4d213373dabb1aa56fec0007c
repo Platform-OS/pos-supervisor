@@ -1,1 +1,0 @@
-Create missing file: `app/views/partials/home/hero.liquid`. Use `scaffold` tool or create manually with appropriate `{% doc %}` block.

@@ -1,9 +1,0 @@
-{% doc %}
-  @param id {string} - record ID
-{% enddoc %}
-
-{% liquid
-  graphql result = 'events/find', id: id
-  assign item = result.records.results.first
-  return item
-%}

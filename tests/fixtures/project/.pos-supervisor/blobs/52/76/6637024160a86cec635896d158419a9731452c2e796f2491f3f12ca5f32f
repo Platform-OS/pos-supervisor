@@ -1,4 +1,0 @@
----
-slug: test_pages_domain
----
-{% render 'blog_posts/list' %}

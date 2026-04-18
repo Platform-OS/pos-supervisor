@@ -20,8 +20,11 @@
  *     fixes: ProposedFix[],            // optional fix proposals
  *     confidence: number,              // 0..1
  *     see_also?: { tool, args, reason },
+ *     case_base_signal?: { sample_size, resolution_rate, regression_rate?, hint },
  *   }
  */
+
+import { scoreRule } from '../case-base.js';
 
 const _registry = new Map();
 
@@ -55,7 +58,10 @@ export function runRules(diag, facts, { multiMatch = false } = {}) {
       try {
         if (rule.when(diag, facts)) {
           const result = rule.apply(diag, facts);
-          if (result) results.push(result);
+          if (result) {
+            applyCaseBaseScoring(result, diag, facts);
+            results.push(result);
+          }
         }
       } catch { /* rule failure is non-fatal */ }
     }
@@ -66,11 +72,33 @@ export function runRules(diag, facts, { multiMatch = false } = {}) {
     try {
       if (rule.when(diag, facts)) {
         const result = rule.apply(diag, facts);
-        if (result) return result;
+        if (result) {
+          applyCaseBaseScoring(result, diag, facts);
+          return result;
+        }
       }
     } catch { /* rule failure is non-fatal */ }
   }
   return null;
+}
+
+function applyCaseBaseScoring(result, diag, facts) {
+  if (!facts.analyticsStore || !result.rule_id) return;
+  try {
+    const templateFp = diag.template_fp ?? null;
+    if (!templateFp) return;
+
+    const score = scoreRule(facts.analyticsStore, result.rule_id, templateFp);
+    if (!score) return;
+
+    if (score.adjustment !== 0 && result.confidence != null) {
+      result.confidence = Math.max(0, Math.min(1, result.confidence + score.adjustment));
+    }
+    result.case_base_signal = {
+      adjustment: score.adjustment,
+      reason: score.reason,
+    };
+  } catch { /* case-base scoring failure is non-fatal */ }
 }
 
 export function hasRules(check) {

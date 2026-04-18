@@ -1,7 +1,0 @@
----
-slug: bad_page
----
-<div class="container">
-  <h1>Direct HTML in page</h1>
-  <p>This should be in a partial</p>
-</div>

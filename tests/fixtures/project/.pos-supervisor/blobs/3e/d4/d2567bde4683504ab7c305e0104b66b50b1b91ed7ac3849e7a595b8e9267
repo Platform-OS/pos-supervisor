@@ -1,3 +1,0 @@
-{% form 'contact' %}
-  <input type="text" name="email">
-{% endform %}

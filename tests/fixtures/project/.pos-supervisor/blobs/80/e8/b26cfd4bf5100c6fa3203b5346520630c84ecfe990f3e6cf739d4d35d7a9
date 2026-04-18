@@ -1,8 +1,0 @@
----
-slug: events/new
-layout: application
----
-{% liquid
-  assign object = {}
-  render 'events/new', object: object
-%}

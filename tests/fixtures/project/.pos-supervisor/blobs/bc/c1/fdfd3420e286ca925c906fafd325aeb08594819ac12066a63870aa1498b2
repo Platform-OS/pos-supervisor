@@ -1,4 +1,0 @@
-{{ cart.item_count }}
-{{ product.price }}
-{{ shop.name }}
-{{ customer.name }}

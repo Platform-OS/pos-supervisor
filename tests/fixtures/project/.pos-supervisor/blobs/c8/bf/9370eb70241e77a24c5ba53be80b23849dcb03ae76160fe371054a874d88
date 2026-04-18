@@ -1,7 +1,0 @@
-Add translation key `my.test.key.nonexistent` to `app/translations/en.yml`:
-```yaml
-my:
-  test:
-    key:
-      nonexistent: "TODO"
-```

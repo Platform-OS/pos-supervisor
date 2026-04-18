@@ -1,5 +1,0 @@
----
-slug: perf_test
----
-{% render 'blog_posts/list' %}
-{{ 'blog_posts.title' | t }}

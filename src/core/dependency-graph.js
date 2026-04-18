@@ -64,7 +64,7 @@ export function resolveRenderTarget(name, projectMap, callerPath) {
   if (partial?.path) return partial.path;
 
   // Fallback: assume the standard location. May produce a non-existent path
-  // when the render name is wrong — dead-code detection treats that as an
+  // when the render name is wrong — orphan detection treats that as an
   // edge into a missing file, which surfaces as broken_render from the
   // existing integrity checks.
   return `app/views/partials/${resolved}.liquid`;
@@ -133,6 +133,7 @@ export function buildDependencyGraph(projectMap, lspResults = {}) {
   };
   for (const page    of Object.values(projectMap.pages    ?? {})) seed(page.path);
   for (const partial of Object.values(projectMap.partials ?? {})) seed(partial.path);
+  for (const layout  of Object.values(projectMap.layouts  ?? {})) seed(layout.path);
   for (const cmd     of Object.keys(projectMap.commands   ?? {})) seed(cmd);
   for (const q       of Object.keys(projectMap.queries    ?? {})) seed(q);
   for (const g       of Object.keys(projectMap.graphql    ?? {})) seed(`app/graphql/${g}.graphql`);
@@ -145,7 +146,17 @@ export function buildDependencyGraph(projectMap, lspResults = {}) {
     if (!graph[target].referenced_by.includes(source)) graph[target].referenced_by.push(source);
   };
 
-  // ── 1. Walk pages ──
+  // ── 1. Walk pages (render/function edges + layout reference) ──
+  const layoutsByName = {};
+  for (const layout of Object.values(projectMap.layouts ?? {})) {
+    if (!layout?.path) continue;
+    const name = layout.path
+      .replace(/^app\/views\/layouts\//, '')
+      .replace(/\.html\.liquid$/, '')
+      .replace(/\.liquid$/, '');
+    layoutsByName[name] = layout.path;
+  }
+
   for (const page of Object.values(projectMap.pages ?? {})) {
     if (!page?.path) continue;
     for (const r of page.renders ?? []) {
@@ -154,9 +165,24 @@ export function buildDependencyGraph(projectMap, lspResults = {}) {
     for (const fc of page.function_calls ?? []) {
       addEdge(page.path, resolveFunctionTarget(fc.path));
     }
+    if (page.layout) {
+      const layoutPath = layoutsByName[page.layout];
+      if (layoutPath) addEdge(page.path, layoutPath);
+    }
   }
 
-  // ── 2. Walk partials ──
+  // ── 2. Walk layouts (render/function edges) ──
+  for (const layout of Object.values(projectMap.layouts ?? {})) {
+    if (!layout?.path) continue;
+    for (const r of layout.renders ?? []) {
+      addEdge(layout.path, resolveRenderTarget(r, projectMap, layout.path));
+    }
+    for (const fc of layout.function_calls ?? []) {
+      addEdge(layout.path, resolveFunctionTarget(fc.path));
+    }
+  }
+
+  // ── 3. Walk partials ──
   for (const partial of Object.values(projectMap.partials ?? {})) {
     if (!partial?.path) continue;
     for (const r of partial.renders ?? []) {
@@ -167,7 +193,7 @@ export function buildDependencyGraph(projectMap, lspResults = {}) {
     }
   }
 
-  // ── 3. Walk commands ──
+  // ── 4. Walk commands ──
   // Commands can call sub-commands (build/check phases) via {% function %}
   // and call GraphQL ops via {% graphql %}.
   for (const [cmdPath, cmd] of Object.entries(projectMap.commands ?? {})) {
@@ -180,7 +206,7 @@ export function buildDependencyGraph(projectMap, lspResults = {}) {
     }
   }
 
-  // ── 4. Walk queries ──
+  // ── 5. Walk queries ──
   for (const [qPath, q] of Object.entries(projectMap.queries ?? {})) {
     for (const fc of q.function_calls ?? []) {
       addEdge(qPath, resolveFunctionTarget(fc.path));
@@ -191,7 +217,7 @@ export function buildDependencyGraph(projectMap, lspResults = {}) {
     }
   }
 
-  // ── 5. Merge LSP-derived edges on top ──
+  // ── 6. Merge LSP-derived edges on top ──
   // LSP wins per edge — we union its arrays into ours. The LSP may know about
   // dynamic render names the scanner cannot see.
   for (const [path, lspEntry] of Object.entries(lspResults)) {
@@ -231,13 +257,13 @@ function stripFilePrefix(uri) {
   return uri;
 }
 
-// ── Dead code detection ──────────────────────────────────────────────────────
+// ── Orphaned file detection ──────────────────────────────────────────────────
 
 /**
- * Find files that nothing in the project references. A file is dead when its
- * `referenced_by` is empty AND the file is not an entry point.
+ * Find files that nothing in the project references. A file is orphaned when
+ * its `referenced_by` is empty AND the file is not an entry point.
  *
- * Entry points (never dead):
+ * Entry points (never orphaned):
  *   - All pages (users reach them via HTTP routes).
  *   - Files whose path contains /build/, /check/, or /execute/ — these are
  *     phase files of multi-phase commands. Even when a parent command does
@@ -249,12 +275,15 @@ function stripFilePrefix(uri) {
  *
  * @param {Record<string, { depends_on: string[], referenced_by: string[] }>} graph
  * @param {object} projectMap - for entry-point classification (pages, etc.)
- * @returns {string[]} dead file paths
+ * @returns {string[]} orphaned file paths
  */
-export function detectDeadCode(graph, projectMap) {
+export function detectOrphanedFiles(graph, projectMap) {
   const dead = [];
   const pagePaths = new Set(
     Object.values(projectMap.pages ?? {}).map(p => p.path).filter(Boolean)
+  );
+  const layoutPaths = new Set(
+    Object.values(projectMap.layouts ?? {}).map(l => l.path).filter(Boolean)
   );
 
   for (const [path, edges] of Object.entries(graph)) {
@@ -262,6 +291,13 @@ export function detectDeadCode(graph, projectMap) {
 
     // Pages are always live — they are HTTP entry points.
     if (pagePaths.has(path)) continue;
+
+    // Layouts are infrastructure — even unreferenced layouts may be used
+    // by pages via the default layout convention. If a layout IS referenced
+    // by pages (via page → layout edges) it won't reach here. If it's truly
+    // unused, it still shouldn't be auto-flagged: layout selection happens
+    // at runtime via frontmatter and the default layout fallback.
+    if (layoutPaths.has(path)) continue;
 
     // Subphase command files are live by convention.
     if (isSubphaseFile(path)) continue;

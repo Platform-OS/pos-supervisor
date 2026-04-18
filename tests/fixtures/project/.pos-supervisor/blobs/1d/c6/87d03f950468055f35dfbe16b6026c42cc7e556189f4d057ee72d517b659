@@ -1,1 +1,0 @@
-{% render 'blog_posts/card' %}
