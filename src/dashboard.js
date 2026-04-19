@@ -824,6 +824,40 @@ export function buildDashboardHtml() {
   .sess-diff-down { color: var(--green); }
   .sess-diff-same { color: var(--muted); }
 
+  /* ── Engine Map ────────────────────────────────────────────────────── */
+  .em-header { margin-bottom: 16px; }
+  .em-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .em-controls { display: flex; gap: 12px; align-items: center; }
+  .em-stats-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .em-stat { background: var(--surface); border: 1px solid var(--border); padding: 10px 16px; min-width: 100px; text-align: center; }
+  .em-stat .em-stat-value { font-size: 22px; font-weight: bold; color: var(--blue); }
+  .em-stat .em-stat-label { font-size: 9px; color: var(--muted); text-transform: uppercase; margin-top: 2px; }
+  .em-layout { display: grid; grid-template-columns: 1fr 320px; gap: 16px; margin-bottom: 16px; }
+  .em-graph-container { background: var(--bg); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); padding: 12px; overflow: hidden; }
+  .em-sidebar { background: var(--bg); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); padding: 12px; overflow-y: auto; max-height: 640px; }
+  .em-section-title { font-size: 11px; font-weight: bold; color: var(--blue); text-transform: uppercase; margin-bottom: 10px; letter-spacing: 1px; }
+  .em-panels { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .em-panel { background: var(--bg); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); padding: 12px; }
+  .em-inspector-item { margin-bottom: 12px; }
+  .em-inspector-item .em-inspector-label { font-size: 9px; color: var(--muted); text-transform: uppercase; margin-bottom: 2px; }
+  .em-inspector-item .em-inspector-value { font-size: 12px; color: var(--text); text-transform: uppercase; }
+  .em-inspector-badge { display: inline-block; font-size: 9px; font-weight: bold; padding: 1px 6px; margin: 2px 2px; text-transform: uppercase; }
+  .em-inspector-badge.params { background: rgba(79,195,247,0.15); color: #4fc3f7; border: 1px solid #4fc3f7; }
+  .em-inspector-badge.graph { background: rgba(129,199,132,0.15); color: #81c784; border: 1px solid #81c784; }
+  .em-inspector-badge.index { background: rgba(255,183,77,0.15); color: #ffb74d; border: 1px solid #ffb74d; }
+  .em-inspector-badge.disabled { background: rgba(229,115,115,0.15); color: #e57373; border: 1px solid #e57373; }
+  .em-inspector-badge.matched { background: rgba(129,199,132,0.15); color: #81c784; border: 1px solid #81c784; }
+  .em-dep-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--surface2); font-size: 10px; text-transform: uppercase; }
+  .em-dep-row:last-child { border-bottom: none; }
+  .em-dep-rule { flex: 1; font-weight: bold; color: var(--text); min-width: 200px; }
+  .em-dep-dots { display: flex; gap: 3px; }
+  .em-dep-dot { width: 14px; height: 14px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 7px; font-weight: bold; }
+  .em-dep-dot.active { border-color: currentColor; }
+  .em-gap-item { padding: 8px; margin-bottom: 6px; background: var(--surface); border-left: 3px solid var(--yellow); font-size: 11px; text-transform: uppercase; }
+  .em-gap-item.severe { border-left-color: var(--red); }
+  .em-gap-label { font-weight: bold; color: var(--text); }
+  .em-gap-detail { color: var(--muted); font-size: 10px; margin-top: 2px; }
+
   /* ── Tooltip ───────────────────────────────────────────────────────── */
   #tooltip { position: fixed; background: var(--bg); border: 1px solid var(--blue); box-shadow: 4px 4px 0 rgba(131,165,152,0.2); padding: 8px 12px; font-size: 11px; color: var(--text); pointer-events: none; z-index: 1000; display: none; max-width: 320px; line-height: 1.5; text-transform: uppercase; font-weight: bold; }
 </style>
@@ -867,6 +901,7 @@ export function buildDashboardHtml() {
   <div class="tab" data-tab="insights">Tool Insights</div>
   <div class="tab" data-tab="analytics">Analytics</div>
   <div class="tab" data-tab="toollab">Tool Lab</div>
+  <div class="tab" data-tab="engine">Engine Map</div>
   <div class="tab" data-tab="lsp">LSP</div>
   <div class="tab" data-tab="pos-cli">POS-CLI</div>
 </div>
@@ -1359,6 +1394,54 @@ export function buildDashboardHtml() {
   </section>
 </div>
 
+<!-- ── Engine Map ──────────────────────────────────────────────────── -->
+<div class="tab-content" id="tab-engine">
+  <div class="em-header">
+    <div class="em-title-row">
+      <h2>Engine Map</h2>
+      <div class="em-controls">
+        <button id="em-refresh-btn" class="primary">Load Engine Map</button>
+        <span class="ts" id="em-last-fetched"></span>
+      </div>
+    </div>
+    <div class="an-legend">Interactive visualization of the neuro-symbolic rule engine: checks, rules, dependencies, coverage gaps, and pipeline flow. Click nodes to inspect. Colors show dependency type — <span style="color:#4fc3f7">blue = params only</span>, <span style="color:#81c784">green = graph</span>, <span style="color:#ffb74d">orange = LSP indexes</span>, <span style="color:#e57373">red = disabled</span>.</div>
+  </div>
+
+  <div class="em-stats-row" id="em-stats"></div>
+
+  <div class="em-layout">
+    <div class="em-graph-container">
+      <div class="em-section-title">Rule Topology</div>
+      <svg id="em-graph" width="100%" height="600"></svg>
+    </div>
+    <div class="em-sidebar">
+      <div class="em-section-title">Inspector</div>
+      <div id="em-inspector"><pre style="color:var(--muted)">Click a node in the graph to inspect it.</pre></div>
+    </div>
+  </div>
+
+  <div class="em-panels">
+    <div class="em-panel">
+      <div class="em-section-title">Pipeline Flow</div>
+      <div class="an-legend">Diagnostic processing stages from LSP through rule engine to output.</div>
+      <svg id="em-pipeline" width="100%" height="120"></svg>
+    </div>
+  </div>
+
+  <div class="em-panels">
+    <div class="em-panel">
+      <div class="em-section-title">Dependency Matrix</div>
+      <div class="an-legend">What each rule needs to function. Rules depending only on params always fire. Rules needing graph or indexes may degrade when those sources are unavailable.</div>
+      <div id="em-dep-matrix"></div>
+    </div>
+    <div class="em-panel">
+      <div class="em-section-title">Coverage Gaps</div>
+      <div class="an-legend">Checks with extractors but no rules, rules with poor effectiveness, hints without rules.</div>
+      <div id="em-gaps"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ── LSP ──────────────────────────────────────────────────────────── -->
 <div class="tab-content" id="tab-lsp">
   <div class="lsp-panel">
@@ -1390,6 +1473,7 @@ export function buildDashboardHtml() {
 <div class="fd-overlay" id="fd-overlay"></div>
 <aside class="fd-flyout" id="fd-flyout" role="dialog" aria-hidden="true"></aside>
 
+<script src="/vendor/d3.v7.min.js"></script>
 <script>
 const BASE = '';
 let toolsLoaded = false;
@@ -1427,6 +1511,7 @@ const TAB_LOADERS = {
   insights: () => { fetchInsightsData(); if (!hintsLoaded) fetchHints(); },
   analytics: () => { fetchAnalytics(); },
   toollab:  () => { if (!toolsLoaded) fetchTools(); fetchToolLab(); loadRuleChecks(); if (!suppressionsLoaded) fetchSuppressions(); },
+  engine:   () => { if (!engineMapLoaded) fetchEngineMap(); },
   'pos-cli': () => { if (!cliEnvsLoaded) fetchCliEnvs(); },
   // overview, activity, lsp: eagerly loaded via boot sequence / SSE
 };
@@ -5032,6 +5117,440 @@ document.addEventListener('DOMContentLoaded', () => {
   // Sessions
   document.getElementById('sess-load-btn').addEventListener('click', fetchSessions);
   document.getElementById('sess-save-btn').addEventListener('click', saveCurrentSession);
+});
+
+// ── Engine Map ────────────────────────────────────────────────────────────
+let engineMapLoaded = false;
+let engineMapData = null;
+
+async function fetchEngineMap() {
+  try {
+    const r = await fetch(BASE + '/api/engine-map');
+    if (!r.ok) throw new Error('Failed to load engine map');
+    engineMapData = await r.json();
+    engineMapLoaded = true;
+    document.getElementById('em-last-fetched').textContent = 'loaded ' + fmtTime(new Date());
+    renderEngineMap();
+  } catch (e) {
+    document.getElementById('em-stats').innerHTML = '<span class="an-empty">Error: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+function renderEngineMap() {
+  if (!engineMapData) return;
+  const d = engineMapData;
+
+  renderEmStats(d.coverage);
+  renderEmGraph(d.checks);
+  renderEmPipeline(d.pipeline_steps);
+  renderEmDepMatrix(d.checks);
+  renderEmGaps(d);
+}
+
+function renderEmStats(cov) {
+  const el = document.getElementById('em-stats');
+  const stats = [
+    { value: cov.checks_with_rules, label: 'Checks' },
+    { value: cov.total_rules, label: 'Rules' },
+    { value: cov.total_hints, label: 'Hint Files' },
+    { value: cov.rules_needing_graph, label: 'Need Graph' },
+    { value: cov.rules_needing_indexes, label: 'Need Indexes' },
+    { value: cov.rules_params_only, label: 'Params Only' },
+    { value: cov.disabled_rules, label: 'Disabled' },
+    { value: cov.checks_with_extractors, label: 'Extractors' },
+  ];
+  el.innerHTML = stats.map(s =>
+    '<div class="em-stat"><div class="em-stat-value">' + s.value + '</div><div class="em-stat-label">' + s.label + '</div></div>'
+  ).join('');
+}
+
+// ── D3 Force Graph ──────────────────────────────────────────────────────
+
+const EM_COLORS = {
+  check: '#83a598',
+  params: '#4fc3f7',
+  graph: '#81c784',
+  filtersIndex: '#ffb74d',
+  objectsIndex: '#ffb74d',
+  tagsIndex: '#ffb74d',
+  disabled: '#e57373',
+};
+
+function depColor(rule) {
+  if (rule.disabled) return EM_COLORS.disabled;
+  const needs = rule.needs || [];
+  if (needs.includes('filtersIndex') || needs.includes('objectsIndex') || needs.includes('tagsIndex')) return EM_COLORS.filtersIndex;
+  if (needs.includes('graph')) return EM_COLORS.graph;
+  return EM_COLORS.params;
+}
+
+function renderEmGraph(checks) {
+  const svg = d3.select('#em-graph');
+  svg.selectAll('*').remove();
+
+  const container = document.querySelector('.em-graph-container');
+  const width = container.clientWidth - 24;
+  const height = 600;
+  svg.attr('viewBox', '0 0 ' + width + ' ' + height);
+
+  const nodes = [];
+  const links = [];
+
+  checks.forEach((c, ci) => {
+    const checkNode = { id: 'check:' + c.check, label: c.check, type: 'check', data: c, fx: null, fy: null };
+    nodes.push(checkNode);
+
+    c.rules.forEach((r, ri) => {
+      const ruleNode = { id: 'rule:' + r.id, label: r.id.split('.')[1], type: 'rule', data: r, check: c.check };
+      nodes.push(ruleNode);
+      links.push({ source: checkNode.id, target: ruleNode.id, type: 'check-rule' });
+    });
+  });
+
+  const simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(d => d.type === 'check-rule' ? 80 : 120).strength(0.8))
+    .force('charge', d3.forceManyBody().strength(d => d.type === 'check' ? -400 : -150))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(d => d.type === 'check' ? 35 : 20))
+    .force('x', d3.forceX(width / 2).strength(0.05))
+    .force('y', d3.forceY(height / 2).strength(0.05));
+
+  const g = svg.append('g');
+
+  // zoom
+  svg.call(d3.zoom().scaleExtent([0.3, 3]).on('zoom', (e) => g.attr('transform', e.transform)));
+
+  // links
+  const link = g.append('g')
+    .selectAll('line')
+    .data(links)
+    .join('line')
+    .attr('stroke', '#504945')
+    .attr('stroke-width', 1.5)
+    .attr('stroke-opacity', 0.6);
+
+  // nodes
+  const node = g.append('g')
+    .selectAll('g')
+    .data(nodes)
+    .join('g')
+    .attr('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+    );
+
+  // check nodes — larger circles
+  node.filter(d => d.type === 'check')
+    .append('circle')
+    .attr('r', 24)
+    .attr('fill', 'none')
+    .attr('stroke', EM_COLORS.check)
+    .attr('stroke-width', 2.5);
+
+  node.filter(d => d.type === 'check')
+    .append('text')
+    .text(d => d.label.length > 14 ? d.label.slice(0, 12) + '..' : d.label)
+    .attr('text-anchor', 'middle')
+    .attr('dy', '0.35em')
+    .attr('fill', EM_COLORS.check)
+    .attr('font-size', '8px')
+    .attr('font-weight', 'bold')
+    .attr('font-family', 'var(--mono)')
+    .attr('text-transform', 'uppercase');
+
+  // rule nodes — smaller colored circles
+  node.filter(d => d.type === 'rule')
+    .append('circle')
+    .attr('r', d => {
+      const score = d.data.score;
+      if (score && score.emitted > 0) return 8 + Math.min(score.emitted / 5, 8);
+      return 10;
+    })
+    .attr('fill', d => depColor(d.data))
+    .attr('fill-opacity', 0.25)
+    .attr('stroke', d => depColor(d.data))
+    .attr('stroke-width', d => d.data.disabled ? 1 : 1.5);
+
+  node.filter(d => d.type === 'rule')
+    .append('text')
+    .text(d => d.label.length > 12 ? d.label.slice(0, 10) + '..' : d.label)
+    .attr('text-anchor', 'middle')
+    .attr('dy', '0.35em')
+    .attr('fill', d => depColor(d.data))
+    .attr('font-size', '7px')
+    .attr('font-weight', 'bold')
+    .attr('font-family', 'var(--mono)')
+    .attr('text-transform', 'uppercase')
+    .attr('text-decoration', d => d.data.disabled ? 'line-through' : 'none');
+
+  // priority labels on rule nodes
+  node.filter(d => d.type === 'rule')
+    .append('text')
+    .text(d => 'P' + d.data.priority)
+    .attr('text-anchor', 'middle')
+    .attr('dy', '-14')
+    .attr('fill', '#928374')
+    .attr('font-size', '7px')
+    .attr('font-family', 'var(--mono)');
+
+  // click handler
+  node.on('click', (e, d) => showEmInspector(d));
+
+  // hover
+  node.on('mouseover', function(e, d) {
+    const tip = d.type === 'check'
+      ? d.data.check + ': ' + d.data.rules.length + ' rules, ' + d.data.hints.length + ' hints'
+      : d.data.id + ' (P' + d.data.priority + ') — needs: ' + d.data.needs.join(', ');
+    showTip(e, tip);
+  }).on('mouseleave', hideTip);
+
+  simulation.on('tick', () => {
+    link
+      .attr('x1', d => d.source.x)
+      .attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x)
+      .attr('y2', d => d.target.y);
+    node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+  });
+}
+
+// ── Pipeline Flow ──────────────────────────────────────────────────────
+
+function renderEmPipeline(steps) {
+  const svg = d3.select('#em-pipeline');
+  svg.selectAll('*').remove();
+
+  const container = svg.node().parentElement;
+  const width = container.clientWidth - 24;
+  const height = 120;
+  svg.attr('viewBox', '0 0 ' + width + ' ' + height);
+
+  const stepW = Math.min(140, (width - 40) / steps.length);
+  const gap = (width - stepW * steps.length) / (steps.length + 1);
+  const y = height / 2;
+
+  const pipeColors = ['#458588', '#689d6a', '#98971a', '#d79921', '#d65d0e', '#cc241d', '#b16286'];
+
+  steps.forEach((step, i) => {
+    const x = gap + i * (stepW + gap) + stepW / 2;
+
+    // connector arrow
+    if (i > 0) {
+      const prevX = gap + (i - 1) * (stepW + gap) + stepW / 2;
+      svg.append('line')
+        .attr('x1', prevX + stepW / 2 - 4)
+        .attr('y1', y)
+        .attr('x2', x - stepW / 2 + 4)
+        .attr('y2', y)
+        .attr('stroke', '#504945')
+        .attr('stroke-width', 2)
+        .attr('marker-end', 'url(#em-arrow)');
+    }
+
+    // box
+    svg.append('rect')
+      .attr('x', x - stepW / 2)
+      .attr('y', y - 22)
+      .attr('width', stepW)
+      .attr('height', 44)
+      .attr('rx', 3)
+      .attr('fill', 'none')
+      .attr('stroke', pipeColors[i % pipeColors.length])
+      .attr('stroke-width', 1.5);
+
+    // label
+    const label = step.length > 18 ? step.slice(0, 16) + '..' : step;
+    svg.append('text')
+      .attr('x', x)
+      .attr('y', y + 1)
+      .attr('text-anchor', 'middle')
+      .attr('dominant-baseline', 'middle')
+      .attr('fill', pipeColors[i % pipeColors.length])
+      .attr('font-size', '8px')
+      .attr('font-weight', 'bold')
+      .attr('font-family', 'var(--mono)')
+      .text(label);
+
+    // step number
+    svg.append('text')
+      .attr('x', x)
+      .attr('y', y - 30)
+      .attr('text-anchor', 'middle')
+      .attr('fill', '#928374')
+      .attr('font-size', '8px')
+      .attr('font-family', 'var(--mono)')
+      .text((i + 1));
+  });
+
+  // arrow marker
+  svg.append('defs').append('marker')
+    .attr('id', 'em-arrow')
+    .attr('viewBox', '0 0 10 10')
+    .attr('refX', 10)
+    .attr('refY', 5)
+    .attr('markerWidth', 6)
+    .attr('markerHeight', 6)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M 0 0 L 10 5 L 0 10 z')
+    .attr('fill', '#504945');
+}
+
+// ── Dependency Matrix ──────────────────────────────────────────────────
+
+function renderEmDepMatrix(checks) {
+  const el = document.getElementById('em-dep-matrix');
+  const depTypes = ['params', 'graph', 'filtersIndex', 'objectsIndex', 'tagsIndex'];
+  const depLabels = { params: 'P', graph: 'G', filtersIndex: 'F', objectsIndex: 'O', tagsIndex: 'T' };
+  const depColors = { params: '#4fc3f7', graph: '#81c784', filtersIndex: '#ffb74d', objectsIndex: '#ffb74d', tagsIndex: '#ffb74d' };
+
+  let html = '<div style="display:flex;gap:12px;margin-bottom:8px;font-size:9px;text-transform:uppercase;color:var(--muted)">';
+  html += '<span><span style="color:#4fc3f7;font-weight:bold">P</span>=Params</span>';
+  html += '<span><span style="color:#81c784;font-weight:bold">G</span>=Graph</span>';
+  html += '<span><span style="color:#ffb74d;font-weight:bold">F</span>=Filters</span>';
+  html += '<span><span style="color:#ffb74d;font-weight:bold">O</span>=Objects</span>';
+  html += '<span><span style="color:#ffb74d;font-weight:bold">T</span>=Tags</span>';
+  html += '</div>';
+
+  for (const c of checks) {
+    html += '<div style="font-size:10px;font-weight:bold;color:var(--blue);margin:8px 0 4px;text-transform:uppercase">' + escHtml(c.check) + '</div>';
+    for (const r of c.rules) {
+      html += '<div class="em-dep-row">';
+      html += '<span class="em-dep-rule">' + escHtml(r.id.split('.')[1]) + ' <span style="color:var(--muted);font-weight:normal">P' + r.priority + '</span></span>';
+      html += '<div class="em-dep-dots">';
+      for (const dt of depTypes) {
+        const active = r.needs.includes(dt);
+        const color = active ? depColors[dt] : 'var(--surface2)';
+        html += '<div class="em-dep-dot' + (active ? ' active' : '') + '" style="color:' + color + '">' + (active ? depLabels[dt] : '·') + '</div>';
+      }
+      html += '</div>';
+      if (r.disabled) html += '<span class="em-inspector-badge disabled">OFF</span>';
+      if (r.score) {
+        const eff = r.score.effectiveness;
+        const effColor = eff > 0.5 ? 'var(--green)' : eff > 0.15 ? 'var(--yellow)' : 'var(--red)';
+        html += '<span style="font-size:9px;color:' + effColor + ';min-width:36px;text-align:right">' + (eff * 100).toFixed(0) + '%</span>';
+      }
+      html += '</div>';
+    }
+  }
+  el.innerHTML = html;
+}
+
+// ── Coverage Gaps ──────────────────────────────────────────────────────
+
+function renderEmGaps(data) {
+  const el = document.getElementById('em-gaps');
+  const gaps = [];
+
+  // checks with extractors but no rules
+  const checksWithRules = new Set(data.checks.map(c => c.check));
+  const allExtractorChecks = ['UnknownFilter', 'UndefinedObject', 'UnusedAssign', 'MissingPartial', 'TranslationKeyExists', 'UnknownProperty', 'DeprecatedTag', 'MissingRenderPartialArguments', 'MetadataParamsCheck', 'GraphQLCheck'];
+  for (const ec of allExtractorChecks) {
+    if (!checksWithRules.has(ec)) {
+      gaps.push({ type: 'no_rules', label: ec + ': has extractor but no rules', detail: 'Diagnostics are enriched via fallback only. Consider writing rules for pattern-specific guidance.', severe: true });
+    }
+  }
+
+  // hints without rules
+  const ruleChecks = new Set();
+  for (const c of data.checks) for (const r of c.rules) ruleChecks.add(r.id.split('.')[0]);
+  for (const h of data.hint_files) {
+    if (!h.is_variant && !ruleChecks.has(h.base_check) && !checksWithRules.has(h.base_check)) {
+      gaps.push({ type: 'orphan_hint', label: h.name + '.md: hint file exists but no rule module', detail: 'Hint is used by error-enricher fallback. No rule-engine dispatch.', severe: false });
+    }
+  }
+
+  // disabled rules
+  for (const c of data.checks) {
+    for (const r of c.rules) {
+      if (r.disabled) {
+        gaps.push({ type: 'disabled', label: r.id + ': disabled by case base', detail: 'Effectiveness below threshold. Hint may be actively harmful.', severe: true });
+      }
+    }
+  }
+
+  // low effectiveness rules
+  for (const c of data.checks) {
+    for (const r of c.rules) {
+      if (r.score && r.score.effectiveness < 0.15 && r.score.emitted >= 10 && !r.disabled) {
+        gaps.push({ type: 'low_eff', label: r.id + ': effectiveness ' + (r.score.effectiveness * 100).toFixed(0) + '% (' + r.score.emitted + ' samples)', detail: 'Below 15% threshold but not yet disabled. May need hint rewrite.', severe: false });
+      }
+    }
+  }
+
+  if (gaps.length === 0) {
+    el.innerHTML = '<span class="an-empty">No coverage gaps detected. All checks have rules and extractors.</span>';
+    return;
+  }
+
+  el.innerHTML = gaps.map(g =>
+    '<div class="em-gap-item' + (g.severe ? ' severe' : '') + '">' +
+    '<div class="em-gap-label">' + escHtml(g.label) + '</div>' +
+    '<div class="em-gap-detail">' + escHtml(g.detail) + '</div>' +
+    '</div>'
+  ).join('');
+}
+
+// ── Inspector ──────────────────────────────────────────────────────────
+
+function showEmInspector(d) {
+  const el = document.getElementById('em-inspector');
+  let html = '';
+
+  if (d.type === 'check') {
+    const c = d.data;
+    html += '<div class="em-inspector-item"><div class="em-inspector-label">Check</div><div class="em-inspector-value" style="color:var(--blue)">' + escHtml(c.check) + '</div></div>';
+    html += '<div class="em-inspector-item"><div class="em-inspector-label">Rules (' + c.rules.length + ')</div><div class="em-inspector-value">';
+    for (const r of c.rules) {
+      const color = depColor(r);
+      html += '<div style="margin:3px 0"><span style="color:' + color + ';font-weight:bold">' + escHtml(r.id.split('.')[1]) + '</span> <span style="color:var(--muted);font-size:9px">P' + r.priority + '</span>';
+      if (r.disabled) html += ' <span class="em-inspector-badge disabled">disabled</span>';
+      html += '</div>';
+    }
+    html += '</div></div>';
+    html += '<div class="em-inspector-item"><div class="em-inspector-label">Extractor</div><div class="em-inspector-value">' + (c.has_extractor ? '<span style="color:var(--green)">YES</span>' : '<span style="color:var(--red)">NO</span>') + '</div></div>';
+    html += '<div class="em-inspector-item"><div class="em-inspector-label">Hints</div><div class="em-inspector-value">' + (c.hints.length > 0 ? c.hints.map(h => escHtml(h)).join(', ') : '<span style="color:var(--muted)">none</span>') + '</div></div>';
+    if (c.example_message) {
+      html += '<div class="em-inspector-item"><div class="em-inspector-label">Example</div><div class="em-inspector-value" style="font-size:10px;text-transform:none;color:var(--muted)">' + escHtml(c.example_message) + '</div></div>';
+    }
+  } else if (d.type === 'rule') {
+    const r = d.data;
+    html += '<div class="em-inspector-item"><div class="em-inspector-label">Rule</div><div class="em-inspector-value" style="color:' + depColor(r) + '">' + escHtml(r.id) + '</div></div>';
+    html += '<div class="em-inspector-item"><div class="em-inspector-label">Priority</div><div class="em-inspector-value">' + r.priority + ' <span style="color:var(--muted);font-size:9px">(lower = higher priority)</span></div></div>';
+    html += '<div class="em-inspector-item"><div class="em-inspector-label">Dependencies</div><div class="em-inspector-value">';
+    for (const n of r.needs) {
+      const badgeClass = n === 'graph' ? 'graph' : n === 'params' ? 'params' : 'index';
+      html += '<span class="em-inspector-badge ' + badgeClass + '">' + escHtml(n) + '</span>';
+    }
+    html += '</div></div>';
+    if (r.graph_queries.length > 0) {
+      html += '<div class="em-inspector-item"><div class="em-inspector-label">Graph Queries</div><div class="em-inspector-value" style="font-size:10px">' + r.graph_queries.map(q => '<code style="color:var(--green)">' + escHtml(q) + '</code>').join(' ') + '</div></div>';
+    }
+    if (r.disabled) {
+      html += '<div class="em-inspector-item"><div class="em-inspector-label">Status</div><div class="em-inspector-value"><span class="em-inspector-badge disabled">DISABLED</span> Case base flagged this rule.</div></div>';
+    }
+    if (r.score) {
+      const s = r.score;
+      html += '<div class="em-inspector-item"><div class="em-inspector-label">Analytics</div><div class="em-inspector-value" style="font-size:10px">';
+      html += 'Emitted: ' + s.emitted + ' · Resolved: ' + s.resolved + ' · Regressed: ' + s.regressed + '<br>';
+      const effColor = s.effectiveness > 0.5 ? 'var(--green)' : s.effectiveness > 0.15 ? 'var(--yellow)' : 'var(--red)';
+      html += 'Resolution: ' + (s.resolution_rate * 100).toFixed(0) + '% · Regression: ' + (s.regression_rate * 100).toFixed(0) + '%<br>';
+      html += '<span style="color:' + effColor + ';font-weight:bold">Effectiveness: ' + (s.effectiveness * 100).toFixed(0) + '%</span>';
+      html += '</div></div>';
+    } else {
+      html += '<div class="em-inspector-item"><div class="em-inspector-label">Analytics</div><div class="em-inspector-value" style="color:var(--muted)">No data yet</div></div>';
+    }
+  }
+
+  el.innerHTML = html;
+}
+
+// wire button
+document.getElementById('em-refresh-btn')?.addEventListener('click', () => {
+  engineMapLoaded = false;
+  fetchEngineMap();
 });
 
 // ── Uptime counter ─────────────────────────────────────────────────────────

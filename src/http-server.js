@@ -809,6 +809,157 @@ function handleGetHealthScores(analyticsStore, url, res) {
   }
 }
 
+// ── Vendor static files ──────────────────────────────────────────────────
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const VENDOR_DIR = join(__dirname, 'vendor');
+const VENDOR_MIME = { '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json' };
+
+function handleVendorFile(pathname, res) {
+  const filename = pathname.replace('/vendor/', '');
+  if (filename.includes('..') || filename.includes('/')) {
+    return sendJson(res, 403, { error: 'Forbidden' });
+  }
+  const filePath = join(VENDOR_DIR, filename);
+  if (!existsSync(filePath)) return sendJson(res, 404, { error: 'Not found' });
+  try {
+    const content = readFileSync(filePath);
+    const ext = filename.slice(filename.lastIndexOf('.'));
+    res.writeHead(200, {
+      'Content-Type': VENDOR_MIME[ext] || 'application/octet-stream',
+      'Content-Length': content.length,
+      'Cache-Control': 'public, max-age=86400',
+    });
+    res.end(content);
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Engine Map ──────────────────────────────────────────────────────────
+
+const RULE_DEPS = {
+  'MissingPartial.module_path':        { needs: ['params'], graph_queries: [] },
+  'MissingPartial.file_exists':        { needs: ['params', 'graph'], graph_queries: ['hasNode'] },
+  'MissingPartial.suggest_nearest':    { needs: ['params', 'graph'], graph_queries: ['nodesByType', 'dependsOn', 'nodeByPath'] },
+  'MissingPartial.create_file':        { needs: ['params', 'graph'], graph_queries: ['hasNode'] },
+  'UndefinedObject.shopify_object':    { needs: ['params'], graph_queries: [] },
+  'UndefinedObject.context_prefix':    { needs: ['params'], graph_queries: [] },
+  'UndefinedObject.declare_param':     { needs: ['params'], graph_queries: [] },
+  'UndefinedObject.generic':           { needs: ['params'], graph_queries: [] },
+  'UnknownFilter.tag_confusion':       { needs: ['params', 'tagsIndex'], graph_queries: [] },
+  'UnknownFilter.shopify_filter':      { needs: ['params'], graph_queries: [] },
+  'UnknownFilter.suggest_nearest':     { needs: ['params', 'filtersIndex'], graph_queries: [] },
+  'UnknownFilter.generic':             { needs: ['params'], graph_queries: [] },
+  'TranslationKeyExists.suggest_nearest': { needs: ['params', 'graph'], graph_queries: ['nodesByType'] },
+  'TranslationKeyExists.create_key':   { needs: ['params'], graph_queries: [] },
+  'UnusedAssign.passed_to_render':     { needs: ['params', 'graph'], graph_queries: ['renderCallsFrom'] },
+  'UnusedAssign.passed_to_function':   { needs: ['params', 'graph'], graph_queries: ['nodeByPath'] },
+  'UnusedAssign.generic':              { needs: ['params'], graph_queries: [] },
+  'MissingRenderPartialArguments.doc_block_mismatch': { needs: ['params', 'graph'], graph_queries: ['partialSignature'] },
+  'MissingRenderPartialArguments.chain_satisfied':    { needs: ['params', 'graph'], graph_queries: ['nodeByPath'] },
+  'MissingRenderPartialArguments.generic':            { needs: ['params'], graph_queries: [] },
+  'UnknownProperty.schema_property':   { needs: ['params', 'graph'], graph_queries: ['nodesByType'] },
+  'UnknownProperty.context_property':  { needs: ['params', 'objectsIndex'], graph_queries: [] },
+  'UnknownProperty.generic':           { needs: ['params'], graph_queries: [] },
+  'MetadataParamsCheck.module_contract':    { needs: ['params'], graph_queries: [] },
+  'MetadataParamsCheck.doc_block_params':   { needs: ['params', 'graph'], graph_queries: ['partialSignature'] },
+  'MetadataParamsCheck.generic':            { needs: ['params'], graph_queries: [] },
+  'GraphQLCheck.unknown_field':        { needs: ['params', 'graph'], graph_queries: ['nodesByType'] },
+  'GraphQLCheck.unused_variable':      { needs: ['params'], graph_queries: [] },
+  'GraphQLCheck.type_mismatch':        { needs: ['params'], graph_queries: [] },
+  'GraphQLCheck.generic':              { needs: ['params'], graph_queries: [] },
+};
+
+function handleEngineMap(analyticsStore, res) {
+  try {
+    loadAllRules();
+    const checks = getAllChecksWithRules();
+    const disabledSet = getDisabledRules();
+
+    const extractorChecks = [...KNOWN_EXTRACTOR_CHECKS];
+
+    const hintFiles = [];
+    const hintsDir = join(__dirname, 'data', 'hints');
+    if (existsSync(hintsDir)) {
+      for (const f of readdirSync(hintsDir)) {
+        if (f.endsWith('.md')) {
+          const name = f.replace('.md', '');
+          const isVariant = name.includes('-');
+          const baseCheck = isVariant ? name.split('-')[0] : name;
+          hintFiles.push({ file: f, name, base_check: baseCheck, is_variant: isVariant });
+        }
+      }
+    }
+
+    let scores = [];
+    if (analyticsStore) {
+      try { scores = ruleScores(analyticsStore, { minEmitted: 1 }); } catch { /* no data yet */ }
+    }
+    const scoreMap = new Map(scores.map(s => [s.rule_id, s]));
+
+    const checkNodes = checks.map(check => {
+      const rules = getRulesForCheck(check);
+      const hasExtractor = extractorChecks.includes(check);
+      const hints = hintFiles.filter(h => h.base_check === check);
+
+      const ruleNodes = rules.map(r => {
+        const deps = RULE_DEPS[r.id] || { needs: ['params'], graph_queries: [] };
+        const score = scoreMap.get(r.id);
+        return {
+          id: r.id,
+          priority: r.priority,
+          needs: deps.needs,
+          graph_queries: deps.graph_queries,
+          disabled: disabledSet.has(r.id),
+          score: score ? {
+            emitted: score.emitted,
+            resolved: score.resolved,
+            regressed: score.regressed,
+            resolution_rate: score.resolution_rate,
+            regression_rate: score.regression_rate,
+            effectiveness: score.effectiveness,
+            disabled: score.disabled,
+          } : null,
+        };
+      });
+
+      return {
+        check,
+        has_extractor: hasExtractor,
+        example_message: CHECK_EXAMPLES[check] || null,
+        hints: hints.map(h => h.name),
+        rules: ruleNodes,
+      };
+    });
+
+    const pipeline_steps = [
+      'LSP Diagnostics',
+      'Structural Warnings',
+      'Diagnostic Pipeline (9 steps)',
+      'Rule Engine (first-match)',
+      'Error Enricher (fallback)',
+      'Fix Generator',
+      'Scorecard',
+    ];
+
+    const coverage = {
+      checks_with_rules: checks.length,
+      checks_with_extractors: extractorChecks.length,
+      total_rules: checks.reduce((n, c) => n + getRulesForCheck(c).length, 0),
+      total_hints: hintFiles.length,
+      disabled_rules: disabledSet.size,
+      rules_needing_graph: Object.values(RULE_DEPS).filter(d => d.needs.includes('graph')).length,
+      rules_needing_indexes: Object.values(RULE_DEPS).filter(d => d.needs.includes('filtersIndex') || d.needs.includes('objectsIndex') || d.needs.includes('tagsIndex')).length,
+      rules_params_only: Object.values(RULE_DEPS).filter(d => d.needs.length === 1 && d.needs[0] === 'params').length,
+    };
+
+    sendJson(res, 200, { checks: checkNodes, pipeline_steps, coverage, hint_files: hintFiles });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function sendJson(res, status, data) {
