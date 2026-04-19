@@ -576,3 +576,88 @@ export function knowledgeGaps(store) {
     };
   });
 }
+
+/**
+ * Rule drilldown — detailed diagnostic samples for a specific rule.
+ * Returns recent instances where this rule fired, with outcomes, fix status,
+ * and file distribution. Used by the dashboard drill-down panel.
+ */
+export function ruleDrilldown(store, ruleId, { limit = 30 } = {}) {
+  // Each diagnostic row gets at most one outcome via a correlated subquery,
+  // avoiding the cartesian product from a plain LEFT JOIN on fp.
+  const samples = store.query(`
+    SELECT d.rowid as did, d.fp, d.template_fp, d.file, d.check_name, d.ts,
+           d.confidence, d.session_id,
+           (SELECT o.outcome FROM outcomes o WHERE o.fp = d.fp ORDER BY o.id DESC LIMIT 1) as outcome,
+           (SELECT o.fix_applied FROM outcomes o WHERE o.fp = d.fp ORDER BY o.id DESC LIMIT 1) as fix_applied,
+           (SELECT o.collateral_added FROM outcomes o WHERE o.fp = d.fp ORDER BY o.id DESC LIMIT 1) as collateral_added
+    FROM diagnostics d
+    WHERE d.hint_rule_id = ? AND d.suppressed = 0
+    GROUP BY d.fp, d.session_id
+    ORDER BY d.ts DESC
+    LIMIT ?
+  `, [ruleId, limit]);
+
+  // File stats: count distinct fps per file, then count outcomes per fp (not per join row)
+  const fileStats = store.query(`
+    SELECT d.file,
+           COUNT(DISTINCT d.fp) as emitted,
+           (SELECT COUNT(DISTINCT o.fp) FROM outcomes o
+            JOIN diagnostics d2 ON o.fp = d2.fp
+            WHERE d2.hint_rule_id = ? AND d2.file = d.file AND o.outcome = 'resolved') as resolved,
+           (SELECT COUNT(DISTINCT o.fp) FROM outcomes o
+            JOIN diagnostics d2 ON o.fp = d2.fp
+            WHERE d2.hint_rule_id = ? AND d2.file = d.file AND o.outcome = 'regressed') as regressed
+    FROM diagnostics d
+    WHERE d.hint_rule_id = ? AND d.suppressed = 0
+    GROUP BY d.file
+    ORDER BY emitted DESC
+    LIMIT 10
+  `, [ruleId, ruleId, ruleId]);
+
+  const templateStats = store.query(`
+    SELECT d.template_fp,
+           COUNT(DISTINCT d.fp) as count,
+           (SELECT COUNT(DISTINCT o.fp) FROM outcomes o
+            JOIN diagnostics d2 ON o.fp = d2.fp
+            WHERE d2.hint_rule_id = ? AND d2.template_fp = d.template_fp AND o.outcome = 'resolved') as resolved,
+           (SELECT COUNT(DISTINCT o.fp) FROM outcomes o
+            JOIN diagnostics d2 ON o.fp = d2.fp
+            WHERE d2.hint_rule_id = ? AND d2.template_fp = d.template_fp AND o.outcome = 'regressed') as regressed,
+           MIN(d.file) as sample_file
+    FROM diagnostics d
+    WHERE d.hint_rule_id = ? AND d.suppressed = 0
+    GROUP BY d.template_fp
+    ORDER BY count DESC
+    LIMIT 10
+  `, [ruleId, ruleId, ruleId]);
+
+  return {
+    rule_id: ruleId,
+    samples: samples.map(s => ({
+      fp: s.fp,
+      template_fp: s.template_fp,
+      file: s.file,
+      check: s.check_name,
+      ts: s.ts,
+      confidence: s.confidence,
+      session_id: s.session_id,
+      outcome: s.outcome ?? null,
+      fix_applied: s.fix_applied ?? null,
+      collateral: s.collateral_added ?? 0,
+    })),
+    file_distribution: fileStats.map(f => ({
+      file: f.file,
+      emitted: f.emitted,
+      resolved: f.resolved,
+      regressed: f.regressed,
+    })),
+    template_patterns: templateStats.map(t => ({
+      template_fp: t.template_fp,
+      count: t.count,
+      resolved: t.resolved,
+      regressed: t.regressed,
+      sample_file: t.sample_file,
+    })),
+  };
+}

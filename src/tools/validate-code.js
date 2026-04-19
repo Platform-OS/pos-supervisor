@@ -676,6 +676,7 @@ explicitly only if you are validating a file that is NOT part of the most recent
               fp,
               template_fp: tFp,
               file: file_path,
+              check: d.check || null,
               content_hash: contentHash,
               hint_md_hash: hintHash,
               hint_rule_id: d.rule_id || d.check || null,

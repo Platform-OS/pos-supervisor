@@ -350,7 +350,7 @@ function ingestValidatorEmit(event, stmts) {
     event.template_fp ?? null,
     event.session_id,
     event.file,
-    event.hint_rule_id ?? 'unknown',
+    event.check ?? event.hint_rule_id ?? 'unknown',
     null,
     event.ts,
     event.hint_rule_id ?? null,

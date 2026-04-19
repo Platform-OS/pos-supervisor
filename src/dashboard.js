@@ -584,6 +584,45 @@ export function buildDashboardHtml() {
   .an-explain dt:first-child { margin-top: 0; }
   .an-explain dd { margin-left: 16px; margin-bottom: 6px; }
 
+  /* ── Rule Drilldown Panel ───────────────────────────────────────── */
+  .rd-panel { margin-top: 16px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); }
+  .rd-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px dashed var(--border); }
+  .rd-title { font-size: 12px; font-weight: bold; color: var(--blue); text-transform: uppercase; }
+  .rd-close { background: transparent; border: 1px solid var(--border); color: var(--text); padding: 2px 10px; font-family: var(--mono); font-size: 12px; cursor: pointer; }
+  .rd-close:hover { background: var(--red); color: var(--bg); border-color: var(--red); }
+  .rd-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; padding: 12px 14px; border-bottom: 1px dashed var(--border); }
+  .rd-stat { text-align: center; }
+  .rd-stat .label { font-size: 9px; color: var(--muted); text-transform: uppercase; }
+  .rd-stat .value { font-size: 14px; font-weight: bold; color: var(--text); }
+  .rd-hint { padding: 12px 14px; border-bottom: 1px dashed var(--border); }
+  .rd-hint-title { font-size: 10px; color: var(--muted); text-transform: uppercase; margin-bottom: 6px; }
+  .rd-hint-body { font-size: 11px; color: var(--text); line-height: 1.6; white-space: pre-wrap; max-height: 200px; overflow-y: auto; background: var(--bg); padding: 10px; border: 1px solid var(--border); }
+  .rd-subsection { padding: 12px 14px; border-bottom: 1px dashed var(--border); }
+  .rd-subsection:last-child { border-bottom: none; }
+  .rd-subsection-title { font-size: 10px; color: var(--muted); text-transform: uppercase; margin-bottom: 8px; }
+  .rd-subsection-title::before { content: "--- "; color: var(--border); }
+  .rd-subsection-title::after { content: " ---"; color: var(--border); }
+  .rd-sample-table { width: 100%; border-collapse: collapse; }
+  .rd-sample-table th { text-align: left; font-size: 9px; color: var(--muted); font-weight: bold; padding: 4px 8px; border-bottom: 1px dashed var(--border); text-transform: uppercase; }
+  .rd-sample-table td { font-size: 10px; padding: 4px 8px; border-bottom: 1px solid var(--surface2); color: var(--text); }
+  .rd-sample-table tr:hover td { background: var(--bg); }
+  .rd-outcome { font-size: 9px; font-weight: bold; padding: 1px 6px; text-transform: uppercase; display: inline-block; }
+  .rd-outcome.resolved { color: var(--green); border: 1px solid var(--green); }
+  .rd-outcome.regressed { color: var(--red); border: 1px solid var(--red); }
+  .rd-outcome.unchanged { color: var(--muted); border: 1px solid var(--border); }
+  .rd-outcome.moved { color: var(--blue); border: 1px solid var(--blue); }
+  .rd-outcome.pending { color: var(--yellow); border: 1px dashed var(--yellow); }
+  .rd-file-bar { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 10px; }
+  .rd-file-name { color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rd-file-count { color: var(--muted); min-width: 30px; text-align: right; }
+  .rd-file-mini-bar { height: 6px; background: var(--border); flex: 0 0 80px; position: relative; overflow: hidden; }
+  .rd-file-mini-bar .resolved { position: absolute; left: 0; top: 0; height: 100%; background: var(--green); max-width: 100%; }
+  .rd-file-mini-bar .regressed { position: absolute; top: 0; height: 100%; background: var(--red); max-width: 100%; }
+  .rd-action { padding: 12px 14px; background: #1d2021; font-size: 11px; color: var(--muted); line-height: 1.6; }
+  .rd-action b { color: var(--text); }
+  .rd-action code { background: var(--bg); padding: 1px 4px; border: 1px solid var(--border); font-size: 10px; color: var(--text); }
+  .an-sc-table tr.rd-active td { background: var(--surface); border-left: 3px solid var(--blue); }
+
   /* ── L1: Health Sparkline History ─────────────────────────────────── */
   .hs-container { margin-top: 16px; padding: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); }
   .hs-container h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; letter-spacing: .05em; }
@@ -1213,7 +1252,7 @@ export function buildDashboardHtml() {
 
   <div class="an-section">
     <div class="an-section-title">Fix Adoption Funnel</div>
-    <div class="an-legend">Aggregate flow from diagnostic emission through rule matching, fix proposal, and resolution. Each stage shows the count and drop-off percentage from the previous stage.</div>
+    <div class="an-legend">Diagnostic flow: emitted → rule matched → fix proposed → adopted → resolved. <b>Big drop-offs reveal bottlenecks</b>: emitted→matched = need more rules; matched→proposed = rules lack fixes; proposed→adopted = fix format wrong; adopted→resolved = fix doesn't actually work.</div>
     <div id="an-funnel"><span class="an-empty">No funnel data yet.</span></div>
   </div>
 
@@ -1249,8 +1288,9 @@ export function buildDashboardHtml() {
 
   <div class="an-section">
     <div class="an-section-title">Rule Performance</div>
-    <div class="an-legend">Per-rule effectiveness scores. <b>Effectiveness</b> = resolution_rate - regression_rate. Rules below 15% effectiveness with 10+ outcomes are flagged for <b>disabling</b>. A disabled rule means its hint is doing more harm than good.</div>
+    <div class="an-legend">Per-rule effectiveness. <b>Effectiveness</b> = resolution - regression. Rules below 15% (10+ outcomes) auto-disable. <b>What to do</b>: Sort by effectiveness. Bottom rules need hint rewrites (<code>src/data/hints/</code>) or rule logic fixes (<code>src/core/rules/</code>). Use the Rule Tester to verify changes before deploying.</div>
     <div id="an-rule-scores"><span class="an-empty">No rule score data yet.</span></div>
+    <div id="an-rule-drilldown"></div>
   </div>
 
   <div class="an-section">
@@ -1266,21 +1306,23 @@ export function buildDashboardHtml() {
   </div>
 
   <div class="an-section">
-    <div class="an-section-title">How to Read This</div>
+    <div class="an-section-title">How to Improve the Engine</div>
     <div class="an-explain">
       <dl>
-        <dt>Resolution Rate</dt>
-        <dd>Fraction of diagnostics that disappear between consecutive validate_code calls on the same file. A resolved diagnostic means the agent successfully acted on the hint. Higher is better.</dd>
-        <dt>Mislead Rate</dt>
-        <dd>Fraction of outcomes where new diagnostics appeared that weren't in the previous call (regressions). This means the agent's fix introduced new problems. Lower is better. Above 30% = the hint is actively harmful.</dd>
-        <dt>Adoption Rate</dt>
-        <dd>Of diagnostics with proposed fixes, how often the agent applied the fix verbatim (exact text match). Low adoption may mean the fix text is wrong, or the agent prefers its own approach.</dd>
-        <dt>Credible Intervals</dt>
-        <dd>The bars show 95% Bayesian credible intervals using a Beta(2,2) prior. With few observations, intervals are wide (uncertain). As data accumulates, they narrow. The marker shows the posterior mean.</dd>
-        <dt>Collateral</dt>
-        <dd>Average net new diagnostics introduced per regression: max(0, new_diags - resolved_diags). High collateral = the fix is causing cascading failures.</dd>
-        <dt>Lift (Bigrams)</dt>
-        <dd>How much more likely a tool pair occurs vs random chance. Lift > 1 = tools are used together more than expected. Lift = 1 = no association.</dd>
+        <dt>Symptom: Low resolution rate on a check</dt>
+        <dd>The hint doesn't help agents fix the problem. <b>Action</b>: Open <code>src/data/hints/&lt;Check&gt;.md</code> and rewrite the hint to be more specific and directive. Include the exact fix pattern, not just an explanation. Test with the Rule Tester in Tool Lab.</dd>
+        <dt>Symptom: High regression rate (&gt;30%)</dt>
+        <dd>The hint is actively harmful — agents follow it and introduce new errors. <b>Action</b>: Check if the hint suggests a fix that breaks other things (e.g., removing a variable that's used elsewhere). Rewrite or add guard conditions to the rule in <code>src/core/rules/&lt;Check&gt;.js</code>.</dd>
+        <dt>Symptom: Low fix adoption</dt>
+        <dd>Agents ignore proposed fixes and write their own. <b>Action</b>: Check that <code>fixes: [...]</code> in the rule's <code>apply()</code> produce valid text edits. The fix must be a drop-in replacement, not a template.</dd>
+        <dt>Symptom: Rule disabled by case base</dt>
+        <dd>Effectiveness dropped below 15% over 10+ outcomes. <b>Action</b>: Don't just re-enable — diagnose why it failed. Use Diagnostic Journey to trace outcomes. Rewrite the rule or split it into more specific sub-rules.</dd>
+        <dt>Symptom: Check has no matching rules (coverage gap)</dt>
+        <dd>Diagnostics fall through to the generic enricher. <b>Action</b>: Check the Engine Map tab for gaps. Write new rules in <code>src/core/rules/&lt;Check&gt;.js</code> with specific <code>when()</code> guards and helpful <code>apply()</code> hints. Or promote a suggested rule from the Suggested Rules section above.</dd>
+        <dt>Symptom: Stuck files (streak &gt; 3)</dt>
+        <dd>Agent validates the same file repeatedly without progress. <b>Action</b>: The hint may be correct but the agent can't execute it. Add <code>proposed_fixes</code> with exact text edits, or add a <code>see_also</code> pointing to a tool that can help.</dd>
+        <dt>How to read the metrics</dt>
+        <dd><b>Resolution rate</b> = diagnostic disappears after agent edits. <b>Mislead rate</b> = fix introduced new problems. <b>Adoption rate</b> = agent used proposed fix verbatim. <b>Credible intervals</b> = 95% Bayesian CI with Beta(2,2) prior — wide bars mean not enough data. <b>Collateral</b> = average new diagnostics per regression. <b>Lift</b> = tool pair frequency vs chance (lift &gt; 1 = strong association).</dd>
       </dl>
     </div>
   </div>
@@ -1889,99 +1931,415 @@ function showHealthTip(e) {
 }
 
 // ── Session Export ──────────────────────────────────────────────────────
-function exportSession() {
+function rateVal(r) {
+  if (r && typeof r === 'object' && typeof r.mean === 'number') return r.mean;
+  if (typeof r === 'number') return r;
+  return 0;
+}
+function ratePct(r) { return (rateVal(r) * 100).toFixed(0); }
+function rateCi(r) {
+  if (r && typeof r === 'object' && typeof r.lower95 === 'number') {
+    return ratePct(r) + '% [' + (r.lower95 * 100).toFixed(0) + '-' + (r.upper95 * 100).toFixed(0) + ']';
+  }
+  return ratePct(r) + '%';
+}
+
+async function exportSession() {
+  const btn = document.getElementById('export-btn');
+  if (btn) { btn.textContent = 'Generating...'; btn.disabled = true; }
+
   const d = lastStatus;
-  if (!d) return;
+  if (!d) { if (btn) { btn.textContent = 'Export Report'; btn.disabled = false; } return; }
   const h = lastHealth || computeHealthScore(d);
   const stats = d.stats || {};
   const fh = d.fileHistory || [];
   const now = new Date().toISOString();
+  const a = analysisData;
 
-  const lines = [];
-  lines.push('# pos-supervisor session report');
-  lines.push('');
-  lines.push('- Generated: ' + now);
-  lines.push('- Project: ' + (d.projectDir || '—'));
-  lines.push('- Server version: ' + (d.version || '—'));
-  lines.push('- Uptime: ' + fmtDuration(d.uptimeMs || 0));
-  lines.push('- Session started: ' + (d.startedAt ? new Date(d.startedAt).toISOString() : '—'));
-  lines.push('');
-  lines.push('## Health: ' + h.score + '/100' + (h.mode === 'infrastructure' ? ' (infrastructure only — run analyze_project for full score)' : ''));
-  lines.push('');
-  lines.push('| Check | Weight | Score | Status |');
-  lines.push('|---|---:|---:|---|');
-  for (const c of h.checks) {
-    const scored = typeof c.partial === 'number' ? c.partial : (c.pass ? c.weight : 0);
-    const status = (c.pass ? 'PASS' : (scored > 0 ? 'PARTIAL' : 'FAIL')) + (c.detail ? ' (' + c.detail + ')' : '');
-    lines.push('| ' + c.label + ' | ' + c.weight + ' | ' + scored + ' | ' + status + ' |');
+  var [analyticsStats, scorecards, ruleScoresData, funnelData, gapsData, engineMap, recommendations, sessionsData] = await Promise.all([
+    fetch(BASE + '/api/analytics/stats').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/scorecards?min_cohort=1').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/rule-scores').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/funnel').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/knowledge-gaps').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/engine-map').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/recommendations').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/sessions').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+  ]);
+
+  // Fetch drilldowns for problem checks (effectiveness < 50%)
+  var cards = scorecards?.scorecards || [];
+  var drilldowns = {};
+  var problemChecks = cards.filter(function(c) {
+    var eff = rateVal(c.resolution_rate) - rateVal(c.mislead_rate);
+    return eff < 0.5 || c.emitted >= 5;
+  });
+  var drilldownPromises = problemChecks.map(function(c) {
+    return fetch(BASE + '/api/analytics/rule-drilldown?rule_id=' + encodeURIComponent(c.check) + '&limit=10')
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(data) { if (data) drilldowns[c.check] = data; })
+      .catch(function() {});
+  });
+  await Promise.all(drilldownPromises);
+
+  var sec = 0;
+  var L = [];
+  L.push('# pos-supervisor system performance report');
+  L.push('');
+  L.push('> Paste this to Claude and ask: "Analyze this report. What should I fix first? Which rules need rewriting? How healthy is the knowledge system?"');
+  L.push('');
+  L.push('Generated: ' + now + ' | Project: ' + (d.projectDir || 'unknown') + ' | Version: ' + (d.version || 'unknown') + ' | Uptime: ' + fmtDuration(d.uptimeMs || 0));
+  L.push('');
+
+  // ── Executive Summary ──
+  L.push('## ' + (++sec) + '. Executive summary');
+  L.push('');
+  var findings = [];
+  if (a) {
+    var totalIssues = (a.total_errors || 0) + (a.total_warnings || 0);
+    if (totalIssues === 0) findings.push('Project is CLEAN: ' + (a.files_scanned || 0) + ' files scanned, zero errors or warnings.');
+    else findings.push('Project has ' + (a.total_errors || 0) + ' errors and ' + (a.total_warnings || 0) + ' warnings across ' + (a.files_scanned || 0) + ' files.');
+  } else {
+    findings.push('No project analysis available. Run "Analyze Project" on the Health tab first.');
   }
-  if (h.mode === 'project') {
-    lines.push('');
-    lines.push('Files scanned: ' + h.totalFiles + ', Errors: ' + h.totalErrors + ', Warnings: ' + h.totalWarnings);
+  var dbStats = analyticsStats || {};
+  if (dbStats.sessions > 0) {
+    findings.push('Analytics DB: ' + dbStats.sessions + ' sessions, ' + dbStats.diagnostics + ' diagnostics, ' + dbStats.outcomes + ' outcomes recorded.');
+  } else {
+    findings.push('Analytics DB is empty. No historical performance data available.');
   }
-  lines.push('');
-  lines.push('## Tool usage');
-  lines.push('');
-  lines.push('| Tool | Calls | Errors | Avg ms | Last |');
-  lines.push('|---|---:|---:|---:|---|');
-  const toolKeys = Object.keys(stats).sort((a, b) => (stats[b].calls || 0) - (stats[a].calls || 0));
-  for (const k of toolKeys) {
-    const s = stats[k];
-    const avg = s.calls ? Math.round((s.totalMs || 0) / s.calls) : 0;
-    const last = s.lastCalledAt ? new Date(s.lastCalledAt).toISOString() : '—';
-    lines.push('| ' + k + ' | ' + (s.calls || 0) + ' | ' + (s.errors || 0) + ' | ' + avg + ' | ' + last + ' |');
+  if (funnelData && funnelData.emitted > 0) {
+    var resRate = funnelData.resolved ? ((funnelData.resolved / funnelData.emitted) * 100).toFixed(0) : '0';
+    var regRate = funnelData.regressed ? ((funnelData.regressed / funnelData.emitted) * 100).toFixed(0) : '0';
+    findings.push('Overall funnel: ' + funnelData.emitted + ' diagnostics emitted -> ' + (funnelData.resolved || 0) + ' resolved (' + resRate + '%), ' + (funnelData.regressed || 0) + ' regressed (' + regRate + '%). Fix proposal rate: ' + (funnelData.fix_proposed || 0) + '/' + funnelData.emitted + '.');
   }
-  lines.push('');
-  lines.push('## Files validated (' + fh.length + ')');
-  lines.push('');
-  if (fh.length) {
-    lines.push('| File | Calls | Last errors | Last warnings | Streak |');
-    lines.push('|---|---:|---:|---:|---:|');
-    const fhSorted = [...fh].sort((a, b) =>
-      (b.lastErrorCount || 0) - (a.lastErrorCount || 0) ||
-      (b.consecutiveNonDecreasing || 0) - (a.consecutiveNonDecreasing || 0) ||
-      (b.calls || 0) - (a.calls || 0)
-    );
-    for (const f of fhSorted) {
-      lines.push('| ' + f.path + ' | ' + (f.calls || 0) + ' | ' + (f.lastErrorCount || 0)
-        + ' | ' + (f.lastWarningCount || 0) + ' | ' + (f.consecutiveNonDecreasing || 0) + ' |');
+  var harmful = cards.filter(function(c) { return rateVal(c.resolution_rate) - rateVal(c.mislead_rate) < 0; });
+  if (harmful.length > 0) {
+    findings.push('HARMFUL checks (regression > resolution): ' + harmful.map(function(c) { return c.check + ' (' + c.emitted + ' emitted, ' + ratePct(c.mislead_rate) + '% regression)'; }).join('; ') + '.');
+  }
+  var noFix = cards.filter(function(c) { return c.emitted >= 5 && rateVal(c.resolution_rate) === 0; });
+  if (noFix.length > 0) {
+    findings.push('Zero-resolution checks (never resolved by agent): ' + noFix.map(function(c) { return c.check + ' (' + c.emitted + ' emitted)'; }).join('; ') + '.');
+  }
+  if (engineMap?.coverage) {
+    var cov = engineMap.coverage;
+    if (cov.disabled_rules > 0) findings.push(cov.disabled_rules + ' rules auto-disabled by case base due to poor effectiveness.');
+    var uncovered = engineMap.checks.filter(function(c) { return c.rules.length === 0; });
+    if (uncovered.length > 0) findings.push('Checks with NO rules: ' + uncovered.map(function(c) { return c.check; }).join(', ') + '.');
+  }
+  for (var fi = 0; fi < findings.length; fi++) L.push('- ' + findings[fi]);
+  L.push('');
+
+  // ── Health Score ──
+  L.push('## ' + (++sec) + '. Health score: ' + h.score + '/100' + (h.mode === 'infrastructure' ? ' (infrastructure only)' : ''));
+  L.push('');
+  L.push('| Dimension | Weight | Score | Status |');
+  L.push('|---|---:|---:|---|');
+  for (var ci = 0; ci < h.checks.length; ci++) {
+    var chk = h.checks[ci];
+    var scored = typeof chk.partial === 'number' ? chk.partial : (chk.pass ? chk.weight : 0);
+    var status = (chk.pass ? 'PASS' : (scored > 0 ? 'PARTIAL' : 'FAIL')) + (chk.detail ? ' (' + chk.detail + ')' : '');
+    L.push('| ' + chk.label + ' | ' + chk.weight + ' | ' + scored + ' | ' + status + ' |');
+  }
+  L.push('');
+
+  // ── Project Analysis (current state) ──
+  if (a) {
+    L.push('## ' + (++sec) + '. Current project state');
+    L.push('');
+    L.push('Files scanned: ' + (a.files_scanned || 0) + ' | Errors: ' + (a.total_errors || 0) + ' | Warnings: ' + (a.total_warnings || 0) + ' | Integrity issues: ' + (a.integrity_errors || 0) + 'E/' + (a.integrity_warnings || 0) + 'W | Orphans: ' + (a.orphaned_files || []).length);
+    L.push('');
+
+    var blocking = a.blocking_files || [];
+    if (blocking.length > 0) {
+      L.push('### Blocking files');
+      L.push('');
+      for (var bi = 0; bi < blocking.length; bi++) {
+        var b = blocking[bi];
+        L.push('- **' + b.path + '**: ' + b.lint_errors + ' lint errors, ' + b.integrity_errors + ' integrity errors. Checks: ' + (b.checks || []).join(', '));
+      }
+      L.push('');
     }
-  } else {
-    lines.push('_No files validated in this session._');
-  }
-  lines.push('');
-  lines.push('## Check frequency');
-  lines.push('');
-  const freq = d.checkFrequency || {};
-  const freqKeys = Object.keys(freq).sort((a, b) => (freq[b] || 0) - (freq[a] || 0));
-  if (freqKeys.length) {
-    lines.push('| Check | Occurrences |');
-    lines.push('|---|---:|');
-    for (const k of freqKeys) lines.push('| ' + k + ' | ' + freq[k] + ' |');
-  } else {
-    lines.push('_No diagnostic checks recorded._');
-  }
-  lines.push('');
-  if (d.plan) {
-    lines.push('## Plan (' + (d.plan.source || 'unknown') + ')');
-    lines.push('');
-    lines.push('- Pending files: ' + (d.plan.pendingFiles?.length || 0));
-    lines.push('- Validated files: ' + (d.plan.validatedFiles?.length || 0));
-    lines.push('- Pending translations: ' + (d.plan.pendingTranslations?.length || 0));
-    lines.push('');
+
+    var fixOrd = a.fix_order || [];
+    if (fixOrd.length > 0) {
+      L.push('### Recommended fix order');
+      L.push('');
+      for (var fxi = 0; fxi < fixOrd.length; fxi++) {
+        var fx = fixOrd[fxi];
+        L.push((fxi + 1) + '. **' + fx.path + '** (' + fx.errors + 'E/' + fx.warnings + 'W) -- ' + (fx.reason || ''));
+      }
+      L.push('');
+    }
+
+    var filesWithIssues = (a.files || []).filter(function(f) { return f.errors > 0 || f.warnings > 0; });
+    if (filesWithIssues.length > 0) {
+      L.push('### Files with issues');
+      L.push('');
+      L.push('| File | Errors | Warnings |');
+      L.push('|---|---:|---:|');
+      filesWithIssues.sort(function(x, y) { return (y.errors || 0) - (x.errors || 0); });
+      for (var fii = 0; fii < filesWithIssues.length; fii++) {
+        L.push('| ' + filesWithIssues[fii].path + ' | ' + filesWithIssues[fii].errors + ' | ' + filesWithIssues[fii].warnings + ' |');
+      }
+      L.push('');
+    }
+
+    var integ = a.integrity || [];
+    if (integ.length > 0) {
+      L.push('### Integrity issues');
+      L.push('');
+      for (var iii = 0; iii < integ.length; iii++) {
+        var ii = integ[iii];
+        L.push('- [' + ii.severity + '] ' + ii.type + ': ' + (ii.message || ii.source + ' -> ' + (ii.target || 'n/a')));
+      }
+      L.push('');
+    }
+
+    var orphans = a.orphaned_files || [];
+    if (orphans.length > 0) {
+      L.push('### Orphaned files (' + orphans.length + ')');
+      L.push('');
+      for (var oi = 0; oi < orphans.length; oi++) {
+        var o = orphans[oi];
+        L.push('- ' + (typeof o === 'string' ? o : o.path || o.name || JSON.stringify(o)));
+      }
+      L.push('');
+    }
+
+    var diff = a.diff_from_last_run;
+    if (diff) {
+      L.push('### Delta from previous analysis (' + (diff.previous_run_at || 'unknown') + ')');
+      L.push('');
+      L.push('Errors: ' + (diff.error_delta > 0 ? '+' : '') + (diff.error_delta || 0) + ' | Warnings: ' + (diff.warning_delta > 0 ? '+' : '') + (diff.warning_delta || 0));
+      if ((diff.new_errors || []).length > 0) {
+        L.push('');
+        L.push('New errors: ' + diff.new_errors.map(function(e) { return e.check + ' in ' + e.file; }).join(', '));
+      }
+      if ((diff.resolved_errors || []).length > 0) {
+        L.push('');
+        L.push('Resolved: ' + diff.resolved_errors.map(function(e) { return e.check + ' in ' + e.file; }).join(', '));
+      }
+      L.push('');
+    }
   }
 
-  const md = lines.join('\\n');
-  const stamp = now.replace(/[:.]/g, '-').replace(/T/, '_').slice(0, 19);
-  const blob = new Blob([md], { type: 'text/markdown' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'pos-supervisor-session-' + stamp + '.md';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  // ── Historical Analytics ──
+  if (dbStats.sessions > 0) {
+    L.push('---');
+    L.push('');
+    L.push('# Historical analytics (all ' + dbStats.sessions + ' sessions)');
+    L.push('');
+    L.push('> Data below reflects cumulative performance across all recorded sessions, not just the current project state.');
+    L.push('');
+  }
+
+  // ── Session History ──
+  var sessions = sessionsData?.sessions || [];
+  if (sessions.length > 0) {
+    L.push('## ' + (++sec) + '. Session history');
+    L.push('');
+    for (var si = 0; si < sessions.length; si++) {
+      var s = sessions[si];
+      var sResRate = s.outcomes_total > 0 ? ((s.outcomes_resolved / s.outcomes_total) * 100).toFixed(0) : 'n/a';
+      var sRegRate = s.outcomes_total > 0 ? ((s.outcomes_regressed / s.outcomes_total) * 100).toFixed(0) : 'n/a';
+      L.push('**Session ' + (si + 1) + '** (' + s.first_event.slice(0, 16) + ' - ' + s.last_event.slice(11, 16) + ')');
+      L.push('  Events: ' + s.event_count + ' | Tool calls: ' + s.tool_calls + ' | validate_code: ' + s.validate_code_calls + ' | Diagnostics: ' + s.diagnostics_emitted + ' | Outcomes: ' + s.outcomes_total + ' (resolved: ' + s.outcomes_resolved + '/' + sResRate + '%, regressed: ' + s.outcomes_regressed + '/' + sRegRate + '%) | Used validate_intent: ' + (s.used_validate_intent ? 'yes' : 'no'));
+      L.push('');
+    }
+  }
+
+  // ── Check Scorecards ──
+  if (cards.length > 0) {
+    L.push('## ' + (++sec) + '. Check scorecards');
+    L.push('');
+    L.push('| Check | Emitted | Outcomes | Resolution | Regression | Adoption | Effectiveness |');
+    L.push('|---|---:|---:|---|---|---|---|');
+    for (var cdi = 0; cdi < cards.length; cdi++) {
+      var c = cards[cdi];
+      var eff = rateVal(c.resolution_rate) - rateVal(c.mislead_rate);
+      var effLabel = eff > 0.5 ? 'GOOD' : eff > 0.15 ? 'OK' : eff >= 0 ? 'LOW' : 'HARMFUL';
+      L.push('| ' + c.check + ' | ' + c.emitted + ' | ' + (c.sample_size || 0) + ' | ' + rateCi(c.resolution_rate) + ' | ' + rateCi(c.mislead_rate) + ' | ' + rateCi(c.adoption_rate) + ' | ' + effLabel + ' |');
+    }
+    L.push('');
+
+    // Drilldown for each check with data
+    var drilldownKeys = Object.keys(drilldowns);
+    if (drilldownKeys.length > 0) {
+      L.push('### Per-check drilldown');
+      L.push('');
+      for (var dki = 0; dki < drilldownKeys.length; dki++) {
+        var dKey = drilldownKeys[dki];
+        var dd = drilldowns[dKey];
+        L.push('#### ' + dKey);
+        L.push('');
+        if (dd.file_distribution && dd.file_distribution.length > 0) {
+          L.push('File distribution:');
+          for (var dfi = 0; dfi < dd.file_distribution.length; dfi++) {
+            var df = dd.file_distribution[dfi];
+            L.push('- ' + df.file + ': ' + df.emitted + ' emitted, ' + df.resolved + ' resolved, ' + df.regressed + ' regressed');
+          }
+          L.push('');
+        }
+        if (dd.samples && dd.samples.length > 0) {
+          L.push('Recent samples:');
+          L.push('');
+          L.push('| File | Session | Timestamp | Outcome | Confidence |');
+          L.push('|---|---|---|---|---:|');
+          for (var dsi = 0; dsi < Math.min(dd.samples.length, 5); dsi++) {
+            var ds = dd.samples[dsi];
+            L.push('| ' + ds.file + ' | ' + (ds.session_id || '').slice(0, 8) + ' | ' + (ds.ts || '').slice(0, 19) + ' | ' + (ds.outcome || 'no outcome') + ' | ' + (ds.confidence != null ? (ds.confidence * 100).toFixed(0) + '%' : 'n/a') + ' |');
+          }
+          L.push('');
+        }
+        if (dd.template_patterns && dd.template_patterns.length > 0) {
+          L.push('Diagnostic patterns (by template fingerprint):');
+          for (var dti = 0; dti < dd.template_patterns.length; dti++) {
+            var dt = dd.template_patterns[dti];
+            L.push('- Pattern ' + (dt.template_fp || '').slice(0, 8) + ': ' + dt.count + 'x (resolved: ' + dt.resolved + ', regressed: ' + dt.regressed + ') sample: ' + dt.sample_file);
+          }
+          L.push('');
+        }
+      }
+    }
+  }
+
+  // ── Rule Performance ──
+  var rules = ruleScoresData?.scores || [];
+  if (rules.length > 0) {
+    L.push('## ' + (++sec) + '. Rule performance');
+    L.push('');
+    L.push('| Rule ID | Emitted | Resolution | Regression | Effectiveness | Status |');
+    L.push('|---|---:|---|---|---|---|');
+    var sortedRules = [...rules].sort(function(x, y) { return (x.effectiveness || 0) - (y.effectiveness || 0); });
+    for (var ri = 0; ri < sortedRules.length; ri++) {
+      var r = sortedRules[ri];
+      var rStatus = r.disabled ? 'DISABLED' : (r.effectiveness || 0) < 0.15 ? 'AT RISK' : 'OK';
+      L.push('| ' + r.rule_id + ' | ' + r.emitted + ' | ' + ((r.resolution_rate || 0) * 100).toFixed(0) + '% | ' + ((r.regression_rate || 0) * 100).toFixed(0) + '% | ' + ((r.effectiveness || 0) * 100).toFixed(0) + '% | ' + rStatus + ' |');
+    }
+    L.push('');
+  }
+
+  // ── Fix Adoption Funnel ──
+  if (funnelData && funnelData.emitted > 0) {
+    L.push('## ' + (++sec) + '. Fix adoption funnel');
+    L.push('');
+    var f = funnelData;
+    L.push('Emitted: ' + f.emitted + ' -> Rule matched: ' + (f.rule_matched || 0) + ' (' + ((f.rule_matched || 0) / f.emitted * 100).toFixed(0) + '%) -> Fix proposed: ' + (f.fix_proposed || 0) + ' -> Adopted: ' + ((f.fix_adopted_verbatim || 0) + (f.fix_adopted_partial || 0)) + ' -> Resolved: ' + (f.resolved || 0) + ' | Regressed: ' + (f.regressed || 0) + ' | Unchanged: ' + (f.unchanged || 0));
+    L.push('');
+    var bottlenecks = [];
+    if (f.rule_matched < f.emitted * 0.8) bottlenecks.push('Rule matching: ' + ((1 - f.rule_matched / f.emitted) * 100).toFixed(0) + '% of diagnostics have no matching rule');
+    if (f.rule_matched > 0 && (f.fix_proposed || 0) < f.rule_matched * 0.5) bottlenecks.push('Fix proposals: ' + ((1 - (f.fix_proposed || 0) / f.rule_matched) * 100).toFixed(0) + '% of matched rules produce no fix');
+    if (f.fix_proposed > 0) {
+      var adopted = (f.fix_adopted_verbatim || 0) + (f.fix_adopted_partial || 0);
+      if (adopted < f.fix_proposed * 0.5) bottlenecks.push('Fix adoption: ' + ((1 - adopted / f.fix_proposed) * 100).toFixed(0) + '% of proposed fixes are ignored by the agent');
+    }
+    if (bottlenecks.length > 0) {
+      L.push('Bottlenecks:');
+      for (var bni = 0; bni < bottlenecks.length; bni++) L.push('- ' + bottlenecks[bni]);
+      L.push('');
+    }
+  }
+
+  // ── Knowledge Gaps ──
+  var gaps = gapsData?.gaps || [];
+  if (gaps.length > 0) {
+    L.push('## ' + (++sec) + '. Knowledge gaps');
+    L.push('');
+    L.push('| Check | Unmatched | Total | Coverage | Resolution |');
+    L.push('|---|---:|---:|---|---|');
+    for (var gi = 0; gi < gaps.length; gi++) {
+      var g = gaps[gi];
+      L.push('| ' + g.check + ' | ' + g.unmatched_count + ' | ' + g.total_emitted + ' | ' + ((g.coverage_rate || 0) * 100).toFixed(0) + '% | ' + ((g.avg_resolution_rate || 0) * 100).toFixed(0) + '% |');
+    }
+    L.push('');
+  }
+
+  // ── Recommendations ──
+  var recs = recommendations?.recommendations || [];
+  if (recs.length > 0) {
+    L.push('## ' + (++sec) + '. Urgent recommendations');
+    L.push('');
+    for (var rci = 0; rci < recs.length; rci++) {
+      L.push('- **' + recs[rci].check + '**: ' + (recs[rci].reason || recs[rci].message || 'needs attention'));
+    }
+    L.push('');
+  }
+
+  // ── Engine Map ──
+  if (engineMap?.checks) {
+    L.push('## ' + (++sec) + '. Engine map');
+    L.push('');
+    L.push('| Check | Rules | Hints | Extractor | Dependencies |');
+    L.push('|---|---:|---:|---|---|');
+    for (var emi = 0; emi < engineMap.checks.length; emi++) {
+      var ec = engineMap.checks[emi];
+      var depTypes = [];
+      for (var eri = 0; eri < ec.rules.length; eri++) {
+        for (var eni = 0; eni < ec.rules[eri].needs.length; eni++) {
+          if (depTypes.indexOf(ec.rules[eri].needs[eni]) === -1) depTypes.push(ec.rules[eri].needs[eni]);
+        }
+      }
+      L.push('| ' + ec.check + ' | ' + ec.rules.length + ' | ' + ec.hints.length + ' | ' + (ec.has_extractor ? 'yes' : 'NO') + ' | ' + (depTypes.join(', ') || 'none') + ' |');
+    }
+    L.push('');
+    var disabled = engineMap.checks.reduce(function(acc, c) { return acc.concat(c.rules.filter(function(r) { return r.disabled; })); }, []);
+    if (disabled.length > 0) {
+      L.push('Disabled rules: ' + disabled.map(function(r) { return r.id; }).join(', '));
+      L.push('');
+    }
+  }
+
+  // ── Current Session Tool Usage ──
+  var toolKeys = Object.keys(stats).sort(function(x, y) { return (stats[y].calls || 0) - (stats[x].calls || 0); });
+  if (toolKeys.length > 0) {
+    L.push('## ' + (++sec) + '. Current session tool usage');
+    L.push('');
+    L.push('| Tool | Calls | Errors | Avg ms |');
+    L.push('|---|---:|---:|---:|');
+    for (var ti = 0; ti < toolKeys.length; ti++) {
+      var ts = stats[toolKeys[ti]];
+      var avg = ts.calls ? Math.round((ts.totalMs || 0) / ts.calls) : 0;
+      L.push('| ' + toolKeys[ti] + ' | ' + (ts.calls || 0) + ' | ' + (ts.errors || 0) + ' | ' + avg + ' |');
+    }
+    L.push('');
+  }
+
+  // ── Files Validated (current session) ──
+  if (fh.length > 0) {
+    L.push('## ' + (++sec) + '. Files validated this session (' + fh.length + ')');
+    L.push('');
+    L.push('| File | Calls | Errors | Warnings | Stuck |');
+    L.push('|---|---:|---:|---:|---:|');
+    var fhSorted = [...fh].sort(function(x, y) {
+      return (y.lastErrorCount || 0) - (x.lastErrorCount || 0) || (y.consecutiveNonDecreasing || 0) - (x.consecutiveNonDecreasing || 0);
+    });
+    for (var fhi = 0; fhi < fhSorted.length; fhi++) {
+      L.push('| ' + fhSorted[fhi].path + ' | ' + (fhSorted[fhi].calls || 0) + ' | ' + (fhSorted[fhi].lastErrorCount || 0) + ' | ' + (fhSorted[fhi].lastWarningCount || 0) + ' | ' + (fhSorted[fhi].consecutiveNonDecreasing || 0) + ' |');
+    }
+    L.push('');
+  }
+
+  // ── Analytics DB metadata ──
+  if (analyticsStats) {
+    L.push('## ' + (++sec) + '. Analytics database metadata');
+    L.push('');
+    L.push('Events: ' + (analyticsStats.events || 0) + ' | Diagnostics: ' + (analyticsStats.diagnostics || 0) + ' | Windows: ' + (analyticsStats.windows || 0) + ' | Outcomes: ' + (analyticsStats.outcomes || 0) + ' | Sessions: ' + (analyticsStats.sessions || 0) + ' | Schema: v' + (analyticsStats.schema_version || '?'));
+    L.push('');
+  }
+
+  var md = L.join('\\n');
+  var stamp = now.replace(/[:.]/g, '-').replace(/T/, '_').slice(0, 19);
+  var blob = new Blob([md], { type: 'text/markdown' });
+  var url = URL.createObjectURL(blob);
+  var anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'pos-supervisor-report-' + stamp + '.md';
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
   URL.revokeObjectURL(url);
+  if (btn) { btn.textContent = 'Export Report'; btn.disabled = false; }
 }
 
 // ── Sparkline helper (shared by file-map inline + flyout) ────────────────
@@ -3715,7 +4073,7 @@ function renderRuleScores() {
     return;
   }
 
-  el.innerHTML = '<table class="an-sc-table">'
+  el.innerHTML = '<table class="an-sc-table" id="an-rule-scores-table">'
     + '<thead><tr>'
     + '<th>Rule</th><th>Check</th><th>Emitted</th><th>Outcomes</th>'
     + '<th>Resolved</th><th>Regressed</th><th>Adopted</th>'
@@ -3724,7 +4082,7 @@ function renderRuleScores() {
     + scores.map(s => {
       const effPct = (s.effectiveness * 100).toFixed(0);
       const effCls = s.effectiveness >= 0.5 ? 'good' : s.effectiveness >= 0.15 ? 'mid' : 'bad';
-      return '<tr>'
+      return '<tr style="cursor:pointer" data-rule-id="' + escHtml(s.rule_id) + '" data-check="' + escHtml(s.check) + '">'
         + '<td style="color:var(--text);font-weight:bold;font-size:10px;text-transform:uppercase">' + escHtml(s.rule_id) + '</td>'
         + '<td style="color:var(--muted)">' + escHtml(s.check) + '</td>'
         + '<td style="color:var(--muted)">' + s.emitted + '</td>'
@@ -3739,6 +4097,211 @@ function renderRuleScores() {
         + '</tr>';
     }).join('')
     + '</tbody></table>';
+}
+
+let activeDrilldownRuleId = null;
+
+async function showRuleDrilldown(ruleId, check) {
+  const panel = document.getElementById('an-rule-drilldown');
+  if (!panel) return;
+
+  // Toggle off if clicking same rule
+  if (activeDrilldownRuleId === ruleId) {
+    panel.innerHTML = '';
+    activeDrilldownRuleId = null;
+    clearActiveRow();
+    return;
+  }
+
+  activeDrilldownRuleId = ruleId;
+  highlightActiveRow(ruleId);
+  panel.innerHTML = '<div class="rd-panel"><div style="padding:14px;color:var(--muted)">Loading drilldown for ' + escHtml(ruleId) + '...</div></div>';
+
+  try {
+    const baseCheck = check.includes('.') ? check.split('.')[0] : check;
+    const [drillRes, hintRes] = await Promise.all([
+      fetch(BASE + '/api/analytics/rule-drilldown?rule_id=' + encodeURIComponent(ruleId)),
+      fetch(BASE + '/api/hints?name=' + encodeURIComponent(baseCheck)),
+    ]);
+    const drill = drillRes.ok ? await drillRes.json() : null;
+    const hint = hintRes.ok ? await hintRes.json() : null;
+
+    if (!drill || !drill.samples.length) {
+      panel.innerHTML = '<div class="rd-panel"><div style="padding:14px;color:var(--muted)">No diagnostic samples found for this rule. Rebuild the analytics database after using validate_code.</div></div>';
+      return;
+    }
+
+    const ruleScore = (analyticsData?.ruleScores || []).find(s => s.rule_id === ruleId);
+    renderDrilldownPanel(panel, ruleId, check, drill, hint, ruleScore);
+  } catch (e) {
+    panel.innerHTML = '<div class="rd-panel"><div style="padding:14px;color:var(--red)">Failed to load drilldown: ' + escHtml(e.message) + '</div></div>';
+  }
+}
+
+function highlightActiveRow(ruleId) {
+  clearActiveRow();
+  const table = document.getElementById('an-rule-scores-table');
+  if (!table) return;
+  const rows = table.querySelectorAll('tr[data-rule-id]');
+  for (const row of rows) {
+    if (row.dataset.ruleId === ruleId) row.classList.add('rd-active');
+  }
+}
+
+function clearActiveRow() {
+  const table = document.getElementById('an-rule-scores-table');
+  if (!table) return;
+  const rows = table.querySelectorAll('tr.rd-active');
+  for (const row of rows) row.classList.remove('rd-active');
+}
+
+function closeDrilldown() {
+  const panel = document.getElementById('an-rule-drilldown');
+  if (panel) panel.innerHTML = '';
+  activeDrilldownRuleId = null;
+  clearActiveRow();
+}
+
+function renderDrilldownPanel(panel, ruleId, check, drill, hint, ruleScore) {
+  const baseCheck = check.includes('.') ? check.split('.')[0] : check;
+  const s = drill.samples;
+  const outcomes = { resolved: 0, regressed: 0, unchanged: 0, moved: 0, pending: 0 };
+  for (const sample of s) {
+    if (sample.outcome && outcomes.hasOwnProperty(sample.outcome)) outcomes[sample.outcome]++;
+    else if (!sample.outcome) outcomes.pending++;
+  }
+  const total = s.length;
+  const resPct = total ? ((outcomes.resolved / total) * 100).toFixed(0) : '--';
+  const regPct = total ? ((outcomes.regressed / total) * 100).toFixed(0) : '--';
+
+  let html = '<div class="rd-panel">';
+
+  // Header
+  html += '<div class="rd-head">'
+    + '<div class="rd-title">' + escHtml(ruleId) + ' <span style="color:var(--muted);font-weight:normal">(' + escHtml(check) + ')</span></div>'
+    + '<button class="rd-close" onclick="closeDrilldown()">X</button>'
+    + '</div>';
+
+  // Stats row
+  html += '<div class="rd-stats">';
+  html += '<div class="rd-stat"><div class="label">Samples</div><div class="value">' + total + '</div></div>';
+  html += '<div class="rd-stat"><div class="label">Resolved</div><div class="value" style="color:var(--green)">' + outcomes.resolved + ' (' + resPct + '%)</div></div>';
+  html += '<div class="rd-stat"><div class="label">Regressed</div><div class="value" style="color:var(--red)">' + outcomes.regressed + ' (' + regPct + '%)</div></div>';
+  html += '<div class="rd-stat"><div class="label">Unchanged</div><div class="value" style="color:var(--muted)">' + outcomes.unchanged + '</div></div>';
+  html += '<div class="rd-stat"><div class="label">Pending</div><div class="value" style="color:var(--yellow)">' + outcomes.pending + '</div></div>';
+  html += '</div>';
+
+  // Hint preview
+  if (hint && hint.content) {
+    html += '<div class="rd-hint">'
+      + '<div class="rd-hint-title">Hint shown to agents (src/data/hints/' + escHtml(baseCheck) + '.md)</div>'
+      + '<div class="rd-hint-body">' + escHtml(hint.content) + '</div>'
+      + '</div>';
+  }
+
+  // Diagnostic samples table
+  html += '<div class="rd-subsection">'
+    + '<div class="rd-subsection-title">Recent diagnostic samples (' + total + ')</div>'
+    + '<table class="rd-sample-table"><thead><tr>'
+    + '<th>File</th><th>Outcome</th><th>Fix</th><th>Collateral</th><th>Session</th><th>Time</th>'
+    + '</tr></thead><tbody>';
+  for (const sample of s) {
+    const outCls = sample.outcome || 'pending';
+    const outLabel = sample.outcome || 'pending';
+    const fixLabel = sample.fix_applied === 'verbatim' ? '<span style="color:var(--green)">verbatim</span>'
+      : sample.fix_applied === 'partial' ? '<span style="color:var(--blue)">partial</span>'
+      : sample.fix_applied ? '<span style="color:var(--muted)">' + escHtml(sample.fix_applied) + '</span>'
+      : '<span style="color:var(--muted)">--</span>';
+    const shortFile = sample.file.length > 45 ? '...' + sample.file.slice(-42) : sample.file;
+    const shortSession = sample.session_id ? sample.session_id.slice(0, 8) : '--';
+    const ts = sample.ts ? sample.ts.replace('T', ' ').slice(0, 19) : '--';
+    html += '<tr>'
+      + '<td title="' + escHtml(sample.file) + '">' + escHtml(shortFile) + '</td>'
+      + '<td><span class="rd-outcome ' + outCls + '">' + outLabel + '</span></td>'
+      + '<td>' + fixLabel + '</td>'
+      + '<td style="color:' + (sample.collateral > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (sample.collateral || '--') + '</td>'
+      + '<td style="color:var(--muted);font-size:9px" title="' + escHtml(sample.session_id || '') + '">' + shortSession + '</td>'
+      + '<td style="color:var(--muted);font-size:9px">' + ts + '</td>'
+      + '</tr>';
+  }
+  html += '</tbody></table></div>';
+
+  // File distribution
+  if (drill.file_distribution.length > 0) {
+    html += '<div class="rd-subsection"><div class="rd-subsection-title">File distribution (top ' + drill.file_distribution.length + ')</div>';
+    const maxCount = Math.max(...drill.file_distribution.map(f => f.emitted));
+    for (const f of drill.file_distribution) {
+      const shortFile = f.file.length > 55 ? '...' + f.file.slice(-52) : f.file;
+      const barW = maxCount > 0 ? Math.round((f.emitted / maxCount) * 80) : 0;
+      const resW = f.emitted > 0 ? Math.min(barW, Math.round((f.resolved / f.emitted) * barW)) : 0;
+      const regW = f.emitted > 0 ? Math.min(barW - resW, Math.round((f.regressed / f.emitted) * barW)) : 0;
+      html += '<div class="rd-file-bar">'
+        + '<span class="rd-file-name" title="' + escHtml(f.file) + '">' + escHtml(shortFile) + '</span>'
+        + '<span class="rd-file-count">' + f.emitted + '</span>'
+        + '<span class="rd-file-mini-bar" style="width:' + barW + 'px">'
+        + '<span class="resolved" style="width:' + resW + 'px"></span>'
+        + '<span class="regressed" style="left:' + resW + 'px;width:' + regW + 'px"></span>'
+        + '</span></div>';
+    }
+    html += '</div>';
+  }
+
+  // Template patterns
+  if (drill.template_patterns.length > 1) {
+    html += '<div class="rd-subsection"><div class="rd-subsection-title">Diagnostic patterns (' + drill.template_patterns.length + ' templates)</div>';
+    html += '<table class="rd-sample-table"><thead><tr><th>Template FP</th><th>Count</th><th>Resolved</th><th>Regressed</th><th>Sample File</th></tr></thead><tbody>';
+    for (const t of drill.template_patterns) {
+      const fpShort = t.template_fp ? t.template_fp.slice(0, 12) : '--';
+      const shortFile = t.sample_file && t.sample_file.length > 35 ? '...' + t.sample_file.slice(-32) : (t.sample_file || '--');
+      html += '<tr>'
+        + '<td style="font-size:9px;color:var(--muted)">' + escHtml(fpShort) + '</td>'
+        + '<td>' + t.count + '</td>'
+        + '<td style="color:var(--green)">' + t.resolved + '</td>'
+        + '<td style="color:var(--red)">' + t.regressed + '</td>'
+        + '<td title="' + escHtml(t.sample_file || '') + '">' + escHtml(shortFile) + '</td>'
+        + '</tr>';
+    }
+    html += '</tbody></table></div>';
+  }
+
+  // Action recommendation
+  html += '<div class="rd-action">';
+  if (ruleScore && ruleScore.disabled) {
+    html += '<b>This rule is DISABLED</b> by the case base (effectiveness below 15% over 10+ outcomes). ';
+    html += 'Review the hint text above and the sample outcomes. ';
+    html += 'The hint may be misleading agents or the fix pattern may be wrong. ';
+    html += 'Edit <code>src/data/hints/' + escHtml(baseCheck) + '.md</code> to rewrite the hint, ';
+    html += 'or edit <code>src/core/rules/' + escHtml(baseCheck) + '.js</code> to adjust when() guards or apply() logic.';
+  } else if (outcomes.regressed > outcomes.resolved) {
+    html += '<b>High regression rate</b> — agents follow this hint and introduce new errors. ';
+    html += 'Check the hint text: does it suggest removing or changing something that other templates depend on? ';
+    html += 'Consider adding guard conditions or making the fix more conservative. ';
+    html += 'Edit <code>src/data/hints/' + escHtml(baseCheck) + '.md</code>.';
+  } else if (outcomes.resolved === 0 && total > 5) {
+    html += '<b>Zero resolution</b> on ' + total + ' samples. The hint is not helping agents fix this issue. ';
+    html += 'Rewrite the hint to include the exact fix pattern (not just an explanation). ';
+    html += 'Add <code>proposed_fixes</code> in the rule apply() to give agents a drop-in text edit. ';
+    html += 'Edit <code>src/data/hints/' + escHtml(baseCheck) + '.md</code>.';
+  } else if (outcomes.pending > total * 0.5) {
+    html += '<b>Most outcomes are pending</b> — not enough data to judge this rule yet. ';
+    html += 'Run more validate_code sessions, then rebuild analytics to see outcomes.';
+  } else {
+    const effPct = ruleScore ? (ruleScore.effectiveness * 100).toFixed(0) : '--';
+    html += '<b>Effectiveness: ' + effPct + '%</b>. ';
+    if (ruleScore && ruleScore.effectiveness >= 0.5) {
+      html += 'This rule is performing well. No action needed.';
+    } else {
+      html += 'Look at the regressed samples above to understand what goes wrong. ';
+      html += 'Try the Rule Tester (Tool Lab tab) to test changes before deploying.';
+    }
+  }
+  html += '</div>';
+
+  html += '</div>';
+  panel.innerHTML = html;
+
+  // Scroll the panel into view
+  panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 function renderSuggestedRules() {
@@ -4213,11 +4776,21 @@ function renderCalibrationChart(el, data) {
     + [0, 0.5, 1].map(v => '<text x="' + x(v).toFixed(1) + '" y="' + (H - PAD + 14) + '" text-anchor="middle">' + (v * 100) + '%</text>').join('')
     + [0, 0.5, 1].map(v => '<text x="' + (PAD - 4) + '" y="' + (y(v) + 3).toFixed(1) + '" text-anchor="end">' + (v * 100) + '%</text>').join('');
 
+  var diagLabel = '<text x="' + (W - PAD - 8) + '" y="' + (PAD + 12) + '" text-anchor="end" style="font-size:8px;fill:var(--muted);font-style:italic">perfect calibration</text>';
+
+  var legend = '<div style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:10px;color:var(--muted)">'
+    + '<span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="var(--green)"/></svg> within 10% of predicted</span>'
+    + '<span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="var(--yellow)"/></svg> 10-20% deviation</span>'
+    + '<span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="var(--red)"/></svg> &gt;20% deviation</span>'
+    + '<span style="margin-left:4px">Dot size = sample count. Above diagonal = underconfident. Below = overconfident.</span>'
+    + '</div>';
+
   el.innerHTML = '<div class="cal-container">'
     + '<h3>Confidence Calibration</h3>'
     + '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">'
-    + gridLines + diag + points + axisLabels
+    + gridLines + diag + diagLabel + points + axisLabels
     + '</svg>'
+    + legend
     + '</div>';
 }
 
@@ -4374,7 +4947,7 @@ function renderRadarChart(el, gaps, funnel) {
     { label: 'Resolution', value: overallResolution },
   ];
 
-  const W = 240, H = 240, CX = W / 2, CY = H / 2, R = 80;
+  const W = 380, H = 300, CX = W / 2 + 20, CY = H / 2, R = 80;
   const n = axes.length;
   const angle = (i) => (Math.PI * 2 * i / n) - Math.PI / 2;
 
@@ -4394,10 +4967,11 @@ function renderRadarChart(el, gaps, funnel) {
 
   const labelHtml = axes.map((ax, i) => {
     const a = angle(i);
-    const lx = CX + (R + 20) * Math.cos(a);
-    const ly = CY + (R + 20) * Math.sin(a);
+    const lx = CX + (R + 30) * Math.cos(a);
+    const ly = CY + (R + 30) * Math.sin(a);
     const anchor = Math.abs(Math.cos(a)) < 0.1 ? 'middle' : Math.cos(a) > 0 ? 'start' : 'end';
-    return '<text x="' + lx.toFixed(1) + '" y="' + (ly + 3).toFixed(1) + '" text-anchor="' + anchor + '">' + ax.label + ' (' + (ax.value * 100).toFixed(0) + '%)</text>';
+    const dy = Math.sin(a) < -0.3 ? '-2' : Math.sin(a) > 0.3 ? '10' : '3';
+    return '<text x="' + lx.toFixed(1) + '" y="' + (ly).toFixed(1) + '" dy="' + dy + '" text-anchor="' + anchor + '">' + ax.label + ' (' + (ax.value * 100).toFixed(0) + '%)</text>';
   }).join('');
 
   const dataPts = axes.map((ax, i) => {
@@ -4679,6 +5253,9 @@ function populateLiveFilePicker() {
   for (const k of Object.keys(explorerData.schema   || {})) {
     const p = explorerData.schema[k]?.path;
     if (p) files.push(p);
+  }
+  for (const locale of Object.keys(explorerData.translations || {})) {
+    files.push('app/translations/' + locale + '.yml');
   }
 
   livePickerFiles = [...new Set(files)].filter(f => f && f.startsWith('app/')).sort();
@@ -5067,6 +5644,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const header = e.target.closest('[data-toggle-next]');
     if (header && header.nextElementSibling) {
       header.nextElementSibling.classList.toggle('open');
+    }
+  });
+
+  // Rule drilldown: click row in rule scores table
+  document.addEventListener('click', (e) => {
+    const row = e.target.closest('tr[data-rule-id]');
+    if (row && row.dataset.ruleId) {
+      showRuleDrilldown(row.dataset.ruleId, row.dataset.check);
     }
   });
 

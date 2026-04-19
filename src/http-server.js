@@ -10,7 +10,7 @@ import { HTTP_MAX_BODY } from './core/constants.js';
 import { buildDashboardHtml } from './dashboard.js';
 import { getProjectMap } from './tools/project-map.js';
 import { buildDependencyGraph } from './core/dependency-graph.js';
-import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams, diagnosticJourney, confidenceCalibration, fixAdoptionFunnel, knowledgeGaps, ruleScoresByCategory } from './core/analytics-queries.js';
+import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams, diagnosticJourney, confidenceCalibration, fixAdoptionFunnel, knowledgeGaps, ruleScoresByCategory, ruleDrilldown } from './core/analytics-queries.js';
 import { ruleScores, suggestedRules, retrieveCasesByCheck, generateRuleTemplate } from './core/case-base.js';
 import { addPromotedRule, removePromotedRule, listPromotedRules } from './core/rules/promoted-rules.js';
 import { reloadRules, loadAllRules } from './core/rules/index.js';
@@ -186,6 +186,10 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
 
     if (method === 'GET' && url.pathname === '/api/analytics/rule-scores') {
       return handleRuleScores(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/rule-drilldown') {
+      return handleRuleDrilldown(analyticsStore, url, res);
     }
 
     if (method === 'GET' && url.pathname === '/api/analytics/suggested-rules') {
@@ -1049,6 +1053,19 @@ function handleRuleScores(analyticsStore, url, res) {
     const minEmitted = parseInt(url.searchParams.get('min_emitted') || '5', 10);
     const scores = ruleScores(analyticsStore, { minEmitted });
     sendJson(res, 200, { scores });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleRuleDrilldown(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const ruleId = url.searchParams.get('rule_id');
+    if (!ruleId) return sendJson(res, 400, { error: 'rule_id parameter required' });
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '30', 10), 100);
+    const data = ruleDrilldown(analyticsStore, ruleId, { limit });
+    sendJson(res, 200, data);
   } catch (e) {
     sendJson(res, 500, { error: e.message });
   }

@@ -116,6 +116,32 @@ export const analyzeProjectTool = {
         }
       }
 
+      // Catch diagnostics from pos-cli check that target files outside
+      // the checkable set (e.g. MatchingTranslations in .yml files).
+      const fileSet = new Set(files);
+      const unattributed = new Map();
+      for (const d of [...allResults.errors, ...allResults.warnings, ...allResults.infos]) {
+        if (!d._filePath) continue;
+        const rel = d._filePath.startsWith(ctx.directory)
+          ? d._filePath.slice(ctx.directory.length + 1)
+          : d._filePath;
+        if (fileSet.has(rel)) continue;
+        if (!unattributed.has(rel)) unattributed.set(rel, { errors: 0, warnings: 0, infos: 0 });
+        const counts = unattributed.get(rel);
+        counts[d.severity === 'error' ? 'errors' : d.severity === 'warning' ? 'warnings' : 'infos']++;
+      }
+      for (const [path, counts] of unattributed) {
+        const hasRelevant =
+          counts.errors > 0 ||
+          (minRank <= 2 && counts.warnings > 0) ||
+          (minRank <= 1 && counts.infos > 0);
+        if (hasRelevant) {
+          const entry = { path, errors: counts.errors, warnings: counts.warnings };
+          if (minRank <= 1) entry.infos = counts.infos;
+          fileResults.push(entry);
+        }
+      }
+
       // Schema validation — validate all .yml files in app/schema/
       let schemasScanned = 0;
       try {
@@ -220,7 +246,7 @@ export const analyzeProjectTool = {
       }
 
       return {
-        files_scanned: filesScanned + schemasScanned,
+        files_scanned: filesScanned + schemasScanned + unattributed.size,
         files: fileResults,
         fix_order,
         blocking_files: blockingFiles,
