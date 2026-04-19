@@ -111,6 +111,7 @@ const ValidatorEmitPayload = z.object({
   content_hash: z.string().optional(),
   hint_md_hash: z.string().nullable().optional(),
   hint_rule_id: z.string().nullable().optional(),
+  confidence: z.number().nullable().optional(),
   proposed_fixes: z.array(z.object({
     range: z.unknown(),
     new_text_hash: z.string(),

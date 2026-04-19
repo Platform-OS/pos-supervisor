@@ -200,7 +200,7 @@ export const analyzeProjectTool = {
       const totalWarnings = lintWarnings + integrityWarnings;
 
       // ── blocking_files: files with errors that must be fixed ────────────
-      const blockingFiles = computeBlockingFiles(fileResults, integrity);
+      const blockingFiles = computeBlockingFiles(fileResults, integrity, allResults);
 
       // ── diff_from_last_run: compare against previous analysis ──────────
       const prefix = ctx.directory.endsWith('/') ? ctx.directory : ctx.directory + '/';
@@ -467,13 +467,27 @@ function matchesFile(diagnostic, absPath, relPath) {
 /**
  * Files with at least one error (lint or integrity) that block a clean project.
  * Sorted by total error count descending — worst offenders first.
+ * @param {Array} fileResults - per-file { path, errors, warnings }
+ * @param {Array} integrity - integrity issues with { severity, source, type }
+ * @param {{ errors: Array }} [allResults] - full diagnostic results for check name extraction
  */
-export function computeBlockingFiles(fileResults, integrity) {
+export function computeBlockingFiles(fileResults, integrity, allResults) {
   const blockMap = new Map();
 
   for (const f of fileResults) {
     if (f.errors > 0) {
-      blockMap.set(f.path, { path: f.path, lint_errors: f.errors, integrity_errors: 0 });
+      blockMap.set(f.path, { path: f.path, lint_errors: f.errors, integrity_errors: 0, checks: new Set() });
+    }
+  }
+
+  if (allResults?.errors) {
+    for (const d of allResults.errors) {
+      const rel = d._filePath;
+      for (const [key, entry] of blockMap) {
+        if (rel && (rel === key || rel.endsWith('/' + key) || rel.endsWith(key))) {
+          if (d.check) entry.checks.add(d.check);
+        }
+      }
     }
   }
 
@@ -482,13 +496,16 @@ export function computeBlockingFiles(fileResults, integrity) {
     const existing = blockMap.get(issue.source);
     if (existing) {
       existing.integrity_errors++;
+      if (issue.type) existing.checks.add(issue.type);
     } else {
-      blockMap.set(issue.source, { path: issue.source, lint_errors: 0, integrity_errors: 1 });
+      const checks = new Set();
+      if (issue.type) checks.add(issue.type);
+      blockMap.set(issue.source, { path: issue.source, lint_errors: 0, integrity_errors: 1, checks });
     }
   }
 
   return [...blockMap.values()]
-    .map(b => ({ ...b, total: b.lint_errors + b.integrity_errors }))
+    .map(b => ({ ...b, total: b.lint_errors + b.integrity_errors, checks: [...b.checks] }))
     .sort((a, b) => b.total - a.total);
 }
 

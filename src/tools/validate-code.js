@@ -679,6 +679,7 @@ explicitly only if you are validating a file that is NOT part of the most recent
               content_hash: contentHash,
               hint_md_hash: hintHash,
               hint_rule_id: d.rule_id || d.check || null,
+              confidence: d.confidence ?? null,
               proposed_fixes: fixes,
             });
           }

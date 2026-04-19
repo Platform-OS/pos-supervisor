@@ -376,6 +376,8 @@ export function buildDashboardHtml() {
   .ex-sidebar-body { padding: 12px 14px; }
   .ex-orphan-item { font-size: 10px; padding: 4px 8px; border: 1px solid var(--border); margin-bottom: 6px; color: var(--muted); word-break: break-all; background: var(--surface); }
   .ex-orphan-item::before { content: "ORPHAN "; color: var(--red); font-weight: bold; }
+  .ex-blocking-item { font-size: 10px; padding: 4px 8px; border: 1px solid var(--red); margin-bottom: 6px; color: var(--red); word-break: break-all; background: var(--surface); }
+  .ex-blocking-checks { font-size: 9px; color: var(--yellow); margin-top: 2px; }
   .ex-integrity-item { border: 1px dashed var(--yellow); padding: 8px 10px; margin-bottom: 10px; }
   .ex-integrity-item:last-child { margin-bottom: 0; }
   .ex-integrity-type { font-size: 10px; font-weight: bold; text-transform: uppercase; color: var(--yellow); margin-bottom: 4px; }
@@ -581,6 +583,134 @@ export function buildDashboardHtml() {
   .an-explain dt { color: var(--blue); font-weight: bold; text-transform: uppercase; margin-top: 10px; }
   .an-explain dt:first-child { margin-top: 0; }
   .an-explain dd { margin-left: 16px; margin-bottom: 6px; }
+
+  /* ── L1: Health Sparkline History ─────────────────────────────────── */
+  .hs-container { margin-top: 16px; padding: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); }
+  .hs-container h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; letter-spacing: .05em; }
+  .hs-container h3::before { content: "--- "; color: var(--border); }
+  .hs-container h3::after  { content: " ---"; color: var(--border); }
+  .hs-spark-wrap { position: relative; }
+  .hs-spark-wrap svg { display: block; }
+  .hs-spark-wrap .hs-axis { font-size: 9px; fill: var(--muted); font-family: var(--mono); }
+  .hs-spark-wrap .hs-grid { stroke: var(--surface2); stroke-dasharray: 2 4; }
+  .hs-spark-wrap .hs-line { fill: none; stroke-width: 2; }
+  .hs-spark-wrap .hs-line.trend-up   { stroke: var(--green); }
+  .hs-spark-wrap .hs-line.trend-down { stroke: var(--red); }
+  .hs-spark-wrap .hs-line.trend-flat { stroke: var(--yellow); }
+  .hs-spark-wrap .hs-dot  { r: 3; cursor: help; }
+  .hs-spark-wrap .hs-dot.trend-up   { fill: var(--green); }
+  .hs-spark-wrap .hs-dot.trend-down { fill: var(--red); }
+  .hs-spark-wrap .hs-dot.trend-flat { fill: var(--yellow); }
+  .hs-legend { display: flex; gap: 16px; margin-top: 8px; font-size: 10px; color: var(--muted); text-transform: uppercase; }
+
+  /* ── L7: Session Diff Narrative ──────────────────────────────────── */
+  .ht-narrative { padding: 14px 16px; margin-bottom: 20px; background: #1d2021; border: 1px solid var(--border); font-size: 12px; line-height: 1.8; color: var(--text); }
+  .ht-narrative b { color: var(--blue); }
+  .ht-narrative .up   { color: var(--red); font-weight: bold; }
+  .ht-narrative .down { color: var(--green); font-weight: bold; }
+  .ht-narrative .flat { color: var(--muted); }
+
+  /* ── L9: Dependency Impact Simulator ─────────────────────────────── */
+  .sim-bar { display: flex; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+  .sim-bar button { font-size: 10px; padding: 3px 10px; }
+  .sim-result { margin-top: 12px; padding: 12px; background: #1d2021; border: 1px solid var(--border); font-size: 11px; }
+  .sim-result .sim-title { color: var(--yellow); font-weight: bold; text-transform: uppercase; margin-bottom: 8px; font-size: 12px; }
+  .sim-result .sim-count { color: var(--red); font-weight: bold; }
+  .sim-result .sim-file { color: var(--text); padding: 2px 0; border-bottom: 1px solid var(--surface2); }
+  .sim-result .sim-file:last-child { border-bottom: none; }
+  .sim-rename-input { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+  .sim-rename-input input { flex: 1; font-size: 11px; }
+
+  /* ── L10: Rule Promotion UI ──────────────────────────────────────── */
+  .promote-actions { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  .promote-actions button { font-size: 10px; padding: 3px 10px; }
+  .promoted-badge { display: inline-block; padding: 1px 6px; font-size: 9px; font-weight: bold; text-transform: uppercase; border: 1px solid var(--green); color: var(--green); margin-left: 8px; }
+  .probation-badge { display: inline-block; padding: 1px 6px; font-size: 9px; font-weight: bold; text-transform: uppercase; border: 1px solid var(--yellow); color: var(--yellow); margin-left: 8px; }
+  .promote-form { margin-top: 10px; padding: 12px; background: #1d2021; border: 1px solid var(--border); display: none; }
+  .promote-form .pf-row { display: flex; gap: 10px; margin-bottom: 8px; align-items: center; }
+  .promote-form .pf-row label { font-size: 10px; color: var(--muted); text-transform: uppercase; min-width: 90px; flex-shrink: 0; }
+  .promote-form .pf-row input, .promote-form .pf-row select { flex: 1; font-size: 11px; }
+  .promote-form .pf-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+  /* ── L2: Diagnostic Journey Timeline ─────────────────────────────── */
+  .journey-container { padding: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); }
+  .journey-container h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .journey-tl { display: flex; align-items: center; gap: 2px; padding: 8px 0; overflow-x: auto; }
+  .journey-node { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 48px; cursor: help; }
+  .journey-dot { width: 16px; height: 16px; border: 2px solid var(--border); }
+  .journey-dot.resolved  { background: var(--green); border-color: var(--green); }
+  .journey-dot.regressed { background: var(--red); border-color: var(--red); }
+  .journey-dot.unchanged { background: var(--muted); border-color: var(--muted); }
+  .journey-dot.pending   { background: transparent; border-color: var(--blue); border-style: dashed; }
+  .journey-edge { width: 20px; height: 2px; background: var(--border); flex-shrink: 0; }
+  .journey-label { font-size: 8px; color: var(--muted); text-align: center; max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .journey-occ { font-size: 8px; color: var(--text); font-weight: bold; }
+  .journey-meta { margin-top: 8px; font-size: 10px; color: var(--muted); display: flex; gap: 16px; }
+
+  /* ── L3: Confidence Calibration Chart ────────────────────────────── */
+  .cal-container { padding: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); }
+  .cal-container h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .cal-container svg text { font-family: var(--mono); font-size: 9px; fill: var(--muted); }
+  .cal-container .cal-diag { stroke: var(--surface2); stroke-width: 1; stroke-dasharray: 4 4; }
+  .cal-container .cal-grid { stroke: var(--surface2); stroke-dasharray: 2 4; }
+  .cal-container .cal-point { cursor: help; }
+  .cal-container .cal-point.good { fill: var(--green); }
+  .cal-container .cal-point.mid  { fill: var(--yellow); }
+  .cal-container .cal-point.bad  { fill: var(--red); }
+
+  /* ── L4: Fix Adoption Funnel ─────────────────────────────────────── */
+  .funnel-container { padding: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); }
+  .funnel-container h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .funnel-stages { display: flex; align-items: flex-end; gap: 2px; height: 120px; padding-bottom: 20px; position: relative; }
+  .funnel-stage { display: flex; flex-direction: column; align-items: center; flex: 1; position: relative; }
+  .funnel-bar { width: 100%; min-height: 4px; transition: height 300ms ease; }
+  .funnel-bar.s0 { background: var(--blue); }
+  .funnel-bar.s1 { background: #458588; }
+  .funnel-bar.s2 { background: var(--purple); }
+  .funnel-bar.s3 { background: #8ec07c; }
+  .funnel-bar.s4 { background: var(--green); }
+  .funnel-bar.s5 { background: var(--red); }
+  .funnel-count { font-size: 11px; font-weight: bold; color: var(--text); margin-bottom: 4px; }
+  .funnel-label { font-size: 8px; color: var(--muted); text-transform: uppercase; text-align: center; margin-top: 4px; position: absolute; bottom: -18px; width: 100%; }
+  .funnel-drop { font-size: 8px; color: var(--muted); position: absolute; top: -14px; width: 100%; text-align: center; }
+
+  /* ── L5: Rule Effectiveness Heatmap ──────────────────────────────── */
+  .heatmap-container { padding: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); overflow-x: auto; }
+  .heatmap-container h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .heatmap-grid { display: grid; gap: 2px; }
+  .hm-header { font-size: 9px; color: var(--muted); text-transform: uppercase; text-align: center; padding: 4px 2px; }
+  .hm-row-label { font-size: 9px; color: var(--text); font-weight: bold; text-align: right; padding: 4px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hm-cell { padding: 4px; text-align: center; font-size: 9px; font-weight: bold; color: var(--bg); min-width: 40px; cursor: help; }
+  .hm-cell.good { background: var(--green); }
+  .hm-cell.mid  { background: var(--yellow); }
+  .hm-cell.bad  { background: var(--red); }
+  .hm-cell.none { background: var(--surface2); color: var(--muted); }
+  .hm-legend { display: flex; gap: 12px; margin-top: 8px; font-size: 9px; color: var(--muted); }
+  .hm-legend-swatch { display: inline-block; width: 10px; height: 10px; vertical-align: middle; margin-right: 4px; }
+
+  /* ── L6: Knowledge Gap Radar ─────────────────────────────────────── */
+  .radar-container { padding: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); }
+  .radar-container h3 { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; }
+  .radar-container svg text { font-family: var(--mono); font-size: 9px; fill: var(--muted); }
+  .radar-container .radar-grid { stroke: var(--surface2); fill: none; }
+  .radar-container .radar-axis { stroke: var(--surface2); stroke-dasharray: 2 4; }
+  .radar-container .radar-fill { stroke: var(--blue); stroke-width: 2; fill: var(--blue); fill-opacity: 0.15; }
+  .radar-container .radar-dot  { fill: var(--blue); r: 3; }
+
+  /* ── L8: Live Rule Tester ────────────────────────────────────────── */
+  .rt-container { margin-top: 16px; padding: 14px; background: var(--surface); border: 1px solid var(--border); }
+  .rt-container h3 { font-size: 11px; text-transform: uppercase; color: var(--blue); margin-bottom: 10px; }
+  .rt-form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+  .rt-form .rt-row { display: flex; gap: 10px; align-items: center; }
+  .rt-form .rt-row label { font-size: 10px; color: var(--muted); text-transform: uppercase; min-width: 70px; flex-shrink: 0; }
+  .rt-form .rt-row input, .rt-form .rt-row select { flex: 1; font-size: 11px; }
+  .rt-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .rt-panel { padding: 12px; background: #1d2021; border: 1px solid var(--border); }
+  .rt-panel h4 { font-size: 10px; color: var(--blue); text-transform: uppercase; margin-bottom: 8px; border-bottom: 1px dashed var(--border); padding-bottom: 4px; }
+  .rt-panel .rt-field { margin-bottom: 6px; font-size: 11px; }
+  .rt-panel .rt-field .rt-label { color: var(--muted); font-size: 9px; text-transform: uppercase; }
+  .rt-panel .rt-field .rt-value { color: var(--text); }
+  .rt-panel .rt-none { color: var(--muted); font-size: 11px; }
 
   /* ── Tool Lab (A5) ────────────────────────────────────────────────── */
   .tl-browser { display: grid; grid-template-columns: 220px 1fr; gap: 16px; }
@@ -833,35 +963,12 @@ export function buildDashboardHtml() {
       <button id="ht-refresh-btn">Run Analysis</button>
       <span class="ts" id="ht-last-fetched"></span>
     </div>
+    <div id="ht-narrative"></div>
     <div id="ht-body"><span class="explorer-loading">Execute RUN ANALYSIS to load project health data.</span></div>
+    <div id="health-sparkline"></div>
   </section>
 
-  <section class="fp-section">
-    <h2>Suppressions</h2>
-    <div class="ti-legend">Rules written to <code>.pos-supervisor-ignore.yml</code>. The diagnostic pipeline drops matching checks before enrichment.</div>
-    <div id="fp-list"><span class="empty">LOADING SUPPRESSIONS...</span></div>
-    <div class="fp-form" id="fp-form">
-      <div class="fp-form-group">
-        <label>CHECK NAME</label>
-        <select id="fp-check">
-          <option value="">— SELECT A CHECK —</option>
-        </select>
-      </div>
-      <div class="fp-form-group">
-        <label>OR TYPE CUSTOM NAME</label>
-        <input type="text" id="fp-check-custom" placeholder="CHECK NAME IF NOT IN LIST">
-      </div>
-      <div class="fp-form-group">
-        <label>FILE PATTERN (OPTIONAL)</label>
-        <input type="text" id="fp-pattern" placeholder="E.G. **/LEGACY/**">
-      </div>
-      <div class="fp-form-group">
-        <label>REASON (OPTIONAL)</label>
-        <input type="text" id="fp-reason" placeholder="FALSE POSITIVE">
-      </div>
-      <button class="primary" id="fp-add-btn">Add Suppression</button>
-    </div>
-  </section>
+
 </div>
 
 <!-- ── Activity (merged: timeline + table + stats + sessions) ─────────── -->
@@ -1053,8 +1160,38 @@ export function buildDashboardHtml() {
 
   <div class="an-section">
     <div class="an-section-title">Check Scorecards</div>
-    <div class="an-legend">Per-check performance across all sessions. <b>Resolution rate</b> = how often a diagnostic disappears after the agent edits. <b>Mislead rate</b> = how often a fix introduces new diagnostics (regression). <b>Adoption rate</b> = how often the agent applies the proposed fix verbatim. Bars show the 95% credible interval (Beta-binomial posterior, Beta(2,2) prior).</div>
+    <div class="an-legend">Per-check performance across all sessions. <b>Resolution rate</b> = how often a diagnostic disappears after the agent edits. <b>Mislead rate</b> = how often a fix introduces new diagnostics (regression). <b>Adoption rate</b> = how often the agent applies the proposed fix verbatim. Bars show the 95% credible interval (Beta-binomial posterior, Beta(2,2) prior). <b>Click a row</b> to load its diagnostic journey.</div>
     <div id="an-scorecards"><span class="an-empty">No analytics data yet — rebuild the database or wait for sessions to accumulate.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Diagnostic Journey</div>
+    <div class="an-legend">Lifecycle of a single diagnostic template across sessions. Click a scorecard row above to select a check. Shows per-session outcome, rule that fired, and fix adoption.</div>
+    <div id="an-journey"><span class="an-empty">Click a scorecard row to load a diagnostic journey.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Confidence Calibration</div>
+    <div class="an-legend">Compares <b>predicted</b> confidence (from rule output) against <b>actual</b> resolution rate. Points on the diagonal = perfectly calibrated. Points below = overconfident. Points above = underconfident.</div>
+    <div id="an-calibration"><span class="an-empty">No confidence data yet.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Fix Adoption Funnel</div>
+    <div class="an-legend">Aggregate flow from diagnostic emission through rule matching, fix proposal, and resolution. Each stage shows the count and drop-off percentage from the previous stage.</div>
+    <div id="an-funnel"><span class="an-empty">No funnel data yet.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Rule Effectiveness Heatmap</div>
+    <div class="an-legend">Grid of rules vs file categories. Cell color = effectiveness (green &gt; 50%, yellow 15-50%, red &lt; 15%). Hover for details.</div>
+    <div id="an-heatmap"><span class="an-empty">No heatmap data yet.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Knowledge Coverage</div>
+    <div class="an-legend">Radar chart showing 5 dimensions of knowledge system health: rule coverage, hint quality, fix adoption, diagnostic freshness, and resolution rate.</div>
+    <div id="an-radar"><span class="an-empty">No coverage data yet.</span></div>
   </div>
 
   <div class="an-section">
@@ -1083,8 +1220,14 @@ export function buildDashboardHtml() {
 
   <div class="an-section">
     <div class="an-section-title">Suggested Rules</div>
-    <div class="an-legend">Diagnostics with <b>no matching rule</b> but a clear case-base signal (high resolution rate on consistent fix patterns). These are candidates for new rules — click to see a template. <b>Never auto-merge</b>; always review.</div>
+    <div class="an-legend">Diagnostics with <b>no matching rule</b> but a clear case-base signal (high resolution rate on consistent fix patterns). These are candidates for new rules — click to see a template, then <b>Promote</b> to activate as a declarative rule on probation.</div>
     <div id="an-suggested-rules"><span class="an-empty">No suggestions yet.</span></div>
+  </div>
+
+  <div class="an-section">
+    <div class="an-section-title">Promoted Rules</div>
+    <div class="an-legend">Declarative rules promoted from suggestions. Rules start <b>on probation</b> and are auto-evaluated after enough outcomes. Revert any rule that is not performing.</div>
+    <div id="an-promoted-rules"><span class="an-empty">No promoted rules yet.</span></div>
   </div>
 
   <div class="an-section">
@@ -1163,6 +1306,57 @@ export function buildDashboardHtml() {
       </div>
     </div>
   </div>
+
+  <div class="rt-container">
+    <h3>Rule Tester</h3>
+    <div class="an-legend" style="margin-bottom:12px">Select a check from the dropdown — an example message is auto-filled. Edit the message to match your diagnostic, then hit Test. Shows which rule matches, extracted params, hint output, and all candidate rules.</div>
+    <div class="rt-form">
+      <div class="rt-row">
+        <label>Check</label>
+        <select id="rt-check"><option value="">Loading checks...</option></select>
+      </div>
+      <div class="rt-row">
+        <label>Message</label>
+        <input type="text" id="rt-message" placeholder="Select a check above to auto-fill an example message">
+      </div>
+      <div class="rt-row">
+        <label>File</label>
+        <input type="text" id="rt-file" placeholder="app/views/pages/index.html.liquid (optional)">
+      </div>
+      <div class="rt-row">
+        <button class="primary" id="rt-test-btn">Test Rule</button>
+        <span class="ts" id="rt-status"></span>
+      </div>
+    </div>
+    <div id="rt-result"></div>
+  </div>
+
+  <section class="fp-section">
+    <h2>Suppressions</h2>
+    <div class="ti-legend">Rules written to <code>.pos-supervisor-ignore.yml</code>. The diagnostic pipeline drops matching checks before enrichment.</div>
+    <div id="fp-list"><span class="empty">LOADING SUPPRESSIONS...</span></div>
+    <div class="fp-form" id="fp-form">
+      <div class="fp-form-group">
+        <label>CHECK NAME</label>
+        <select id="fp-check">
+          <option value="">— SELECT A CHECK —</option>
+        </select>
+      </div>
+      <div class="fp-form-group">
+        <label>OR TYPE CUSTOM NAME</label>
+        <input type="text" id="fp-check-custom" placeholder="CHECK NAME IF NOT IN LIST">
+      </div>
+      <div class="fp-form-group">
+        <label>FILE PATTERN (OPTIONAL)</label>
+        <input type="text" id="fp-pattern" placeholder="E.G. **/LEGACY/**">
+      </div>
+      <div class="fp-form-group">
+        <label>REASON (OPTIONAL)</label>
+        <input type="text" id="fp-reason" placeholder="FALSE POSITIVE">
+      </div>
+      <button class="primary" id="fp-add-btn">Add Suppression</button>
+    </div>
+  </section>
 </div>
 
 <!-- ── LSP ──────────────────────────────────────────────────────────── -->
@@ -1229,10 +1423,10 @@ document.addEventListener('mousemove', moveTip);
 // loader function itself implements re-fetch on click.
 const TAB_LOADERS = {
   explorer: () => { if (!explorerLoaded) fetchExplorerData(); },
-  health:   () => { if (!analysisLoaded) fetchAnalysisData(); if (!suppressionsLoaded) fetchSuppressions(); },
+  health:   () => { if (!analysisLoaded) fetchAnalysisData(); fetchHealthHistory(); },
   insights: () => { fetchInsightsData(); if (!hintsLoaded) fetchHints(); },
   analytics: () => { fetchAnalytics(); },
-  toollab:  () => { if (!toolsLoaded) fetchTools(); fetchToolLab(); },
+  toollab:  () => { if (!toolsLoaded) fetchTools(); fetchToolLab(); loadRuleChecks(); if (!suppressionsLoaded) fetchSuppressions(); },
   'pos-cli': () => { if (!cliEnvsLoaded) fetchCliEnvs(); },
   // overview, activity, lsp: eagerly loaded via boot sequence / SSE
 };
@@ -1960,12 +2154,17 @@ function selectDepFile(path) {
     ? 'calls=' + v.calls + ' err=' + v.errors + ' warn=' + v.warnings + ' streak=' + (v.streak || 0)
     : 'no validation history';
 
+  const escapedPath = escHtml(path).replace(/'/g, "\\\\'");
   detail.innerHTML =
     '<h3>Impact · <span style="color:var(--' + (state === 'dirty' ? 'red' : state === 'warned' ? 'orange' : state === 'fixed' ? 'blue' : state === 'clean' ? 'green' : 'muted') + ')">' + state.toUpperCase() + '</span></h3>' +
     '<div class="dep-path">' + escHtml(path) + '<br><span style="color:var(--muted);font-size:10px">' + summary + '</span></div>' +
     '<div class="dep-cols">' +
       '<div><div class="dep-col-title">Depends on (' + deps.length + ')</div>' + renderList(deps, 'No outgoing dependencies.') + '</div>' +
       '<div><div class="dep-col-title">Referenced by (' + refs.length + ')</div>' + renderList(refs, 'No incoming references (possibly orphaned or entry point).') + '</div>' +
+    '</div>' +
+    '<div class="sim-bar">' +
+      '<button class="danger" onclick="simulateDelete(\\'' + escapedPath + '\\')">Simulate Delete</button>' +
+      '<button class="primary" onclick="simulateRename(\\'' + escapedPath + '\\')">Simulate Rename</button>' +
     '</div>';
 }
 
@@ -2342,7 +2541,13 @@ async function fetchAnalysisData() {
     analysisData = d.result;
     analysisLoaded = true;
     renderHealth();
-    if (lastStatus) renderHealthRing(lastStatus);
+    renderSessionNarrative();
+    if (lastStatus) {
+      renderHealthRing(lastStatus);
+      if (lastHealth && lastHealth.mode === 'project') {
+        postHealthScore(lastHealth).then(() => fetchHealthHistory());
+      }
+    }
     const ts = document.getElementById('ht-last-fetched');
     if (ts) ts.textContent = 'FETCHED ' + fmtTime(new Date().toISOString());
   } catch (e) {
@@ -2520,9 +2725,13 @@ function renderHealth() {
   const blockingFiles = a.blocking_files || [];
   const blockingHtml = blockingFiles.length > 0
     ? '<div class="ex-sidebar-panel"><div class="ex-sidebar-title">BLOCKING FILES (' + blockingFiles.length + ')</div><div class="ex-sidebar-body">'
-      + blockingFiles.map(f =>
-          '<div class="ex-orphan-item" style="border-color:var(--red);color:var(--red)">' + escHtml(f.path) + ' <span style="font-size:9px;opacity:.7">' + f.total + ' ERRORS</span></div>'
-        ).join('')
+      + blockingFiles.map(f => {
+          const checks = (f.checks || []);
+          const checksLabel = checks.length > 0 ? checks.join(', ') : (f.integrity_errors > 0 ? 'integrity' : 'lint');
+          return '<div class="ex-blocking-item">' + escHtml(f.path)
+            + ' <span style="font-size:9px;opacity:.7">' + f.total + ' ERROR' + (f.total !== 1 ? 'S' : '') + '</span>'
+            + '<div class="ex-blocking-checks">' + escHtml(checksLabel) + '</div></div>';
+        }).join('')
       + '</div></div>'
     : '';
 
@@ -3233,6 +3442,11 @@ async function fetchAnalytics() {
     renderAnalyticsBigrams();
     renderRuleScores();
     renderSuggestedRules();
+    fetchPromotedRules();
+    fetchCalibrationChart();
+    fetchFunnelChart();
+    fetchHeatmap();
+    fetchRadarChart();
     tsEl.textContent = fmtTime(Date.now());
   } catch (e) {
     tsEl.textContent = 'error: ' + e.message;
@@ -3321,7 +3535,7 @@ function renderAnalyticsScorecards() {
       const resCls = c.resolution_rate.mean >= 0.6 ? 'good' : c.resolution_rate.mean >= 0.3 ? 'mid' : 'bad';
       const misCls = c.mislead_rate.mean <= 0.1 ? 'good' : c.mislead_rate.mean <= 0.3 ? 'mid' : 'bad';
       const adoptCls = c.adoption_rate.mean >= 0.6 ? 'good' : c.adoption_rate.mean >= 0.3 ? 'mid' : 'neutral';
-      return '<tr>'
+      return '<tr style="cursor:pointer" onclick="loadDiagnosticJourney(null, \\'' + escHtml(c.check) + '\\')">'
         + '<td style="color:var(--text);font-weight:bold;text-transform:uppercase">' + escHtml(c.check) + '</td>'
         + '<td style="color:var(--muted)">' + c.emitted + '</td>'
         + '<td style="color:var(--muted)">' + c.sample_size + '</td>'
@@ -3450,19 +3664,813 @@ function renderSuggestedRules() {
     return;
   }
 
-  el.innerHTML = suggestions.map(s =>
-    '<div class="an-rec-item" style="cursor:pointer" onclick="this.querySelector(\\'.an-rule-tpl\\').style.display=this.querySelector(\\'.an-rule-tpl\\').style.display===\\'none\\'?\\'block\\':\\'none\\'">'
-    + '<span class="an-rec-icon">[+]</span>'
-    + '<div class="an-rec-body">'
-    + '<div class="an-rec-check">' + escHtml(s.check) + ' <span style="color:var(--muted);font-weight:normal;font-size:10px">(' + s.template_fp.slice(0, 8) + ')</span></div>'
-    + '<div class="an-rec-text">' + escHtml(s.suggestion) + '</div>'
-    + '<pre class="an-rule-tpl" style="display:none;margin-top:8px;padding:10px;background:#1d2021;border:1px solid var(--border);font-size:10px;color:var(--text);white-space:pre-wrap">'
-    + escHtml(s.template || '')
-    + '</pre>'
-    + '</div>'
-    + '<span class="an-rec-rate" style="color:var(--green)">' + (s.resolution_rate * 100).toFixed(0) + '% RESOLVED</span>'
-    + '</div>'
+  el.innerHTML = suggestions.map((s, idx) => {
+    const fpShort = s.template_fp.slice(0, 8);
+    const formId = 'promote-form-' + idx;
+    return '<div class="an-rec-item" style="flex-wrap:wrap">'
+      + '<span class="an-rec-icon">[+]</span>'
+      + '<div class="an-rec-body">'
+      + '<div class="an-rec-check">' + escHtml(s.check) + ' <span style="color:var(--muted);font-weight:normal;font-size:10px">(' + fpShort + ')</span></div>'
+      + '<div class="an-rec-text">' + escHtml(s.suggestion) + '</div>'
+      + '<div class="promote-actions">'
+      + '<button class="primary" onclick="togglePromoteForm(' + idx + ')">Promote</button>'
+      + '<button onclick="this.closest(\\'.an-rec-item\\').querySelector(\\'.an-rule-tpl\\').style.display=this.closest(\\'.an-rec-item\\').querySelector(\\'.an-rule-tpl\\').style.display===\\'none\\'?\\'block\\':\\'none\\'">Template</button>'
+      + '</div>'
+      + '<pre class="an-rule-tpl" style="display:none;margin-top:8px;padding:10px;background:#1d2021;border:1px solid var(--border);font-size:10px;color:var(--text);white-space:pre-wrap">'
+      + escHtml(s.template || '')
+      + '</pre>'
+      + '<div class="promote-form" id="' + formId + '">'
+      + '<div class="pf-row"><label>Hint</label><input type="text" id="pf-hint-' + idx + '" value="' + escHtml(s.suggestion || '') + '"></div>'
+      + '<div class="pf-row"><label>Confidence</label><input type="number" id="pf-conf-' + idx + '" min="0" max="1" step="0.05" value="' + (s.resolution_rate || 0.5).toFixed(2) + '" style="max-width:80px"></div>'
+      + '<div class="pf-row"><label>File Glob</label><input type="text" id="pf-glob-' + idx + '" placeholder="e.g. app/views/partials/**"></div>'
+      + '<div class="pf-actions">'
+      + '<button class="primary" onclick="executePromote(' + idx + ')">Confirm Promote</button>'
+      + '<button onclick="togglePromoteForm(' + idx + ')">Cancel</button>'
+      + '</div>'
+      + '</div>'
+      + '</div>'
+      + '<span class="an-rec-rate" style="color:var(--green)">' + (s.resolution_rate * 100).toFixed(0) + '% RESOLVED</span>'
+      + '</div>';
+  }).join('');
+}
+
+function togglePromoteForm(idx) {
+  const form = document.getElementById('promote-form-' + idx);
+  if (!form) return;
+  form.style.display = form.style.display === 'none' || !form.style.display ? 'block' : 'none';
+}
+
+async function executePromote(idx) {
+  const suggestions = analyticsData?.suggestedRules || [];
+  const s = suggestions[idx];
+  if (!s) return;
+
+  const hint = document.getElementById('pf-hint-' + idx)?.value || s.suggestion;
+  const confidence = parseFloat(document.getElementById('pf-conf-' + idx)?.value) || 0.5;
+  const fileGlob = document.getElementById('pf-glob-' + idx)?.value || undefined;
+
+  const rule = {
+    check: s.check,
+    template_fp: s.template_fp,
+    hint_md: hint,
+    confidence: confidence,
+  };
+  if (fileGlob) rule.when = { file_glob: fileGlob };
+
+  try {
+    const r = await fetch(BASE + '/api/rules/promote', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rule),
+    });
+    const d = await r.json();
+    if (r.ok) {
+      togglePromoteForm(idx);
+      await fetchPromotedRules();
+      const form = document.getElementById('promote-form-' + idx);
+      if (form) {
+        const parent = form.closest('.an-rec-item');
+        if (parent) {
+          const badge = document.createElement('span');
+          badge.className = 'promoted-badge';
+          badge.textContent = 'PROMOTED';
+          parent.querySelector('.an-rec-check')?.appendChild(badge);
+        }
+      }
+    } else {
+      alert('Promote failed: ' + (d.error || 'unknown error'));
+    }
+  } catch (e) {
+    alert('Promote failed: ' + e.message);
+  }
+}
+
+let promotedRulesData = [];
+
+async function fetchPromotedRules() {
+  try {
+    const r = await fetch(BASE + '/api/rules/promoted');
+    if (!r.ok) return;
+    const d = await r.json();
+    promotedRulesData = d.rules || [];
+    renderPromotedRules();
+  } catch {}
+}
+
+function renderPromotedRules() {
+  const el = document.getElementById('an-promoted-rules');
+  if (!el) return;
+  if (!promotedRulesData.length) {
+    el.innerHTML = '<span class="an-empty">No promoted rules. Promote a suggestion above to create one.</span>';
+    return;
+  }
+
+  el.innerHTML = '<table class="an-sc-table">'
+    + '<thead><tr>'
+    + '<th>Rule ID</th><th>Check</th><th>Hint</th><th>Confidence</th><th>Status</th><th>Actions</th>'
+    + '</tr></thead><tbody>'
+    + promotedRulesData.map(r => {
+      const status = r.probation
+        ? '<span class="probation-badge">PROBATION</span>'
+        : '<span class="badge ok">ACTIVE</span>';
+      const hintShort = (r.apply?.hint_md || '').length > 60
+        ? escHtml((r.apply?.hint_md || '').slice(0, 57)) + '...'
+        : escHtml(r.apply?.hint_md || '');
+      return '<tr>'
+        + '<td style="color:var(--text);font-weight:bold;font-size:10px">' + escHtml(r.id) + '</td>'
+        + '<td style="color:var(--muted)">' + escHtml(r.check) + '</td>'
+        + '<td style="color:var(--muted);font-size:10px" title="' + escHtml(r.apply?.hint_md || '') + '">' + hintShort + '</td>'
+        + '<td style="color:var(--blue)">' + (r.apply?.confidence ?? '—') + '</td>'
+        + '<td>' + status + '</td>'
+        + '<td><button class="danger" style="font-size:9px;padding:2px 8px" onclick="revertPromotedRule(\\'' + escHtml(r.id) + '\\')">Revert</button></td>'
+        + '</tr>';
+    }).join('')
+    + '</tbody></table>';
+}
+
+async function revertPromotedRule(ruleId) {
+  if (!confirm('Revert promoted rule ' + ruleId + '? This will remove it from production.')) return;
+  try {
+    const r = await fetch(BASE + '/api/rules/promote?id=' + encodeURIComponent(ruleId), { method: 'DELETE' });
+    if (r.ok) {
+      await fetchPromotedRules();
+    } else {
+      const d = await r.json();
+      alert('Revert failed: ' + (d.error || 'unknown'));
+    }
+  } catch (e) {
+    alert('Revert failed: ' + e.message);
+  }
+}
+
+// ── L1: Health Sparkline History ──────────────────────────────────────────
+let healthHistoryData = [];
+
+async function fetchHealthHistory() {
+  try {
+    const r = await fetch(BASE + '/api/health-scores?limit=30');
+    if (!r.ok) return;
+    const d = await r.json();
+    healthHistoryData = d.scores || [];
+    renderHealthSparklineHistory();
+  } catch {}
+}
+
+async function postHealthScore(h) {
+  if (h.mode !== 'project') return;
+  try {
+    await fetch(BASE + '/api/health-score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        score: h.score,
+        mode: h.mode,
+        dimensions: {
+          totalFiles: h.totalFiles,
+          totalErrors: h.totalErrors,
+          totalWarnings: h.totalWarnings,
+          dirtyFiles: h.dirtyFiles,
+          integrityIssues: h.integrityIssues,
+          orphanedCount: h.orphanedCount,
+        },
+      }),
+    });
+  } catch {}
+}
+
+function renderHealthSparklineHistory() {
+  const el = document.getElementById('health-sparkline');
+  if (!el) return;
+  if (healthHistoryData.length < 2) {
+    el.innerHTML = '<div class="hs-container"><h3>Health History</h3><span class="an-empty">Not enough data points yet (need at least 2 analyses).</span></div>';
+    return;
+  }
+
+  const scores = healthHistoryData;
+  const W = 460, H = 80, PAD_L = 30, PAD_R = 10, PAD_T = 10, PAD_B = 20;
+  const plotW = W - PAD_L - PAD_R;
+  const plotH = H - PAD_T - PAD_B;
+  const n = scores.length;
+  const maxS = 100, minS = 0;
+  const stepX = n > 1 ? plotW / (n - 1) : 0;
+  const y = v => PAD_T + plotH - plotH * ((v - minS) / (maxS - minS));
+  const x = i => PAD_L + i * stepX;
+
+  const first = scores[0].score;
+  const last = scores[scores.length - 1].score;
+  const trend = last > first ? 'trend-up' : last < first ? 'trend-down' : 'trend-flat';
+  const trendWord = last > first ? 'IMPROVING' : last < first ? 'DECLINING' : 'STABLE';
+  const trendColor = last > first ? 'var(--green)' : last < first ? 'var(--red)' : 'var(--yellow)';
+
+  const pts = scores.map((s, i) => x(i).toFixed(1) + ',' + y(s.score).toFixed(1)).join(' ');
+  const gridLines = [25, 50, 75].map(v =>
+    '<line class="hs-grid" x1="' + PAD_L + '" y1="' + y(v).toFixed(1) + '" x2="' + (W - PAD_R) + '" y2="' + y(v).toFixed(1) + '"/>'
+    + '<text class="hs-axis" x="' + (PAD_L - 4) + '" y="' + (y(v) + 3).toFixed(1) + '" text-anchor="end">' + v + '</text>'
   ).join('');
+
+  const dots = scores.map((s, i) => {
+    const ts = s.ts ? new Date(s.ts).toLocaleString() : '';
+    return '<circle class="hs-dot ' + trend + '" cx="' + x(i).toFixed(1) + '" cy="' + y(s.score).toFixed(1) + '" onmousemove="showTip(event, \\'' + s.score + '/100 — ' + escHtml(ts) + '\\')" onmouseleave="hideTip()"/>';
+  }).join('');
+
+  el.innerHTML = '<div class="hs-container">'
+    + '<h3>Health History</h3>'
+    + '<div class="hs-spark-wrap">'
+    + '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">'
+    + gridLines
+    + '<polyline class="hs-line ' + trend + '" points="' + pts + '"/>'
+    + dots
+    + '</svg>'
+    + '</div>'
+    + '<div class="hs-legend">'
+    + '<span>TREND: <span style="color:' + trendColor + ';font-weight:bold">' + trendWord + '</span></span>'
+    + '<span>LATEST: ' + last + '/100</span>'
+    + '<span>SAMPLES: ' + n + '</span>'
+    + '</div>'
+    + '</div>';
+}
+
+// ── L7: Session Diff Narrative ──────────────────────────────────────────
+function renderSessionNarrative() {
+  const el = document.getElementById('ht-narrative');
+  if (!el || !analysisData) { if (el) el.innerHTML = ''; return; }
+  const a = analysisData;
+
+  const files = a.files_scanned ?? 0;
+  const errors = a.total_errors ?? 0;
+  const warnings = a.total_warnings ?? 0;
+  const orphans = (a.orphaned_files || []).length;
+  const integrity = (a.integrity || []).length;
+
+  const parts = [];
+  parts.push('This analysis scanned <b>' + files + '</b> file' + (files !== 1 ? 's' : '') + '.');
+
+  if (errors > 0) {
+    parts.push('<b>' + errors + '</b> error' + (errors !== 1 ? 's' : '') + ' found.');
+  } else {
+    parts.push('<span class="down">Zero errors</span> detected.');
+  }
+
+  if (warnings > 0) {
+    parts.push('<b>' + warnings + '</b> warning' + (warnings !== 1 ? 's' : '') + '.');
+  }
+
+  if (orphans > 0) {
+    parts.push(orphans + ' orphaned file' + (orphans !== 1 ? 's' : '') + '.');
+  }
+  if (integrity > 0) {
+    parts.push(integrity + ' integrity issue' + (integrity !== 1 ? 's' : '') + '.');
+  }
+
+  const diff = a.diff_from_last_run;
+  if (diff) {
+    const eDelta = diff.error_delta ?? 0;
+    const wDelta = diff.warning_delta ?? 0;
+    if (eDelta !== 0 || wDelta !== 0) {
+      const eCls = eDelta > 0 ? 'up' : eDelta < 0 ? 'down' : 'flat';
+      const wCls = wDelta > 0 ? 'up' : wDelta < 0 ? 'down' : 'flat';
+      const eSign = eDelta > 0 ? '+' : '';
+      const wSign = wDelta > 0 ? '+' : '';
+      parts.push('Since last run: errors <span class="' + eCls + '">' + eSign + eDelta + '</span>, warnings <span class="' + wCls + '">' + wSign + wDelta + '</span>.');
+    } else {
+      parts.push('No change from last run.');
+    }
+  }
+
+  if (lastHealth && lastHealth.mode === 'project') {
+    const score = lastHealth.score;
+    const cls = score >= 80 ? 'down' : score >= 50 ? 'flat' : 'up';
+    parts.push('Health score: <span class="' + cls + '"><b>' + score + '/100</b></span>.');
+  }
+
+  el.innerHTML = '<div class="ht-narrative">' + parts.join(' ') + '</div>';
+}
+
+// ── L9: Dependency Impact Simulator ─────────────────────────────────────
+function collectTransitiveRefs(path, nodes, visited) {
+  if (visited.has(path)) return;
+  visited.add(path);
+  const node = nodes[path];
+  if (!node) return;
+  for (const ref of (node.referenced_by || [])) {
+    collectTransitiveRefs(ref, nodes, visited);
+  }
+}
+
+function simulateDelete(path) {
+  if (!depData?.nodes) return;
+  const nodes = depData.nodes;
+  const visited = new Set();
+  collectTransitiveRefs(path, nodes, visited);
+  visited.delete(path);
+
+  const detail = document.getElementById('dep-detail');
+  if (!detail) return;
+
+  const simEl = detail.querySelector('.sim-result');
+  if (simEl) simEl.remove();
+
+  const directRefs = (nodes[path]?.referenced_by || []);
+  const transitiveCount = visited.size;
+
+  const checksHtml = directRefs.length > 0
+    ? '<div style="margin-top:8px;font-size:10px;color:var(--muted)">Diagnostics that would appear: <span style="color:var(--red)">MissingPartial</span>, <span style="color:var(--red)">MissingRender</span></div>'
+    : '';
+
+  const filesHtml = [...visited].sort().map(p =>
+    '<div class="sim-file">' + escHtml(p) + '</div>'
+  ).join('');
+
+  const html = '<div class="sim-result">'
+    + '<div class="sim-title">Simulate Delete: ' + escHtml(path.split('/').pop()) + '</div>'
+    + '<div>Deleting this file would break <span class="sim-count">' + transitiveCount + '</span> reference' + (transitiveCount !== 1 ? 's' : '') + ' across <span class="sim-count">' + directRefs.length + '</span> direct caller' + (directRefs.length !== 1 ? 's' : '') + '.</div>'
+    + checksHtml
+    + (transitiveCount > 0 ? '<div style="margin-top:8px;font-size:10px;color:var(--muted);text-transform:uppercase">Affected files:</div>' + filesHtml : '')
+    + '</div>';
+
+  detail.insertAdjacentHTML('beforeend', html);
+}
+
+function simulateRename(path) {
+  if (!depData?.nodes) return;
+  const detail = document.getElementById('dep-detail');
+  if (!detail) return;
+
+  const simEl = detail.querySelector('.sim-result');
+  if (simEl) simEl.remove();
+
+  const directRefs = (depData.nodes[path]?.referenced_by || []);
+
+  const html = '<div class="sim-result">'
+    + '<div class="sim-title">Simulate Rename: ' + escHtml(path.split('/').pop()) + '</div>'
+    + '<div class="sim-rename-input">'
+    + '<label style="font-size:10px;color:var(--muted)">NEW NAME:</label>'
+    + '<input type="text" id="sim-rename-input" value="' + escHtml(path) + '">'
+    + '<button class="primary" style="font-size:10px;padding:3px 10px" onclick="executeSimRename(\\'' + escHtml(path) + '\\')">Preview</button>'
+    + '</div>'
+    + '<div id="sim-rename-result" style="margin-top:10px">'
+    + '<div>' + directRefs.length + ' file' + (directRefs.length !== 1 ? 's' : '') + ' reference this path and would need updating:</div>'
+    + directRefs.sort().map(p => '<div class="sim-file">' + escHtml(p) + '</div>').join('')
+    + '</div>'
+    + '</div>';
+
+  detail.insertAdjacentHTML('beforeend', html);
+}
+
+function executeSimRename(oldPath) {
+  const newName = document.getElementById('sim-rename-input')?.value;
+  const resultEl = document.getElementById('sim-rename-result');
+  if (!resultEl || !newName || !depData?.nodes) return;
+
+  const directRefs = (depData.nodes[oldPath]?.referenced_by || []);
+  const oldBase = oldPath.split('/').pop().replace(/\\.liquid$/, '');
+  const newBase = newName.split('/').pop().replace(/\\.liquid$/, '');
+
+  resultEl.innerHTML = '<div style="margin-bottom:8px">' + directRefs.length + ' file' + (directRefs.length !== 1 ? 's' : '') + ' would need <code>render</code> calls updated:</div>'
+    + '<div style="font-size:10px;color:var(--muted);margin-bottom:4px">CHANGE: <span style="color:var(--red)">' + escHtml(oldBase) + '</span> &rarr; <span style="color:var(--green)">' + escHtml(newBase) + '</span></div>'
+    + directRefs.sort().map(p => '<div class="sim-file">' + escHtml(p) + '</div>').join('');
+}
+
+// ── L2: Diagnostic Journey Timeline ──────────────────────────────────────
+async function loadDiagnosticJourney(templateFp, check) {
+  const el = document.getElementById('an-journey');
+  if (!el) return;
+  el.innerHTML = '<span class="an-empty">Loading journey for ' + escHtml(check || templateFp || '') + '...</span>';
+
+  try {
+    const qs = templateFp
+      ? 'template_fp=' + encodeURIComponent(templateFp)
+      : 'check=' + encodeURIComponent(check);
+    const r = await fetch(BASE + '/api/analytics/journey?' + qs);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const journey = await r.json();
+    renderJourneyTimeline(el, journey);
+  } catch (e) {
+    el.innerHTML = '<span class="an-empty" style="color:var(--red)">Failed: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+function renderJourneyTimeline(el, j) {
+  if (!j.timeline || j.timeline.length === 0) {
+    el.innerHTML = '<span class="an-empty">No journey data for this template.</span>';
+    return;
+  }
+
+  const nodesHtml = j.timeline.map((t, i) => {
+    const cls = t.dominant_outcome || 'pending';
+    const tip = t.session_id.slice(0, 8) + ' — ' + (t.dominant_outcome || 'no outcome') + (t.rule_id ? ' — rule: ' + t.rule_id : '') + (t.fix_applied ? ' — fix: ' + t.fix_applied : '');
+    const edge = i < j.timeline.length - 1 ? '<div class="journey-edge"></div>' : '';
+    return '<div class="journey-node" title="' + escHtml(tip) + '">'
+      + '<div class="journey-occ">' + t.occurrences + '</div>'
+      + '<div class="journey-dot ' + cls + '"></div>'
+      + '<div class="journey-label">' + t.session_id.slice(0, 6) + '</div>'
+      + '</div>' + edge;
+  }).join('');
+
+  el.innerHTML = '<div class="journey-container">'
+    + '<h3>Journey: ' + escHtml(j.check || '?') + ' (' + escHtml(j.template_fp?.slice(0, 8) || '') + ')</h3>'
+    + '<div class="journey-tl">' + nodesHtml + '</div>'
+    + '<div class="journey-meta">'
+    + '<span>SESSIONS: ' + j.session_count + '</span>'
+    + '<span>FIRST: ' + (j.first_seen || '—') + '</span>'
+    + '<span>LAST: ' + (j.last_seen || '—') + '</span>'
+    + '</div>'
+    + '</div>';
+}
+
+// ── L3: Confidence Calibration Chart ────────────────────────────────────
+async function fetchCalibrationChart() {
+  const el = document.getElementById('an-calibration');
+  if (!el) return;
+
+  try {
+    const r = await fetch(BASE + '/api/analytics/calibration?buckets=10');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const cal = d.calibration || d;
+    renderCalibrationChart(el, Array.isArray(cal) ? cal : []);
+  } catch (e) {
+    el.innerHTML = '<span class="an-empty">Calibration not available: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+function renderCalibrationChart(el, data) {
+  if (!data.length) {
+    el.innerHTML = '<span class="an-empty">No diagnostics with confidence scores yet. Confidence is populated from rule engine output.</span>';
+    return;
+  }
+
+  const W = 300, H = 300, PAD = 40;
+  const plotW = W - 2 * PAD, plotH = H - 2 * PAD;
+  const x = v => PAD + v * plotW;
+  const y = v => PAD + plotH - v * plotH;
+
+  const gridLines = [0.25, 0.5, 0.75].map(v =>
+    '<line class="cal-grid" x1="' + PAD + '" y1="' + y(v).toFixed(1) + '" x2="' + (W - PAD) + '" y2="' + y(v).toFixed(1) + '"/>'
+    + '<line class="cal-grid" x1="' + x(v).toFixed(1) + '" y1="' + PAD + '" x2="' + x(v).toFixed(1) + '" y2="' + (H - PAD) + '"/>'
+  ).join('');
+
+  const diag = '<line class="cal-diag" x1="' + PAD + '" y1="' + (H - PAD) + '" x2="' + (W - PAD) + '" y2="' + PAD + '"/>';
+
+  const maxN = Math.max(...data.map(d => d.sample_size), 1);
+  const points = data.map(d => {
+    const cx = x(d.predicted).toFixed(1);
+    const cy = y(d.actual_resolution).toFixed(1);
+    const r = Math.max(4, Math.min(12, 4 + 8 * (d.sample_size / maxN)));
+    const dev = Math.abs(d.predicted - d.actual_resolution);
+    const cls = dev <= 0.1 ? 'good' : dev <= 0.2 ? 'mid' : 'bad';
+    const tip = 'Predicted: ' + (d.predicted * 100).toFixed(0) + '% Actual: ' + (d.actual_resolution * 100).toFixed(0) + '% (n=' + d.sample_size + ')';
+    return '<circle class="cal-point ' + cls + '" cx="' + cx + '" cy="' + cy + '" r="' + r.toFixed(1) + '" onmousemove="showTip(event, \\'' + escHtml(tip) + '\\')" onmouseleave="hideTip()"/>';
+  }).join('');
+
+  const axisLabels = '<text x="' + (W / 2) + '" y="' + (H - 5) + '" text-anchor="middle">PREDICTED CONFIDENCE</text>'
+    + '<text x="10" y="' + (H / 2) + '" text-anchor="middle" transform="rotate(-90,' + 10 + ',' + (H / 2) + ')">ACTUAL RESOLUTION</text>'
+    + [0, 0.5, 1].map(v => '<text x="' + x(v).toFixed(1) + '" y="' + (H - PAD + 14) + '" text-anchor="middle">' + (v * 100) + '%</text>').join('')
+    + [0, 0.5, 1].map(v => '<text x="' + (PAD - 4) + '" y="' + (y(v) + 3).toFixed(1) + '" text-anchor="end">' + (v * 100) + '%</text>').join('');
+
+  el.innerHTML = '<div class="cal-container">'
+    + '<h3>Confidence Calibration</h3>'
+    + '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">'
+    + gridLines + diag + points + axisLabels
+    + '</svg>'
+    + '</div>';
+}
+
+// ── L4: Fix Adoption Funnel ─────────────────────────────────────────────
+async function fetchFunnelChart() {
+  const el = document.getElementById('an-funnel');
+  if (!el) return;
+
+  try {
+    const r = await fetch(BASE + '/api/analytics/funnel');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    renderFunnelChart(el, d);
+  } catch (e) {
+    el.innerHTML = '<span class="an-empty">Funnel not available: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+function renderFunnelChart(el, f) {
+  if (!f || f.emitted === 0) {
+    el.innerHTML = '<span class="an-empty">No diagnostics emitted yet.</span>';
+    return;
+  }
+
+  const stages = [
+    { label: 'Emitted', value: f.emitted, cls: 's0' },
+    { label: 'Rule Matched', value: f.rule_matched, cls: 's1' },
+    { label: 'Fix Proposed', value: f.fix_proposed, cls: 's2' },
+    { label: 'Adopted', value: (f.fix_adopted_verbatim || 0) + (f.fix_adopted_partial || 0), cls: 's3' },
+    { label: 'Resolved', value: f.resolved, cls: 's4' },
+    { label: 'Regressed', value: f.regressed, cls: 's5' },
+  ];
+
+  const maxVal = Math.max(...stages.map(s => s.value), 1);
+  const barHeight = 100;
+
+  const stagesHtml = stages.map((s, i) => {
+    const h = Math.max(4, (s.value / maxVal) * barHeight);
+    const drop = i > 0 && stages[i - 1].value > 0
+      ? '-' + ((1 - s.value / stages[i - 1].value) * 100).toFixed(0) + '%'
+      : '';
+    return '<div class="funnel-stage">'
+      + (drop ? '<div class="funnel-drop">' + drop + '</div>' : '')
+      + '<div class="funnel-count">' + s.value + '</div>'
+      + '<div class="funnel-bar ' + s.cls + '" style="height:' + h.toFixed(0) + 'px"></div>'
+      + '<div class="funnel-label">' + s.label + '</div>'
+      + '</div>';
+  }).join('');
+
+  el.innerHTML = '<div class="funnel-container">'
+    + '<h3>Fix Adoption Funnel</h3>'
+    + '<div class="funnel-stages">' + stagesHtml + '</div>'
+    + '</div>';
+}
+
+// ── L5: Rule Effectiveness Heatmap ──────────────────────────────────────
+async function fetchHeatmap() {
+  const el = document.getElementById('an-heatmap');
+  if (!el) return;
+
+  try {
+    const r = await fetch(BASE + '/api/analytics/rule-heatmap');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    renderHeatmap(el, d.cells || []);
+  } catch (e) {
+    el.innerHTML = '<span class="an-empty">Heatmap not available: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+function renderHeatmap(el, cells) {
+  if (!cells.length) {
+    el.innerHTML = '<span class="an-empty">No rule × category data yet. Rebuild analytics after sessions with rule-matched diagnostics.</span>';
+    return;
+  }
+
+  const categories = ['pages', 'partials', 'commands', 'queries', 'graphql', 'schema', 'other'];
+  const ruleIds = [...new Set(cells.map(c => c.rule_id))].sort();
+
+  const lookup = new Map();
+  for (const c of cells) lookup.set(c.rule_id + '::' + c.category, c);
+
+  const cols = categories.length + 1;
+  const headerHtml = '<div class="hm-header"></div>'
+    + categories.map(c => '<div class="hm-header">' + c + '</div>').join('');
+
+  const rowsHtml = ruleIds.map(rid => {
+    const labelHtml = '<div class="hm-row-label" title="' + escHtml(rid) + '">' + escHtml(rid) + '</div>';
+    const cellsHtml = categories.map(cat => {
+      const cell = lookup.get(rid + '::' + cat);
+      if (!cell || cell.outcomes === 0) return '<div class="hm-cell none">—</div>';
+      const eff = cell.effectiveness;
+      const cls = eff >= 0.5 ? 'good' : eff >= 0.15 ? 'mid' : 'bad';
+      const tip = rid + ' / ' + cat + ': eff=' + (eff * 100).toFixed(0) + '% outcomes=' + cell.outcomes + ' res=' + cell.resolved + ' reg=' + cell.regressed;
+      return '<div class="hm-cell ' + cls + '" title="' + escHtml(tip) + '">' + (eff * 100).toFixed(0) + '</div>';
+    }).join('');
+    return labelHtml + cellsHtml;
+  }).join('');
+
+  el.innerHTML = '<div class="heatmap-container">'
+    + '<h3>Rule Effectiveness by File Category</h3>'
+    + '<div class="heatmap-grid" style="grid-template-columns: 180px repeat(' + categories.length + ', 1fr)">'
+    + headerHtml + rowsHtml
+    + '</div>'
+    + '<div class="hm-legend">'
+    + '<span><span class="hm-legend-swatch" style="background:var(--green)"></span>&gt;50%</span>'
+    + '<span><span class="hm-legend-swatch" style="background:var(--yellow)"></span>15-50%</span>'
+    + '<span><span class="hm-legend-swatch" style="background:var(--red)"></span>&lt;15%</span>'
+    + '<span><span class="hm-legend-swatch" style="background:var(--surface2)"></span>No data</span>'
+    + '</div>'
+    + '</div>';
+}
+
+// ── L6: Knowledge Gap Radar ─────────────────────────────────────────────
+async function fetchRadarChart() {
+  const el = document.getElementById('an-radar');
+  if (!el) return;
+
+  try {
+    const [gapsR, funnelR] = await Promise.all([
+      fetch(BASE + '/api/analytics/knowledge-gaps').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/funnel').then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+
+    const gaps = gapsR?.gaps || [];
+    const funnel = funnelR || {};
+    renderRadarChart(el, gaps, funnel);
+  } catch (e) {
+    el.innerHTML = '<span class="an-empty">Radar not available: ' + escHtml(e.message) + '</span>';
+  }
+}
+
+function renderRadarChart(el, gaps, funnel) {
+  const totalChecks = gaps.length;
+  if (totalChecks === 0 && funnel.emitted === 0) {
+    el.innerHTML = '<span class="an-empty">Not enough data for radar chart.</span>';
+    return;
+  }
+
+  const avgCoverage = totalChecks > 0
+    ? gaps.reduce((s, g) => s + g.coverage_rate, 0) / totalChecks : 0;
+  const avgResolution = totalChecks > 0
+    ? gaps.reduce((s, g) => s + g.avg_resolution_rate, 0) / totalChecks : 0;
+  const fixAdoption = funnel.emitted > 0 && funnel.fix_proposed > 0
+    ? ((funnel.fix_adopted_verbatim || 0) + (funnel.fix_adopted_partial || 0)) / funnel.fix_proposed : 0;
+  const overallResolution = funnel.emitted > 0 ? (funnel.resolved || 0) / funnel.emitted : 0;
+  const ruleMatchRate = funnel.emitted > 0 ? (funnel.rule_matched || 0) / funnel.emitted : 0;
+
+  const axes = [
+    { label: 'Rule Coverage', value: avgCoverage },
+    { label: 'Hint Quality', value: avgResolution },
+    { label: 'Fix Adoption', value: fixAdoption },
+    { label: 'Rule Match', value: ruleMatchRate },
+    { label: 'Resolution', value: overallResolution },
+  ];
+
+  const W = 240, H = 240, CX = W / 2, CY = H / 2, R = 80;
+  const n = axes.length;
+  const angle = (i) => (Math.PI * 2 * i / n) - Math.PI / 2;
+
+  const gridLevels = [0.25, 0.5, 0.75, 1.0];
+  const gridHtml = gridLevels.map(lev => {
+    const pts = Array.from({ length: n }, (_, i) => {
+      const a = angle(i);
+      return (CX + R * lev * Math.cos(a)).toFixed(1) + ',' + (CY + R * lev * Math.sin(a)).toFixed(1);
+    }).join(' ');
+    return '<polygon class="radar-grid" points="' + pts + '"/>';
+  }).join('');
+
+  const axisHtml = Array.from({ length: n }, (_, i) => {
+    const a = angle(i);
+    return '<line class="radar-axis" x1="' + CX + '" y1="' + CY + '" x2="' + (CX + R * Math.cos(a)).toFixed(1) + '" y2="' + (CY + R * Math.sin(a)).toFixed(1) + '"/>';
+  }).join('');
+
+  const labelHtml = axes.map((ax, i) => {
+    const a = angle(i);
+    const lx = CX + (R + 20) * Math.cos(a);
+    const ly = CY + (R + 20) * Math.sin(a);
+    const anchor = Math.abs(Math.cos(a)) < 0.1 ? 'middle' : Math.cos(a) > 0 ? 'start' : 'end';
+    return '<text x="' + lx.toFixed(1) + '" y="' + (ly + 3).toFixed(1) + '" text-anchor="' + anchor + '">' + ax.label + ' (' + (ax.value * 100).toFixed(0) + '%)</text>';
+  }).join('');
+
+  const dataPts = axes.map((ax, i) => {
+    const a = angle(i);
+    const v = Math.max(0, Math.min(1, ax.value));
+    return (CX + R * v * Math.cos(a)).toFixed(1) + ',' + (CY + R * v * Math.sin(a)).toFixed(1);
+  }).join(' ');
+
+  const dotHtml = axes.map((ax, i) => {
+    const a = angle(i);
+    const v = Math.max(0, Math.min(1, ax.value));
+    return '<circle class="radar-dot" cx="' + (CX + R * v * Math.cos(a)).toFixed(1) + '" cy="' + (CY + R * v * Math.sin(a)).toFixed(1) + '"/>';
+  }).join('');
+
+  const area = axes.reduce((s, ax) => s + Math.max(0, Math.min(1, ax.value)), 0) / n;
+  const areaCls = area > 0.7 ? 'var(--green)' : area > 0.4 ? 'var(--yellow)' : 'var(--red)';
+
+  el.innerHTML = '<div class="radar-container">'
+    + '<h3>Knowledge Coverage</h3>'
+    + '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">'
+    + gridHtml + axisHtml + labelHtml
+    + '<polygon class="radar-fill" points="' + dataPts + '"/>'
+    + dotHtml
+    + '</svg>'
+    + '<div style="font-size:10px;color:var(--muted);margin-top:8px">COVERAGE SCORE: <span style="color:' + areaCls + ';font-weight:bold">' + (area * 100).toFixed(0) + '%</span></div>'
+    + '</div>';
+}
+
+// ── L8: Live Rule Tester ────────────────────────────────────────────────
+let rtChecksData = [];
+
+async function loadRuleChecks() {
+  const select = document.getElementById('rt-check');
+  if (!select) return;
+  try {
+    const r = await fetch(BASE + '/api/rules/checks');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    rtChecksData = d.checks || [];
+    select.innerHTML = '<option value="">— select a check —</option>'
+      + rtChecksData.map(c =>
+        '<option value="' + escHtml(c.check) + '">'
+        + escHtml(c.check) + ' (' + c.rule_count + ' rule' + (c.rule_count !== 1 ? 's' : '') + ')'
+        + '</option>'
+      ).join('');
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load checks</option>';
+  }
+}
+
+function onRtCheckChange() {
+  const check = document.getElementById('rt-check')?.value;
+  const msgInput = document.getElementById('rt-message');
+  if (!check || !msgInput) return;
+  const prevCheck = msgInput.dataset.lastCheck || '';
+  const prevInfo = rtChecksData.find(c => c.check === prevCheck);
+  const wasExample = !msgInput.value.trim() || msgInput.value === prevInfo?.example_message;
+  const info = rtChecksData.find(c => c.check === check);
+  if (info?.example_message && wasExample) {
+    msgInput.value = info.example_message;
+  }
+  msgInput.dataset.lastCheck = check;
+}
+
+async function testRule() {
+  const check = document.getElementById('rt-check')?.value?.trim();
+  const message = document.getElementById('rt-message')?.value?.trim();
+  const file = document.getElementById('rt-file')?.value?.trim();
+  const resultEl = document.getElementById('rt-result');
+  const statusEl = document.getElementById('rt-status');
+  const btn = document.getElementById('rt-test-btn');
+
+  if (!check || !message) {
+    statusEl.textContent = 'Check and message are required.';
+    statusEl.style.color = 'var(--yellow)';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'TESTING...';
+  statusEl.textContent = '';
+
+  try {
+    const r = await fetch(BASE + '/api/rules/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ check, message, file: file || undefined }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: 'HTTP ' + r.status }));
+      statusEl.textContent = err.error || 'HTTP ' + r.status;
+      statusEl.style.color = 'var(--red)';
+      resultEl.innerHTML = '';
+    } else {
+      const d = await r.json();
+      statusEl.textContent = d.matched_rule ? 'MATCHED' : 'NO MATCH';
+      statusEl.style.color = d.matched_rule ? 'var(--green)' : 'var(--yellow)';
+      renderRuleTestResult(resultEl, d);
+    }
+  } catch (e) {
+    statusEl.textContent = 'Failed: ' + e.message;
+    statusEl.style.color = 'var(--red)';
+    resultEl.innerHTML = '';
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'TEST RULE';
+}
+
+function renderRuleTestResult(el, d) {
+  const paramsHtml = d.extracted_params && Object.keys(d.extracted_params).length > 0
+    ? Object.entries(d.extracted_params).map(([k, v]) =>
+        '<div class="rt-field"><span class="rt-label">' + escHtml(k) + ':</span> <span class="rt-value">' + escHtml(String(v)) + '</span></div>'
+      ).join('')
+    : '<span class="rt-none">No params extracted from message.</span>';
+
+  const graphBadge = d.graph_available
+    ? '<span style="color:var(--green);font-size:9px">GRAPH LOADED</span>'
+    : '<span style="color:var(--red);font-size:9px">NO GRAPH</span>';
+
+  const matchHtml = d.matched_rule
+    ? '<div class="rt-field"><span class="rt-label">Rule ID:</span> <span class="rt-value" style="color:var(--green)">' + escHtml(d.matched_rule.rule_id) + '</span></div>'
+      + '<div class="rt-field"><span class="rt-label">Confidence:</span> <span class="rt-value">' + (d.matched_rule.confidence ?? '—') + '</span></div>'
+      + '<div class="rt-field" style="margin-top:6px"><span class="rt-label">Hint:</span></div>'
+      + '<div style="font-size:11px;color:var(--text);padding:6px 8px;background:#1d2021;border:1px dashed var(--border);margin-top:4px;white-space:pre-wrap;line-height:1.5">' + escHtml(d.matched_rule.hint_md || '') + '</div>'
+      + (d.matched_rule.see_also ? '<div class="rt-field" style="margin-top:6px"><span class="rt-label">See Also:</span> <span class="rt-value">' + escHtml(JSON.stringify(d.matched_rule.see_also)) + '</span></div>' : '')
+      + (d.matched_rule.fixes?.length ? '<div class="rt-field"><span class="rt-label">Fixes:</span> <span class="rt-value">' + d.matched_rule.fixes.length + ' proposed</span></div>' : '')
+    : '<span class="rt-none">No rule matched — generic enricher would handle this diagnostic.</span>';
+
+  const statusColors = { matched: 'var(--green)', guard_failed: 'var(--yellow)', apply_returned_null: 'var(--yellow)', disabled: 'var(--red)', error: 'var(--red)' };
+  const statusLabels = { matched: 'MATCHED', guard_failed: 'GUARD FAILED', apply_returned_null: 'APPLY NULL', disabled: 'DISABLED', error: 'ERROR' };
+  const evalHtml = (d.rule_evaluation || []).length > 0
+    ? '<div style="margin-top:10px"><span class="rt-label">Rule Evaluation (' + d.rule_evaluation.length + ' candidates):</span></div>'
+      + d.rule_evaluation.map(r =>
+          '<div style="padding:4px 8px;margin-top:3px;font-size:10px;background:#1d2021;border:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">'
+          + '<span style="color:var(--text)">' + escHtml(r.rule_id) + '</span>'
+          + '<span style="color:' + (statusColors[r.status] || 'var(--muted)') + ';font-size:9px;font-weight:bold">'
+          + (statusLabels[r.status] || r.status)
+          + (r.error ? ': ' + escHtml(r.error) : '')
+          + '</span></div>'
+        ).join('')
+    : '<div class="rt-field"><span class="rt-none">No rules registered for this check.</span></div>';
+
+  el.innerHTML = '<div class="rt-comparison">'
+    + '<div class="rt-panel">'
+    + '<h4>Input Analysis</h4>'
+    + paramsHtml
+    + '<div class="rt-field" style="margin-top:8px"><span class="rt-label">Template FP:</span> <span class="rt-value" style="font-family:monospace;font-size:10px">' + escHtml(d.template_fp || '—') + '</span></div>'
+    + '<div class="rt-field"><span class="rt-label">Input File:</span> <span class="rt-value">' + escHtml(d.input?.file || '—') + '</span></div>'
+    + '<div class="rt-field"><span class="rt-label">Fact Graph:</span> ' + graphBadge + '</div>'
+    + '</div>'
+    + '<div class="rt-panel">'
+    + '<h4>Rule Engine Result</h4>'
+    + matchHtml
+    + evalHtml
+    + '</div>'
+    + '</div>'
+    + (d.note ? '<div style="margin-top:8px;font-size:9px;color:var(--muted)">' + escHtml(d.note) + '</div>' : '');
 }
 
 // ── A5: Tool Lab ────────────────────────────────────────────────────────
@@ -4014,6 +5022,12 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('lc-load-btn').addEventListener('click', loadLiveFile);
   document.getElementById('lc-file-picker').addEventListener('change', () => { currentLiveFilePath = null; });
   document.getElementById('lc-file-filter').addEventListener('input', renderLivePickerOptions);
+
+  // Rule Tester
+  const rtBtn = document.getElementById('rt-test-btn');
+  if (rtBtn) rtBtn.addEventListener('click', testRule);
+  const rtCheck = document.getElementById('rt-check');
+  if (rtCheck) rtCheck.addEventListener('change', onRtCheckChange);
 
   // Sessions
   document.getElementById('sess-load-btn').addEventListener('click', fetchSessions);

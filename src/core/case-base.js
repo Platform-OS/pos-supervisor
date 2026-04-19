@@ -332,3 +332,58 @@ export function generateRuleTemplate(suggestion) {
   },
 }`;
 }
+
+/**
+ * J5: Resolve probation for promoted rules.
+ *
+ * For each rule on probation, check if it has accumulated enough outcomes
+ * to make a determination. Compares the promoted rule's effectiveness to
+ * the disable threshold.
+ *
+ * @param {object} store - Analytics store
+ * @param {object} [opts]
+ * @param {number} [opts.minOutcomes=20] - Minimum outcomes before resolving
+ * @returns {Array<{ rule_id, resolution, effectiveness, outcomes }>}
+ */
+export function resolveProbation(store, { minOutcomes = 20 } = {}) {
+  const onProbation = store.getPromotionsOnProbation();
+  const resolutions = [];
+
+  for (const promo of onProbation) {
+    const outcomeRows = store.query(`
+      SELECT o.outcome, COUNT(*) as cnt
+      FROM outcomes o
+      JOIN diagnostics d ON o.fp = d.fp
+      WHERE d.hint_rule_id = ?
+      GROUP BY o.outcome
+    `, [promo.rule_id]);
+
+    let resolved = 0, regressed = 0, total = 0;
+    for (const o of outcomeRows) {
+      total += o.cnt;
+      if (o.outcome === 'resolved') resolved += o.cnt;
+      if (o.outcome === 'regressed') regressed += o.cnt;
+    }
+
+    if (total < minOutcomes) continue;
+
+    const effectiveness = total > 0 ? (resolved - regressed) / total : 0;
+    let resolution;
+
+    if (effectiveness < RULE_DISABLE_THRESHOLD) {
+      resolution = 'disabled';
+    } else {
+      resolution = 'kept';
+    }
+
+    store.resolvePromotion(promo.rule_id, resolution);
+    resolutions.push({
+      rule_id: promo.rule_id,
+      resolution,
+      effectiveness,
+      outcomes: total,
+    });
+  }
+
+  return resolutions;
+}

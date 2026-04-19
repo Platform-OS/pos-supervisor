@@ -55,7 +55,8 @@ const SCHEMA_SQL = `
     ts           TEXT NOT NULL,
     hint_rule_id TEXT,
     content_hash TEXT,
-    suppressed   INTEGER DEFAULT 0
+    suppressed   INTEGER DEFAULT 0,
+    confidence   REAL
   );
   CREATE INDEX IF NOT EXISTS idx_diag_fp       ON diagnostics(fp);
   CREATE INDEX IF NOT EXISTS idx_diag_session  ON diagnostics(session_id);
@@ -95,6 +96,25 @@ const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_outcomes_fp     ON outcomes(fp);
   CREATE INDEX IF NOT EXISTS idx_outcomes_window ON outcomes(window_id);
+
+  CREATE TABLE IF NOT EXISTS rule_promotions (
+    rule_id     TEXT PRIMARY KEY,
+    check_name  TEXT NOT NULL,
+    template_fp TEXT NOT NULL,
+    promoted_at TEXT NOT NULL,
+    probation   INTEGER DEFAULT 1,
+    resolved_at TEXT,
+    resolution  TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS health_scores (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts         TEXT    NOT NULL,
+    score      INTEGER NOT NULL,
+    mode       TEXT    NOT NULL,
+    dimensions TEXT    NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_health_ts ON health_scores(ts);
 `;
 
 export function openAnalyticsStore(dbPath, { readonly = false } = {}) {
@@ -230,6 +250,46 @@ export function openAnalyticsStore(dbPath, { readonly = false } = {}) {
     return { events, diagnostics, windows, outcomes, sessions, schema_version: SCHEMA_VERSION };
   }
 
+  function recordPromotion({ rule_id, check_name, template_fp }) {
+    stmts.insertPromotion.run(
+      rule_id, check_name, template_fp,
+      new Date().toISOString(), 1, null, null,
+    );
+  }
+
+  function resolvePromotion(rule_id, resolution) {
+    db.prepare(
+      `UPDATE rule_promotions SET probation = 0, resolved_at = ?, resolution = ? WHERE rule_id = ?`,
+    ).run(new Date().toISOString(), resolution, rule_id);
+  }
+
+  function getPromotion(rule_id) {
+    return db.prepare('SELECT * FROM rule_promotions WHERE rule_id = ?').get(rule_id) ?? null;
+  }
+
+  function getPromotionsOnProbation() {
+    return db.prepare('SELECT * FROM rule_promotions WHERE probation = 1').all();
+  }
+
+  function insertHealthScore({ score, mode, dimensions }) {
+    stmts.insertHealthScore.run(
+      new Date().toISOString(), score, mode,
+      JSON.stringify(dimensions),
+    );
+  }
+
+  function getHealthScores({ limit = 30, mode } = {}) {
+    const sql = mode
+      ? 'SELECT * FROM health_scores WHERE mode = ? ORDER BY ts DESC LIMIT ?'
+      : 'SELECT * FROM health_scores ORDER BY ts DESC LIMIT ?';
+    const params = mode ? [mode, limit] : [limit];
+    const rows = db.prepare(sql).all(...params);
+    return rows.reverse().map(r => ({
+      ...r,
+      dimensions: JSON.parse(r.dimensions),
+    }));
+  }
+
   return {
     close,
     ingestEvent,
@@ -241,6 +301,12 @@ export function openAnalyticsStore(dbPath, { readonly = false } = {}) {
     queryOne,
     getMeta,
     stats,
+    recordPromotion,
+    resolvePromotion,
+    getPromotion,
+    getPromotionsOnProbation,
+    insertHealthScore,
+    getHealthScores,
     get db() { return db; },
     get path() { return dbPath; },
   };
@@ -252,8 +318,8 @@ function prepareStatements(db) {
       'INSERT INTO events (session_id, kind, ts, payload) VALUES (?, ?, ?, ?)',
     ),
     insertDiag: db.prepare(
-      `INSERT INTO diagnostics (fp, template_fp, session_id, file, check_name, severity, ts, hint_rule_id, content_hash, suppressed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO diagnostics (fp, template_fp, session_id, file, check_name, severity, ts, hint_rule_id, content_hash, suppressed, confidence)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     insertFix: db.prepare(
       `INSERT INTO proposed_fixes (fp, session_id, ts, range_json, new_text_hash, kind)
@@ -266,6 +332,14 @@ function prepareStatements(db) {
     insertOutcome: db.prepare(
       `INSERT INTO outcomes (fp, window_id, outcome, fix_applied, collateral_added)
        VALUES (?, ?, ?, ?, ?)`,
+    ),
+    insertPromotion: db.prepare(
+      `INSERT OR REPLACE INTO rule_promotions (rule_id, check_name, template_fp, promoted_at, probation, resolved_at, resolution)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ),
+    insertHealthScore: db.prepare(
+      `INSERT INTO health_scores (ts, score, mode, dimensions)
+       VALUES (?, ?, ?, ?)`,
     ),
   };
 }
@@ -282,6 +356,7 @@ function ingestValidatorEmit(event, stmts) {
     event.hint_rule_id ?? null,
     event.content_hash ?? null,
     0,
+    event.confidence ?? null,
   );
 
   if (event.proposed_fixes?.length) {

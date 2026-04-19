@@ -6,6 +6,7 @@
  * via `registerRules()`.
  */
 import { registerRules, clearRules, ruleCount } from './engine.js';
+import { loadPromotedRules } from './promoted-rules.js';
 import { rules as MissingPartialRules } from './MissingPartial.js';
 import { rules as UndefinedObjectRules } from './UndefinedObject.js';
 import { rules as UnknownFilterRules } from './UnknownFilter.js';
@@ -29,6 +30,7 @@ const ALL_RULE_MODULES = [
 ];
 
 let _loaded = false;
+let _promotedProjectDir = null;
 
 export function loadAllRules() {
   if (_loaded) return;
@@ -38,10 +40,17 @@ export function loadAllRules() {
   _loaded = true;
 }
 
-export function reloadRules() {
+export function initPromotedRules(projectDir) {
+  _promotedProjectDir = projectDir;
+  loadPromotedRules(projectDir);
+}
+
+export function reloadRules(projectDir) {
   clearRules();
   _loaded = false;
   loadAllRules();
+  const dir = projectDir ?? _promotedProjectDir;
+  if (dir) loadPromotedRules(dir);
 }
 
 export { ruleCount };

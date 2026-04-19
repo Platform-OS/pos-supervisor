@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs';
-import { join, resolve, relative, isAbsolute } from 'node:path';
+import { join, resolve, relative, isAbsolute, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { getToolList, dispatchTool } from './tools.js';
@@ -9,14 +10,19 @@ import { HTTP_MAX_BODY } from './core/constants.js';
 import { buildDashboardHtml } from './dashboard.js';
 import { getProjectMap } from './tools/project-map.js';
 import { buildDependencyGraph } from './core/dependency-graph.js';
-import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams } from './core/analytics-queries.js';
+import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams, diagnosticJourney, confidenceCalibration, fixAdoptionFunnel, knowledgeGaps, ruleScoresByCategory } from './core/analytics-queries.js';
 import { ruleScores, suggestedRules, retrieveCasesByCheck, generateRuleTemplate } from './core/case-base.js';
+import { addPromotedRule, removePromotedRule, listPromotedRules } from './core/rules/promoted-rules.js';
+import { reloadRules, loadAllRules } from './core/rules/index.js';
+import { runRules, getDisabledRules, getAllChecksWithRules, getRulesForCheck } from './core/rules/engine.js';
+import { extractParams, templateOf, KNOWN_EXTRACTOR_CHECKS } from './core/diagnostic-record.js';
+import { buildFactGraph } from './core/project-fact-graph.js';
 
 /**
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
  * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore }) {
+export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, onAnalyticsRebuild }) {
   if (!port) return null;
 
   const dashboardHtml = buildDashboardHtml();
@@ -37,6 +43,11 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
         'Content-Length': Buffer.byteLength(dashboardHtml),
       });
       return res.end(dashboardHtml);
+    }
+
+    // ── Vendor static files ─────────────────────────────────────────────
+    if (method === 'GET' && url.pathname.startsWith('/vendor/')) {
+      return handleVendorFile(url.pathname, res);
     }
 
     // ── GET routes ──────────────────────────────────────────────────────
@@ -90,6 +101,15 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       return handleGetDependencyTree(projectDir, getStatus, res);
     }
 
+    if (method === 'GET' && url.pathname === '/api/rules/promoted') {
+      return handleGetPromotedRules(projectDir, res);
+    }
+
+    // ── DELETE routes ──────────────────────────────────────────────────────
+    if (method === 'DELETE' && url.pathname === '/api/rules/promote') {
+      return handleDeletePromotedRule(projectDir, url, res);
+    }
+
     // ── POST routes (no body) ────────────────────────────────────────────
     if (method === 'POST') {
       if (url.pathname === '/api/lsp/restart') {
@@ -102,7 +122,7 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       }
 
       if (url.pathname === '/api/analytics/rebuild') {
-        return handleAnalyticsRebuild(analyticsStore, sessionsDir, res);
+        return handleAnalyticsRebuild(analyticsStore, sessionsDir, onAnalyticsRebuild, res);
       }
 
       // ── POST routes (need body parsing) ───────────────────────────────
@@ -125,8 +145,20 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
         return handlePosCliCommand(posCliPath, projectDir, body, 'deploy', log, res);
       }
 
+      if (url.pathname === '/api/rules/promote') {
+        return handlePromoteRule(projectDir, body, res);
+      }
+
+      if (url.pathname === '/api/health-score') {
+        return handlePostHealthScore(analyticsStore, body, res);
+      }
+
       if (url.pathname === '/api/suppressions') {
         return handlePostSuppression(projectDir, body, log, res);
+      }
+
+      if (url.pathname === '/api/rules/test') {
+        return handleRuleTest(body, res, analyticsStore, projectDir);
       }
     }
 
@@ -162,6 +194,38 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
 
     if (method === 'GET' && url.pathname === '/api/analytics/cases') {
       return handleCases(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/health-scores') {
+      return handleGetHealthScores(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/journey') {
+      return handleDiagnosticJourney(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/calibration') {
+      return handleConfidenceCalibration(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/funnel') {
+      return handleFixAdoptionFunnel(analyticsStore, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/knowledge-gaps') {
+      return handleKnowledgeGaps(analyticsStore, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/rule-heatmap') {
+      return handleRuleHeatmap(analyticsStore, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/rules/checks') {
+      return handleRuleChecks(res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/engine-map') {
+      return handleEngineMap(analyticsStore, res);
     }
 
     // ── Fallback ────────────────────────────────────────────────────────
@@ -485,6 +549,266 @@ async function handleGetDependencyTree(projectDir, getStatus, res) {
   }
 }
 
+// ── Promoted rules handlers (Phase J) ─────────────────────────────────────
+
+function handleGetPromotedRules(projectDir, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  try {
+    const rules = listPromotedRules(projectDir);
+    sendJson(res, 200, { rules });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handlePromoteRule(projectDir, body, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+
+  const { id, check, priority, when, apply } = body;
+  if (!id || typeof id !== 'string') return sendJson(res, 400, { error: 'Missing or invalid "id" field' });
+  if (!check || typeof check !== 'string') return sendJson(res, 400, { error: 'Missing or invalid "check" field' });
+  if (!apply?.hint_md) return sendJson(res, 400, { error: 'Missing "apply.hint_md" field' });
+
+  const entry = {
+    id,
+    check,
+    priority: priority ?? 55,
+    origin: 'promoted',
+    promoted_at: new Date().toISOString(),
+    probation: true,
+    when: when ?? {},
+    apply,
+  };
+
+  try {
+    const supervisorDir = join(projectDir, '.pos-supervisor');
+    if (!existsSync(supervisorDir)) mkdirSync(supervisorDir, { recursive: true });
+    addPromotedRule(projectDir, entry);
+    reloadRules(projectDir);
+    sendJson(res, 201, { ok: true, rule: entry });
+  } catch (e) {
+    const status = e.message.includes('already exists') ? 409 : 500;
+    sendJson(res, status, { error: e.message });
+  }
+}
+
+function handleDeletePromotedRule(projectDir, url, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  const ruleId = url.searchParams.get('id');
+  if (!ruleId) return sendJson(res, 400, { error: 'Missing "id" query parameter' });
+
+  try {
+    removePromotedRule(projectDir, ruleId);
+    reloadRules(projectDir);
+    sendJson(res, 200, { ok: true, removed: ruleId });
+  } catch (e) {
+    const status = e.message.includes('not found') ? 404 : 500;
+    sendJson(res, status, { error: e.message });
+  }
+}
+
+// ── Analytics query handlers (Phase K2-K5) ────────────────────────────────
+
+function handleDiagnosticJourney(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  let templateFp = url.searchParams.get('template_fp');
+  const check = url.searchParams.get('check');
+  if (!templateFp && check) {
+    const row = analyticsStore.queryOne(
+      `SELECT template_fp, COUNT(*) as cnt FROM diagnostics WHERE check_name = ? AND template_fp IS NOT NULL GROUP BY template_fp ORDER BY cnt DESC LIMIT 1`,
+      [check],
+    );
+    templateFp = row?.template_fp;
+  }
+  if (!templateFp) return sendJson(res, 400, { error: 'template_fp or check parameter required' });
+  try {
+    const journey = diagnosticJourney(analyticsStore, templateFp);
+    sendJson(res, 200, journey);
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleConfidenceCalibration(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const buckets = parseInt(url.searchParams.get('buckets') || '10', 10);
+    const calibration = confidenceCalibration(analyticsStore, { buckets: Math.min(Math.max(buckets, 2), 20) });
+    sendJson(res, 200, { calibration });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleFixAdoptionFunnel(analyticsStore, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const funnel = fixAdoptionFunnel(analyticsStore);
+    sendJson(res, 200, funnel);
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleKnowledgeGaps(analyticsStore, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const gaps = knowledgeGaps(analyticsStore);
+    sendJson(res, 200, { gaps });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleRuleHeatmap(analyticsStore, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const cells = ruleScoresByCategory(analyticsStore);
+    sendJson(res, 200, { cells });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+const CHECK_EXAMPLES = {
+  UnknownFilter:   'Unknown filter "to_json"',
+  UndefinedObject: "Variable 'product' is undefined",
+  UnusedAssign:    "The variable 'x' is assigned but not used",
+  MissingPartial:  "'forms/login' does not exist",
+  TranslationKeyExists: "Translation key 'a.b.c' not found. Did you mean 'a.b.cd'?",
+  UnknownProperty: "Unknown property `name` on `current_user`",
+  MissingRenderPartialArguments: "Missing required argument 'email' in render tag for partial 'sessions/form'",
+  MetadataParamsCheck: 'Required parameter clear must be passed to function call',
+  GraphQLCheck:    'Variable "$id" is never used in operation "x"',
+  DeprecatedTag:   "Tag 'include' is deprecated, use 'render'",
+};
+
+function handleRuleChecks(res) {
+  try {
+    loadAllRules();
+    const checks = getAllChecksWithRules();
+    const result = checks.map(check => {
+      const rules = getRulesForCheck(check);
+      return {
+        check,
+        rule_count: rules.length,
+        rule_ids: rules.map(r => r.id),
+        has_extractor: KNOWN_EXTRACTOR_CHECKS.includes(check),
+        example_message: CHECK_EXAMPLES[check] || null,
+      };
+    }).sort((a, b) => a.check.localeCompare(b.check));
+    sendJson(res, 200, { checks: result });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+async function handleRuleTest(body, res, analyticsStore, projDir) {
+  try {
+    const { check, message, file } = body;
+    if (!check || !message) {
+      return sendJson(res, 400, { error: 'Missing required fields: check, message' });
+    }
+
+    loadAllRules();
+    const params = extractParams(check, message);
+    const tmplFp = templateOf(check, message);
+    const diag = { check, params, message, file: file || 'app/views/pages/test.liquid', line: 1, template_fp: tmplFp };
+
+    let graph = null;
+    let graphAvailable = false;
+    try {
+      if (projDir) {
+        const projectMap = await getProjectMap(projDir);
+        if (projectMap) {
+          graph = buildFactGraph(projectMap);
+          graphAvailable = true;
+        }
+      }
+    } catch { /* project map unavailable — run without graph */ }
+
+    const facts = { graph, filtersIndex: null, objectsIndex: null, tagsIndex: null, schemaIndex: null, analyticsStore };
+
+    const matched = runRules(diag, facts);
+    const allMatches = runRules(diag, facts, { multiMatch: true });
+    const disabledRules = [...getDisabledRules()];
+
+    const candidates = getRulesForCheck(check);
+    const ruleEval = candidates.map(rule => {
+      if (disabledRules.includes(rule.id)) return { rule_id: rule.id, status: 'disabled' };
+      try {
+        const whenResult = rule.when(diag, facts);
+        if (!whenResult) return { rule_id: rule.id, status: 'guard_failed' };
+        const applyResult = rule.apply(diag, facts);
+        if (!applyResult) return { rule_id: rule.id, status: 'apply_returned_null' };
+        return { rule_id: rule.id, status: 'matched' };
+      } catch (e) {
+        return { rule_id: rule.id, status: 'error', error: e.message };
+      }
+    });
+
+    const CHECKS_NEEDING_INDEXES = ['UnknownFilter', 'UnknownProperty'];
+    const notes = [];
+    if (!graphAvailable) notes.push('Project map unavailable — rules requiring graph data cannot fire.');
+    if (!facts.filtersIndex && CHECKS_NEEDING_INDEXES.includes(check)) notes.push('LSP indexes (filters, objects, tags) unavailable — some rules skipped.');
+
+    sendJson(res, 200, {
+      input: { check, message, file: diag.file },
+      extracted_params: params,
+      template_fp: tmplFp,
+      graph_available: graphAvailable,
+      matched_rule: matched ? {
+        rule_id: matched.rule_id,
+        hint_md: matched.hint_md,
+        confidence: matched.confidence,
+        fixes: matched.fixes || [],
+        see_also: matched.see_also || null,
+      } : null,
+      all_matches: (allMatches || []).map(r => ({
+        rule_id: r.rule_id,
+        hint_md: r.hint_md,
+        confidence: r.confidence,
+      })),
+      rule_evaluation: ruleEval,
+      disabled_rules: disabledRules,
+      note: notes.length > 0 ? notes.join(' ') : null,
+    });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Health score handlers (Phase K1) ──────────────────────────────────────
+
+function handlePostHealthScore(analyticsStore, body, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  const { score, mode, dimensions } = body;
+  if (typeof score !== 'number' || score < 0 || score > 100) {
+    return sendJson(res, 400, { error: 'Invalid score — must be a number 0-100' });
+  }
+  if (!mode || typeof mode !== 'string') {
+    return sendJson(res, 400, { error: 'Missing or invalid "mode" field' });
+  }
+  try {
+    analyticsStore.insertHealthScore({ score, mode, dimensions: dimensions ?? {} });
+    sendJson(res, 201, { ok: true });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleGetHealthScores(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '30', 10), 200);
+    const mode = url.searchParams.get('mode') || undefined;
+    const scores = analyticsStore.getHealthScores({ limit, mode });
+    sendJson(res, 200, { scores });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function sendJson(res, status, data) {
@@ -512,11 +836,12 @@ function readLogTail(logPath, limit) {
 
 // ── Analytics handlers (Phase B) ───────────────────────────────────────────
 
-function handleAnalyticsRebuild(analyticsStore, sessionsDir, res) {
+function handleAnalyticsRebuild(analyticsStore, sessionsDir, onAnalyticsRebuild, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   if (!sessionsDir) return sendJson(res, 400, { error: 'sessions dir not configured' });
   try {
     const result = analyticsStore.rebuild(sessionsDir);
+    try { onAnalyticsRebuild?.(); } catch {}
     sendJson(res, 200, { ok: true, ...result });
   } catch (e) {
     sendJson(res, 500, { error: e.message });

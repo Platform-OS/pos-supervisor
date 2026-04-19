@@ -27,6 +27,7 @@
 import { scoreRule } from '../case-base.js';
 
 const _registry = new Map();
+const _disabledRules = new Set();
 
 export function registerRule(rule) {
   if (!rule?.id || !rule?.check || !rule?.when || !rule?.apply) {
@@ -55,6 +56,7 @@ export function runRules(diag, facts, { multiMatch = false } = {}) {
   if (multiMatch) {
     const results = [];
     for (const rule of rules) {
+      if (_disabledRules.has(rule.id)) continue;
       try {
         if (rule.when(diag, facts)) {
           const result = rule.apply(diag, facts);
@@ -69,6 +71,7 @@ export function runRules(diag, facts, { multiMatch = false } = {}) {
   }
 
   for (const rule of rules) {
+    if (_disabledRules.has(rule.id)) continue;
     try {
       if (rule.when(diag, facts)) {
         const result = rule.apply(diag, facts);
@@ -122,4 +125,15 @@ export function ruleCount() {
   let n = 0;
   for (const rules of _registry.values()) n += rules.length;
   return n;
+}
+
+export function updateDisabledRules(ruleIds) {
+  _disabledRules.clear();
+  if (ruleIds) {
+    for (const id of ruleIds) _disabledRules.add(id);
+  }
+}
+
+export function getDisabledRules() {
+  return new Set(_disabledRules);
 }

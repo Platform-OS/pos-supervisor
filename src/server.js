@@ -1,5 +1,5 @@
 import { realpath } from 'node:fs/promises';
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, watch } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -13,6 +13,9 @@ import { toUri } from './core/utils.js';
 import { startFsWatcher } from './core/fs-watcher.js';
 import { invalidateProjectMap } from './tools/project-map.js';
 import { createToolRegistry } from './tools.js';
+import { initPromotedRules, reloadRules } from './core/rules/index.js';
+import { updateDisabledRules } from './core/rules/engine.js';
+import { ruleScores } from './core/case-base.js';
 import { startHttp } from './http-server.js';
 import { createLogger } from './core/logger.js';
 import { LSP_READY_TIMEOUT_MS } from './core/constants.js';
@@ -71,6 +74,54 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   } catch (e) {
     log(`analytics-store: failed to open (${e.message}); analytics will not be available`);
   }
+
+  // ── Promoted rules (Phase J — declarative rules from analytics) ──────────────
+  try {
+    initPromotedRules(projectDir);
+    log('promoted-rules: loaded');
+  } catch (e) {
+    log(`promoted-rules: failed to load (${e.message})`);
+  }
+
+  let promotedRulesWatcher = null;
+  const promotedRulesPath = join(projectDir, '.pos-supervisor', 'promoted-rules.json');
+  const supervisorDir = join(projectDir, '.pos-supervisor');
+  if (existsSync(supervisorDir)) {
+    try {
+      let debounceTimer = null;
+      promotedRulesWatcher = watch(supervisorDir, { recursive: false }, (eventType, filename) => {
+        if (filename !== 'promoted-rules.json') return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          try {
+            reloadRules(projectDir);
+            log('promoted-rules: reloaded after file change');
+          } catch (e) {
+            log(`promoted-rules: reload failed (${e.message})`);
+          }
+        }, 200);
+        if (typeof debounceTimer.unref === 'function') debounceTimer.unref();
+      });
+      if (typeof promotedRulesWatcher.unref === 'function') promotedRulesWatcher.unref();
+    } catch (e) {
+      log(`promoted-rules watcher: failed to start (${e.message})`);
+    }
+  }
+
+  // ── Disabled rule enforcement (Phase J4) ─────────────────────────────────────
+  function syncDisabledRules() {
+    if (!analyticsStore) return;
+    try {
+      const scores = ruleScores(analyticsStore, { minEmitted: 5 });
+      const disabled = scores.filter(s => s.disabled).map(s => s.rule_id);
+      updateDisabledRules(disabled);
+      if (disabled.length > 0) log(`disabled-rules: ${disabled.length} rule(s) disabled by analytics`);
+    } catch (e) {
+      log(`disabled-rules: sync failed (${e.message})`);
+    }
+  }
+  syncDisabledRules();
 
   // ── In-memory session stats (not written to JSONL to keep log entries small) ──
   const sessionStats = {
@@ -616,7 +667,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
       };
     }
     const dataRoot = join(__dirname, 'data');
-    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore });
+    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, onAnalyticsRebuild: syncDisabledRules });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────
@@ -625,6 +676,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     log(`Shutting down (${reason})...`);
     try { saveSessionSummary(); } catch {}
     try { fsWatcher?.close(); } catch {}
+    try { promotedRulesWatcher?.close(); } catch {}
     try { analyticsStore?.close(); } catch {}
     try { sessionBus.close(); } catch {} // runs final replay-vs-projection invariant + closes NDJSON
     lsp.stop();

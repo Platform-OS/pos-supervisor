@@ -291,3 +291,288 @@ export function recommendations(store, threshold = 0.3) {
 
   return recs;
 }
+
+/**
+ * K2: Diagnostic journey — the full lifecycle of a diagnostic template
+ * across sessions. Shows when it first appeared, which rules fired,
+ * what outcomes occurred, and whether it was eventually resolved.
+ *
+ * @param {object} store
+ * @param {string} templateFp
+ * @returns {{ template_fp, check, first_seen, last_seen, session_count, timeline }}
+ */
+export function diagnosticJourney(store, templateFp) {
+  const meta = store.queryOne(`
+    SELECT check_name,
+           MIN(ts) as first_seen,
+           MAX(ts) as last_seen,
+           COUNT(DISTINCT session_id) as session_count
+    FROM diagnostics
+    WHERE template_fp = ? AND suppressed = 0
+  `, [templateFp]);
+
+  if (!meta || !meta.check_name) {
+    return { template_fp: templateFp, check: null, first_seen: null, last_seen: null, session_count: 0, timeline: [] };
+  }
+
+  const timelineRows = store.query(`
+    SELECT d.session_id,
+           d.ts,
+           d.hint_rule_id,
+           d.fp,
+           o.outcome,
+           o.fix_applied
+    FROM diagnostics d
+    LEFT JOIN outcomes o ON o.fp = d.fp
+    WHERE d.template_fp = ? AND d.suppressed = 0
+    ORDER BY d.ts ASC
+  `, [templateFp]);
+
+  const bySession = new Map();
+  for (const row of timelineRows) {
+    if (!bySession.has(row.session_id)) {
+      bySession.set(row.session_id, {
+        session_id: row.session_id,
+        ts: row.ts,
+        occurrences: 0,
+        rule_id: null,
+        outcomes: [],
+      });
+    }
+    const entry = bySession.get(row.session_id);
+    entry.occurrences++;
+    if (row.hint_rule_id && row.hint_rule_id !== 'unknown') entry.rule_id = row.hint_rule_id;
+    if (row.outcome) entry.outcomes.push({ outcome: row.outcome, fix_applied: row.fix_applied ?? null });
+  }
+
+  const timeline = [...bySession.values()].map(s => {
+    const resolved = s.outcomes.filter(o => o.outcome === 'resolved').length;
+    const regressed = s.outcomes.filter(o => o.outcome === 'regressed').length;
+    const dominant = resolved > 0 ? 'resolved'
+      : regressed > 0 ? 'regressed'
+      : s.outcomes.length > 0 ? 'unchanged'
+      : null;
+
+    return {
+      session_id: s.session_id,
+      ts: s.ts,
+      occurrences: s.occurrences,
+      rule_id: s.rule_id,
+      dominant_outcome: dominant,
+      fix_applied: s.outcomes.find(o => o.fix_applied)?.fix_applied ?? null,
+    };
+  });
+
+  return {
+    template_fp: templateFp,
+    check: meta.check_name,
+    first_seen: meta.first_seen,
+    last_seen: meta.last_seen,
+    session_count: meta.session_count,
+    timeline,
+  };
+}
+
+/**
+ * K3: Confidence calibration — compare predicted confidence to actual
+ * resolution rates. Buckets confidence values and computes actual
+ * outcomes for each bucket.
+ *
+ * @param {object} store
+ * @param {object} [opts]
+ * @param {number} [opts.buckets=10]
+ * @returns {Array<{ bucket, predicted, actual_resolution, sample_size }>}
+ */
+export function confidenceCalibration(store, { buckets = 10 } = {}) {
+  const rows = store.query(`
+    SELECT d.confidence, o.outcome
+    FROM diagnostics d
+    JOIN outcomes o ON o.fp = d.fp
+    WHERE d.confidence IS NOT NULL AND d.suppressed = 0
+  `);
+
+  if (rows.length === 0) return [];
+
+  const bucketWidth = 1.0 / buckets;
+  const bucketData = Array.from({ length: buckets }, (_, i) => ({
+    lower: i * bucketWidth,
+    upper: (i + 1) * bucketWidth,
+    resolved: 0,
+    total: 0,
+  }));
+
+  for (const row of rows) {
+    const idx = Math.min(Math.floor(row.confidence / bucketWidth), buckets - 1);
+    bucketData[idx].total++;
+    if (row.outcome === 'resolved') bucketData[idx].resolved++;
+  }
+
+  return bucketData
+    .filter(b => b.total > 0)
+    .map(b => ({
+      bucket: +((b.lower + b.upper) / 2).toFixed(2),
+      predicted: +((b.lower + b.upper) / 2).toFixed(2),
+      actual_resolution: +(b.resolved / b.total).toFixed(4),
+      sample_size: b.total,
+    }));
+}
+
+/**
+ * K4: Fix adoption funnel — aggregate flow from diagnostic emission
+ * through rule matching, fix proposal, adoption, and resolution.
+ *
+ * @param {object} store
+ * @returns {{ emitted, rule_matched, fix_proposed, fix_adopted_verbatim,
+ *             fix_adopted_partial, fix_ignored, resolved, regressed, unchanged }}
+ */
+export function fixAdoptionFunnel(store) {
+  const emittedRow = store.queryOne(`
+    SELECT COUNT(*) as cnt FROM diagnostics WHERE suppressed = 0
+  `);
+  const emitted = emittedRow?.cnt ?? 0;
+
+  const ruleMatchedRow = store.queryOne(`
+    SELECT COUNT(*) as cnt FROM diagnostics
+    WHERE hint_rule_id IS NOT NULL AND hint_rule_id != 'unknown' AND suppressed = 0
+  `);
+  const rule_matched = ruleMatchedRow?.cnt ?? 0;
+
+  const fixProposedRow = store.queryOne(`
+    SELECT COUNT(DISTINCT pf.fp) as cnt
+    FROM proposed_fixes pf
+    JOIN diagnostics d ON pf.fp = d.fp
+    WHERE d.suppressed = 0
+  `);
+  const fix_proposed = fixProposedRow?.cnt ?? 0;
+
+  const fixAdoptionRows = store.query(`
+    SELECT o.fix_applied, COUNT(*) as cnt
+    FROM outcomes o
+    JOIN diagnostics d ON o.fp = d.fp
+    WHERE d.suppressed = 0 AND o.fix_applied IS NOT NULL
+    GROUP BY o.fix_applied
+  `);
+  let fix_adopted_verbatim = 0, fix_adopted_partial = 0, fix_ignored = 0;
+  for (const row of fixAdoptionRows) {
+    if (row.fix_applied === 'verbatim') fix_adopted_verbatim += row.cnt;
+    else if (row.fix_applied === 'partial') fix_adopted_partial += row.cnt;
+    else fix_ignored += row.cnt;
+  }
+
+  const outcomeRows = store.query(`
+    SELECT o.outcome, COUNT(*) as cnt
+    FROM outcomes o
+    JOIN diagnostics d ON o.fp = d.fp
+    WHERE d.suppressed = 0
+    GROUP BY o.outcome
+  `);
+  let resolved = 0, regressed = 0, unchanged = 0;
+  for (const row of outcomeRows) {
+    if (row.outcome === 'resolved') resolved += row.cnt;
+    else if (row.outcome === 'regressed') regressed += row.cnt;
+    else if (row.outcome === 'unchanged') unchanged += row.cnt;
+  }
+
+  return {
+    emitted,
+    rule_matched,
+    fix_proposed,
+    fix_adopted_verbatim,
+    fix_adopted_partial,
+    fix_ignored,
+    resolved,
+    regressed,
+    unchanged,
+  };
+}
+
+/**
+ * L5: Rule effectiveness broken down by file category (pages, partials,
+ * commands, queries, graphql). Used by the heatmap visualization.
+ *
+ * @param {object} store
+ * @returns {Array<{ rule_id, check, category, outcomes, resolved, regressed, effectiveness }>}
+ */
+export function ruleScoresByCategory(store) {
+  const rows = store.query(`
+    SELECT d.hint_rule_id as rule_id,
+           d.check_name,
+           d.file,
+           o.outcome
+    FROM diagnostics d
+    JOIN outcomes o ON o.fp = d.fp
+    WHERE d.hint_rule_id IS NOT NULL AND d.hint_rule_id != 'unknown' AND d.suppressed = 0
+  `);
+
+  const buckets = new Map();
+  for (const row of rows) {
+    const cat = classifyFilePath(row.file);
+    const key = row.rule_id + '::' + cat;
+    if (!buckets.has(key)) {
+      buckets.set(key, { rule_id: row.rule_id, check: row.check_name, category: cat, outcomes: 0, resolved: 0, regressed: 0 });
+    }
+    const b = buckets.get(key);
+    b.outcomes++;
+    if (row.outcome === 'resolved') b.resolved++;
+    else if (row.outcome === 'regressed') b.regressed++;
+  }
+
+  return [...buckets.values()].map(b => ({
+    ...b,
+    effectiveness: b.outcomes > 0
+      ? +((b.resolved / b.outcomes) - (b.regressed / b.outcomes)).toFixed(4)
+      : 0,
+  }));
+}
+
+function classifyFilePath(file) {
+  if (!file) return 'other';
+  if (file.includes('/pages/') || file.includes('/layouts/')) return 'pages';
+  if (file.includes('/partials/') || file.includes('/lib/')) return 'partials';
+  if (file.includes('/commands/') || file.includes('/mutations/')) return 'commands';
+  if (file.includes('/queries/')) return 'queries';
+  if (file.endsWith('.graphql') || file.includes('/graphql/')) return 'graphql';
+  if (file.includes('/schema/') || file.endsWith('.yml') || file.endsWith('.yaml')) return 'schema';
+  return 'other';
+}
+
+/**
+ * K5: Knowledge gaps — identify checks where rule coverage is low
+ * (diagnostics with no matching rule). Helps prioritize rule writing.
+ *
+ * @param {object} store
+ * @returns {Array<{ check, unmatched_count, total_emitted, coverage_rate, avg_resolution_rate }>}
+ */
+export function knowledgeGaps(store) {
+  const checkRows = store.query(`
+    SELECT check_name,
+           COUNT(*) as total_emitted,
+           SUM(CASE WHEN hint_rule_id IS NULL OR hint_rule_id = 'unknown' THEN 1 ELSE 0 END) as unmatched
+    FROM diagnostics
+    WHERE suppressed = 0
+    GROUP BY check_name
+    HAVING COUNT(*) >= 3
+    ORDER BY total_emitted DESC
+  `);
+
+  return checkRows.map(row => {
+    const resRow = store.queryOne(`
+      SELECT COUNT(*) as total,
+             SUM(CASE WHEN o.outcome = 'resolved' THEN 1 ELSE 0 END) as resolved
+      FROM outcomes o
+      JOIN diagnostics d ON o.fp = d.fp
+      WHERE d.check_name = ? AND d.suppressed = 0
+    `, [row.check_name]);
+
+    const totalOutcomes = resRow?.total ?? 0;
+    const resolvedCount = resRow?.resolved ?? 0;
+
+    return {
+      check: row.check_name,
+      unmatched_count: row.unmatched,
+      total_emitted: row.total_emitted,
+      coverage_rate: row.total_emitted > 0 ? +((row.total_emitted - row.unmatched) / row.total_emitted).toFixed(4) : 0,
+      avg_resolution_rate: totalOutcomes > 0 ? +(resolvedCount / totalOutcomes).toFixed(4) : 0,
+    };
+  });
+}
