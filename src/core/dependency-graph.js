@@ -305,6 +305,10 @@ export function detectOrphanedFiles(graph, projectMap) {
     // GraphQL files: flagged elsewhere by the integrity check for orphaned ops.
     if (path.endsWith('.graphql')) continue;
 
+    // Translation files: structural errors are surfaced by translation-validator;
+    // they are never rendered by liquid files so they have no referenced_by edges.
+    if (path.startsWith('app/translations/')) continue;
+
     // Anything outside app/ is assumed external (module fallback path) and skipped.
     if (!path.startsWith('app/')) continue;
 

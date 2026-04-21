@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createCheckRunner } from '../core/check-runner.js';
 import { validateSchema } from '../core/schema-validator.js';
+import { validateTranslationYaml } from '../core/translation-validator.js';
 import { toUri, sanitizePath } from '../core/utils.js';
 import { getProjectMap } from './project-map.js';
 import { ToolError } from '../core/tool-error.js';
@@ -44,8 +45,11 @@ export const analyzeProjectTool = {
 
       // If no files specified, use the fact graph's indexed file list instead of
       // re-walking app/ (eliminates the parallel-walk class of bugs).
+      // Also include translation files explicitly so they're part of the primary analysis.
       if (!files || !Array.isArray(files) || files.length === 0) {
-        files = factGraph.allCheckableFiles();
+        const checkableFiles = factGraph.allCheckableFiles();
+        const translationFiles = getTranslationFilePaths(projectMap);
+        files = [...checkableFiles, ...translationFiles];
         if (files.length === 0) {
           throw new ToolError('No .liquid or .graphql files found in app/', { status: 404 });
         }
@@ -164,6 +168,30 @@ export const analyzeProjectTool = {
         }
       } catch { /* schema directory not found — skip */ }
 
+      // Translation validation — catch structural invariant violations (e.g. missing
+      // top-level locale key, stray non-locale top-level keys) that pos-cli check
+      // does not report as errors on the .yml file itself. Without this step, a
+      // broken translation file (e.g. `enff:` instead of `en:`) has 0 pos-cli errors
+      // and never enters fix_order, even though it is the root cause of
+      // TranslationKeyExists errors on every liquid file that uses translation keys.
+      for (const tranPath of getTranslationFilePaths(projectMap)) {
+        try {
+          const content = await readFile(join(ctx.directory, tranPath), 'utf8');
+          const transResult = validateTranslationYaml(content, tranPath);
+          const errorCount = transResult.errors.length;
+          const warningCount = transResult.warnings.length;
+          const hasRelevant = errorCount > 0 || (minRank <= 2 && warningCount > 0);
+          if (!hasRelevant) continue;
+          const existing = fileResults.find(f => f.path === tranPath);
+          if (existing) {
+            existing.errors += errorCount;
+            existing.warnings += warningCount;
+          } else {
+            fileResults.push({ path: tranPath, errors: errorCount, warnings: warningCount });
+          }
+        } catch { /* translation file read/parse failure — skip */ }
+      }
+
       // Build dependency graph.
       //
       // The LSP's appGraph/* methods return empty arrays for files it has not
@@ -178,6 +206,7 @@ export const analyzeProjectTool = {
       const lspOverlay = {};
       if (ctx.lsp?.initialized) {
         for (const filePath of files) {
+          if (filePath.endsWith('.yml') || filePath.endsWith('.yaml')) continue;
           const absPath = absPaths[filePath];
           const uri = toUri(absPath);
           try {
@@ -215,18 +244,44 @@ export const analyzeProjectTool = {
         integrity = integrity.filter(i => (SEV_RANK[i.severity] ?? 1) >= minRank);
       }
 
+      // Inject translation dependency edges into dependencyGraph so buildFixOrder
+      // can place the translation file before the liquid files it breaks.
+      // filesAffectedByTranslationFile relies on translation_keys in projectMap
+      // which the scanner doesn't populate — using allResults.errors directly
+      // gives us the ground truth: every file with a TranslationKeyExists error
+      // implicitly depends on the broken translation file.
+      const tranPrefix = ctx.directory.endsWith('/') ? ctx.directory : ctx.directory + '/';
+      for (const tranPath of getTranslationFilePaths(projectMap)) {
+        if (!fileResults.some(f => f.path === tranPath && f.errors > 0)) continue;
+        for (const d of allResults.errors) {
+          if (d.check !== 'TranslationKeyExists') continue;
+          const rel = d._filePath?.startsWith(tranPrefix)
+            ? d._filePath.slice(tranPrefix.length)
+            : d._filePath;
+          if (!rel || rel === tranPath) continue;
+          if (!dependencyGraph[rel]) dependencyGraph[rel] = { depends_on: [], referenced_by: [] };
+          if (!dependencyGraph[rel].depends_on.includes(tranPath)) {
+            dependencyGraph[rel].depends_on.push(tranPath);
+          }
+          if (!dependencyGraph[tranPath]) dependencyGraph[tranPath] = { depends_on: [], referenced_by: [] };
+          if (!dependencyGraph[tranPath].referenced_by.includes(rel)) {
+            dependencyGraph[tranPath].referenced_by.push(rel);
+          }
+        }
+      }
+
       const lintErrors = fileResults.reduce((s, f) => s + f.errors, 0);
       const lintWarnings = fileResults.reduce((s, f) => s + f.warnings, 0);
       const integrityErrors = integrity.filter(i => i.severity === 'error').length;
       const integrityWarnings = integrity.filter(i => i.severity === 'warning').length;
 
-      const fix_order = buildFixOrder(fileResults, dependencyGraph, ctx.directory);
+      const fix_order = buildFixOrder(fileResults, dependencyGraph, ctx.directory, projectMap);
 
       const totalErrors = lintErrors + integrityErrors;
       const totalWarnings = lintWarnings + integrityWarnings;
 
       // ── blocking_files: files with errors that must be fixed ────────────
-      const blockingFiles = computeBlockingFiles(fileResults, integrity, allResults);
+      const blockingFiles = computeBlockingFiles(fileResults, integrity, allResults, ctx.directory, projectMap);
 
       // ── diff_from_last_run: compare against previous analysis ──────────
       const prefix = ctx.directory.endsWith('/') ? ctx.directory : ctx.directory + '/';
@@ -279,12 +334,16 @@ export const analyzeProjectTool = {
  * If A renders/calls B and both have errors, B should be fixed first —
  * fixing B may eliminate cascade errors in A.
  *
+ * Translation files are handled specially: they have implicit dependents
+ * (all files that use translation keys). These are computed at analyze time.
+ *
  * @param {{ path: string, errors: number, warnings: number }[]} fileResults
  * @param {Record<string, { depends_on: string[] }>} dependencyGraph
  * @param {string} projectDir - absolute project root
+ * @param {object} projectMap - project indexing result (for translation file handling)
  * @returns {{ path: string, errors: number, warnings: number, reason: string, dependents_with_errors: number }[]}
  */
-export function buildFixOrder(fileResults, dependencyGraph, projectDir) {
+export function buildFixOrder(fileResults, dependencyGraph, projectDir, projectMap) {
   if (fileResults.length === 0) return [];
 
   const errorPaths = new Set(fileResults.map(f => f.path));
@@ -312,6 +371,20 @@ export function buildFixOrder(fileResults, dependencyGraph, projectDir) {
       if (errorPaths.has(rel) && rel !== f.path) {
         deps[f.path].add(rel);
         dependents[rel].add(f.path);
+      }
+    }
+  }
+
+  // Handle translation file implicit dependents: files that use translation keys
+  // depend on translation files, so if a translation file has errors, all its
+  // dependents should be fixed after it.
+  for (const tranFile of fileResults.filter(f => f.path.startsWith('app/translations/'))) {
+    const affectedFiles = filesAffectedByTranslationFile(tranFile.path, projectMap);
+    for (const affectedPath of affectedFiles) {
+      if (errorPaths.has(affectedPath)) {
+        // affectedPath depends on tranFile
+        deps[affectedPath].add(tranFile.path);
+        dependents[tranFile.path].add(affectedPath);
       }
     }
   }
@@ -496,8 +569,10 @@ function matchesFile(diagnostic, absPath, relPath) {
  * @param {Array} fileResults - per-file { path, errors, warnings }
  * @param {Array} integrity - integrity issues with { severity, source, type }
  * @param {{ errors: Array }} [allResults] - full diagnostic results for check name extraction
+ * @param {string} [projectDir] - absolute project root, needed for translation file path normalisation
+ * @param {object} [projectMap] - project indexing result, needed to discover translation files
  */
-export function computeBlockingFiles(fileResults, integrity, allResults) {
+export function computeBlockingFiles(fileResults, integrity, allResults, projectDir, projectMap) {
   const blockMap = new Map();
 
   for (const f of fileResults) {
@@ -513,6 +588,28 @@ export function computeBlockingFiles(fileResults, integrity, allResults) {
         if (rel && (rel === key || rel.endsWith('/' + key) || rel.endsWith(key))) {
           if (d.check) entry.checks.add(d.check);
         }
+      }
+    }
+  }
+
+  // Explicitly ensure translation file errors reach blocking_files even when the
+  // caller provided an explicit files list that excluded translation files.
+  // (When files come from the default discovery path, translation files are already
+  // in fileResults via Change 1a — this handles the explicit-files-list case.)
+  if (projectDir && projectMap && allResults?.errors) {
+    const prefix = projectDir.endsWith('/') ? projectDir : projectDir + '/';
+    for (const tranPath of getTranslationFilePaths(projectMap)) {
+      if (blockMap.has(tranPath)) continue;
+      const errors = allResults.errors.filter(d => {
+        if (!d._filePath) return false;
+        const rel = d._filePath.startsWith(prefix)
+          ? d._filePath.slice(prefix.length)
+          : d._filePath;
+        return rel === tranPath;
+      });
+      if (errors.length > 0) {
+        const checks = new Set(errors.map(e => e.check).filter(Boolean));
+        blockMap.set(tranPath, { path: tranPath, lint_errors: errors.length, integrity_errors: 0, checks });
       }
     }
   }
@@ -590,3 +687,47 @@ export function computeDiffFromLastRun(session, currentSnapshot, totalErrors, to
     warning_delta: totalWarnings - (prev.total_warnings ?? 0),
   };
 }
+
+/**
+ * Get the list of translation file paths from the project map.
+ * @param {object} projectMap - project indexing result
+ * @returns {string[]} relative paths like 'app/translations/en.yml'
+ */
+export function getTranslationFilePaths(projectMap) {
+  return Object.keys(projectMap.translations || {}).map(
+    locale => `app/translations/${locale}.yml`
+  );
+}
+
+/**
+ * Find all .liquid files that would be affected if a translation file has errors.
+ * Translation file errors (e.g., missing locale key, mismatched keys across locales)
+ * cause TranslationKeyExists failures on any file that references keys from that locale.
+ *
+ * @param {string} translationFilePath - e.g., 'app/translations/en.yml'
+ * @param {object} projectMap - project indexing result
+ * @returns {Set<string>} relative paths of files that depend on this translation file
+ */
+export function filesAffectedByTranslationFile(translationFilePath, projectMap) {
+  const affected = new Set();
+  const locale = translationFilePath.match(/\/(\w+)\.yml$/)?.[1];
+  if (!locale) return affected;
+
+  // Collect all files that use translation keys — these depend on the translation file
+  const allFiles = [
+    ...Object.values(projectMap.pages || {}),
+    ...Object.values(projectMap.partials || {}),
+    ...Object.values(projectMap.commands || {}),
+    ...Object.values(projectMap.queries || {}),
+  ];
+
+  for (const file of allFiles) {
+    // If file has any translation key references, it depends on the translation file
+    if (file.translation_keys && file.translation_keys.length > 0) {
+      affected.add(file.path);
+    }
+  }
+
+  return affected;
+}
+

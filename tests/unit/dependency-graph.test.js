@@ -265,4 +265,15 @@ describe('dependency-graph: detectOrphanedFiles', () => {
     };
     expect(detectOrphanedFiles(graph, map)).toEqual([]);
   });
+
+  it('never flags translation files as orphaned — they have no liquid callers by design', () => {
+    const map = { pages: {}, partials: {}, commands: {}, queries: {} };
+    const graph = {
+      'app/translations/en.yml': { depends_on: [], referenced_by: [] },
+      'app/translations/de.yml': { depends_on: [], referenced_by: [] },
+    };
+    const dead = detectOrphanedFiles(graph, map);
+    expect(dead).not.toContain('app/translations/en.yml');
+    expect(dead).not.toContain('app/translations/de.yml');
+  });
 });

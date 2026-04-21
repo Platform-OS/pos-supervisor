@@ -37,6 +37,17 @@ ecommerce:
     expect(errors).toHaveLength(1);
     expect(errors[0].check).toBe('pos-supervisor:TranslationMissingLocaleKey');
   });
+
+  it('errors when top-level key looks like a typo locale (enff, enn, etc.)', () => {
+    const yaml = `enff:
+  app:
+    hello: "Hello"
+`;
+    const { errors } = validate(yaml);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].check).toBe('pos-supervisor:TranslationMissingLocaleKey');
+    expect(errors[0].message).toMatch(/enff/);
+  });
 });
 
 describe('translation-validator: valid locale wrappers', () => {
