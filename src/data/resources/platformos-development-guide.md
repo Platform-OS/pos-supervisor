@@ -65,6 +65,8 @@ tools will reject.
 6. **Feedback loop.** When `validate_code` returns `status !== "ok"` or
    `must_fix_before_write: true`, fix every error and re-validate. MUST NOT
    write the file to disk until validation passes.
+   When debugging existing files, always read them from disk first and submit
+   their actual content to `validat_code` tool.
 7. Creation order matters: schema → graphql → partial → page.
 8. **`analyze_project` — project-wide health check.** MUST be called:
    - **Before reporting task completion.** `validate_code` only sees one

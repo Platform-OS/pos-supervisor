@@ -140,3 +140,43 @@ slug: test_gotchas_array
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Translation YAML structural validation
+// ---------------------------------------------------------------------------
+
+describe('validate_code — translation YAML structural errors', () => {
+  it('reports TranslationMissingLocaleKey when top-level key is not a locale code', async () => {
+    const content = `enff:\n  app:\n    hello: "Hello"\n`;
+    const result = await server.callTool('validate_code', {
+      file_path: 'app/translations/en.yml',
+      content,
+      mode: 'quick',
+    });
+    expect(result.errors.some(e => e.check === 'pos-supervisor:TranslationMissingLocaleKey')).toBe(true);
+    expect(result.status).toBe('error');
+    expect(result.must_fix_before_write).toBe(true);
+  });
+
+  it('reports TranslationMissingLocaleKey when tree has no locale wrapper (app: at root)', async () => {
+    const content = `app:\n  contact_form:\n    title: "Contact"\n`;
+    const result = await server.callTool('validate_code', {
+      file_path: 'app/translations/en.yml',
+      content,
+      mode: 'quick',
+    });
+    expect(result.errors.some(e => e.check === 'pos-supervisor:TranslationMissingLocaleKey')).toBe(true);
+    expect(result.status).toBe('error');
+  });
+
+  it('passes a correctly wrapped translation file', async () => {
+    const content = `en:\n  app:\n    hello: "Hello"\n`;
+    const result = await server.callTool('validate_code', {
+      file_path: 'app/translations/en.yml',
+      content,
+      mode: 'quick',
+    });
+    expect(result.errors.filter(e => e.check === 'pos-supervisor:TranslationMissingLocaleKey')).toHaveLength(0);
+    expect(result.status).not.toBe('error');
+  });
+});

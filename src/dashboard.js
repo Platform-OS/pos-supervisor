@@ -4788,7 +4788,7 @@ function renderJourneyTimeline(el, j) {
     return '<div class="journey-node" title="' + escHtml(tip) + '">'
       + '<div class="journey-occ">' + t.occurrences + '</div>'
       + '<div class="journey-dot ' + cls + '"></div>'
-      + '<div class="journey-label">' + t.session_id.slice(0, 6) + '</div>'
+      + '<div class="journey-label">' + t.session_id.slice(0, 7) + '</div>'
       + '</div>' + edge;
   }).join('');
 
