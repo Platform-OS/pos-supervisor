@@ -13,7 +13,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { registerRules } from './engine.js';
-import { classifyPath } from './queries.js';
+import { classifyPath, classifyFileType, callerCount, isOrphan, hasDocParams } from './queries.js';
 
 const PROMOTED_RULES_FILE = 'promoted-rules.json';
 
@@ -59,13 +59,44 @@ function compileWhen(when) {
     const targetType = when.file_type;
     guards.push((diag) => {
       if (!diag.file) return false;
-      const classified = classifyFileType(diag.file);
-      return classified === targetType;
+      return classifyFileType(diag.file) === targetType;
+    });
+  }
+
+  if (when.has_callers != null) {
+    const want = !!when.has_callers;
+    guards.push((diag, facts) => {
+      if (!facts?.graph || !diag.file) return !want;
+      return (callerCount(facts.graph, diag.file) > 0) === want;
+    });
+  }
+
+  if (when.caller_count_gte != null) {
+    const min = Number(when.caller_count_gte);
+    guards.push((diag, facts) => {
+      if (!facts?.graph || !diag.file) return false;
+      return callerCount(facts.graph, diag.file) >= min;
+    });
+  }
+
+  if (when.has_params != null) {
+    const want = !!when.has_params;
+    guards.push((diag, facts) => {
+      if (!facts?.graph || !diag.file) return !want;
+      return hasDocParams(facts.graph, diag.file) === want;
+    });
+  }
+
+  if (when.is_orphan != null) {
+    const want = !!when.is_orphan;
+    guards.push((diag, facts) => {
+      if (!facts?.graph || !diag.file) return !want;
+      return isOrphan(facts.graph, diag.file) === want;
     });
   }
 
   if (guards.length === 0) return () => true;
-  return (diag) => guards.every(g => g(diag));
+  return (diag, facts) => guards.every(g => g(diag, facts));
 }
 
 function compileApply(id, apply) {
@@ -177,19 +208,6 @@ export function listPromotedRules(projectDir) {
 }
 
 // ── Internal helpers ────────────────────────────────────────────────────────
-
-function classifyFileType(filePath) {
-  if (!filePath) return 'unknown';
-  if (filePath.startsWith('app/views/pages/')) return 'page';
-  if (filePath.startsWith('app/views/partials/')) return 'partial';
-  if (filePath.startsWith('app/views/layouts/')) return 'layout';
-  if (filePath.startsWith('app/lib/commands/')) return 'command';
-  if (filePath.startsWith('app/lib/queries/')) return 'query';
-  if (filePath.startsWith('app/graphql/')) return 'graphql';
-  if (filePath.startsWith('app/schema/')) return 'schema';
-  if (filePath.startsWith('modules/')) return 'module';
-  return 'unknown';
-}
 
 function globToRegex(glob) {
   const escaped = glob

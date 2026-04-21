@@ -23,7 +23,10 @@ export const rules = [
       return {
         rule_id: 'UnknownFilter.tag_confusion',
         hint_md: `\`${name}\` is a tag, not a filter. Use \`{% ${name} ... %}\` instead of \`| ${name}\`.`,
-        fixes: [],
+        fixes: [{
+          type: 'guidance',
+          description: `Replace \`| ${name}\` with block syntax \`{% ${name} ... %}\`. This is a structural change — the filter pipe must become a tag block.`,
+        }],
         confidence: 0.95,
       };
     },
@@ -44,11 +47,29 @@ export const rules = [
         ? `\`${name}\` is a Shopify filter — not in platformOS. Use \`${info.replacement}\` instead.${info.note ? ` ${info.note}` : ''}`
         : `\`${name}\` is a Shopify-specific filter — not in platformOS.${info?.note ? ` ${info.note}` : ''}`;
 
+      const fixes = [];
+      if (info?.replacement) {
+        fixes.push({
+          type: 'text_edit',
+          range: {
+            start: { line: diag.line, character: diag.column },
+            end: { line: diag.line, character: diag.column + name.length },
+          },
+          new_text: info.replacement,
+          description: `Replace Shopify filter \`${name}\` with platformOS equivalent \`${info.replacement}\``,
+        });
+      } else {
+        fixes.push({
+          type: 'guidance',
+          description: `\`${name}\` is Shopify-specific. Check platformOS docs for equivalent functionality.`,
+        });
+      }
+
       return {
         rule_id: 'UnknownFilter.shopify_filter',
         hint_md: suggestion,
         suggestion,
-        fixes: [],
+        fixes,
         confidence: 0.9,
         see_also: {
           tool: 'lookup',
@@ -83,7 +104,15 @@ export const rules = [
         return {
           rule_id: 'UnknownFilter.suggest_nearest',
           hint_md: `Did you mean \`${closest.name}\`? ${closest.syntax || closest.summary}`,
-          fixes: [],
+          fixes: [{
+            type: 'text_edit',
+            range: {
+              start: { line: diag.line, character: diag.column },
+              end: { line: diag.line, character: diag.column + name.length },
+            },
+            new_text: closest.name,
+            description: `Replace \`${name}\` with \`${closest.name}\``,
+          }],
           confidence: 0.6,
         };
       }

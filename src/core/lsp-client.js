@@ -125,17 +125,11 @@ export class PlatformOSLSPClient {
     if (msg.method === 'textDocument/publishDiagnostics') {
       const uri = msg.params.uri;
       const diags = msg.params.diagnostics ?? [];
-      const waiter = this.#diagWaiters.get(uri);
-      if (waiter?.gate && !waiter.gate()) {
-        // Pre-barrier notification — stale, discard entirely
-        return;
-      }
       this.#diagnostics.set(uri, diags);
+      const waiter = this.#diagWaiters.get(uri);
       if (waiter?.onDiag) {
-        // Settle-based waiter: notify but keep alive for updates
         waiter.onDiag(diags);
       } else if (waiter) {
-        // Simple waiter: resolve immediately
         this.#diagWaiters.delete(uri);
         clearTimeout(waiter.timer);
         waiter.resolve(diags);
@@ -257,48 +251,28 @@ export class PlatformOSLSPClient {
    * Uses a barrier request to guarantee freshness. The LSP processes stdin
    * messages sequentially, so after sending:
    *   1. didOpen/didChange (our content)
-   *   2. hover request (barrier)
-   * the LSP must process (1) before responding to (2). Any publishDiagnostics
-   * arriving in stdout BEFORE the hover response is from a prior analysis
-   * (stale); anything AFTER is from our content (fresh).
-   *
-   * The barrier's resolve callback runs synchronously during #drain (same
-   * synchronous loop as message processing), so the gate flag is set before
-   * any subsequent publishDiagnostics in the same buffer chunk is handled.
-   */
-  /**
    * Sync document content and wait for fresh diagnostics.
    *
-   * Uses a two-layer strategy to guarantee freshness:
-   *
-   * **Layer 1 — Barrier (hover fence):** The LSP processes stdin messages
-   * sequentially, so after sending didOpen/didChange + hover, the hover
-   * response proves the LSP received our content. Any publishDiagnostics
-   * arriving BEFORE the hover response is from a prior analysis (stale)
-   * and is discarded by the gate.
-   *
-   * **Layer 2 — Settle window:** The LSP may use async background workers
-   * for analysis. A stale analysis that was already in-flight can publish
-   * diagnostics AFTER the barrier. The settle window (200ms) ensures we
-   * accept the LAST publishDiagnostics within a quiet period, not just
-   * the first. If the LSP sends stale-then-fresh in quick succession,
-   * the settle timer resets on each arrival and we resolve with the
-   * latest (fresh) set.
+   * Sends a hover request as a synchronization fence — the LSP must process
+   * didOpen/didChange before responding to hover, proving it received our
+   * content. A settle window (500ms quiet period) then waits for the LAST
+   * publishDiagnostics batch, accepting all arrivals regardless of barrier
+   * timing. The LSP may emit valid diagnostics before the hover response
+   * when analysis is fast, so no pre-barrier filtering is applied.
    */
   awaitDiagnostics(uri, text, timeoutMs = LSP_DIAGNOSTICS_TIMEOUT_MS) {
     this.syncDoc(uri, text);
     this.#diagnostics.delete(uri);
 
-    // ── Barrier: hover request used as a synchronization fence ──
-    let barrierPassed = false;
+    // ── Barrier: hover request as sync fence (ensures LSP processes our content) ──
     const barrierId = ++this.#reqId;
     const barrierTimer = setTimeout(() => {
-      if (this.#pending.delete(barrierId)) barrierPassed = true;
+      this.#pending.delete(barrierId);
     }, Math.min(timeoutMs, LSP_BARRIER_TIMEOUT_MS));
 
     this.#pending.set(barrierId, {
-      resolve: () => { clearTimeout(barrierTimer); barrierPassed = true; },
-      reject:  () => { clearTimeout(barrierTimer); barrierPassed = true; },
+      resolve: () => { clearTimeout(barrierTimer); },
+      reject:  () => { clearTimeout(barrierTimer); },
     });
     this.#send({
       jsonrpc: '2.0', id: barrierId,
@@ -306,7 +280,7 @@ export class PlatformOSLSPClient {
       params: { textDocument: { uri }, position: { line: 0, character: 0 } },
     });
 
-    // ── Diagnostic waiter: barrier gate + settle window ──
+    // ── Diagnostic waiter: settle window resolves with latest batch ──
     const SETTLE_MS = DIAGNOSTICS_SETTLE_MS;
     return new Promise((resolve) => {
       let latestDiags = null;
@@ -328,15 +302,13 @@ export class PlatformOSLSPClient {
       this.#diagWaiters.set(uri, {
         timer: mainTimer,
         settleTimer: null,
-        gate: () => barrierPassed,
         onDiag: (diags) => {
           latestDiags = diags;
           if (settleTimer) clearTimeout(settleTimer);
           settleTimer = setTimeout(() => finish(latestDiags), SETTLE_MS);
-          // Store ref for crash cleanup
           this.#diagWaiters.get(uri).settleTimer = settleTimer;
         },
-        resolve: (diags) => finish(diags), // crash cleanup path
+        resolve: (diags) => finish(diags),
       });
     });
   }

@@ -69,15 +69,30 @@ export function createToolRegistry(ctx, mcpServer = null) {
 
     // Wrap handler with timing telemetry + session tracking
     const timedHandler = async (args) => {
+      // Dashboard-originated calls (e.g. Live Diagnostic Console) must NOT
+      // pollute agent-activity surfaces: File Validation Map, Activity log,
+      // tool stats, bigram sequences, or NDJSON session log. The sentinel is
+      // stripped before the raw handler runs so tool logic never sees it.
+      const untracked = args?._source === 'dashboard_live';
+      let cleanArgs = args;
+      if (args && typeof args === 'object' && '_source' in args) {
+        const { _source, ...rest } = args;
+        cleanArgs = rest;
+      }
+
+      if (untracked) {
+        return rawHandler(cleanArgs);
+      }
+
       const start = Date.now();
       let success = true;
       try {
-        const result = await rawHandler(args);
+        const result = await rawHandler(cleanArgs);
         const durationMs = Date.now() - start;
-        ctx.emit?.('tool_call', { tool: tool.name, durationMs, success, input: args, output: result });
+        ctx.emit?.('tool_call', { tool: tool.name, durationMs, success, input: cleanArgs, output: result });
 
         // Session tracking (non-blocking, best-effort)
-        try { updateSession(ctx.session, tool.name, args, result); } catch (e) { ctx.log?.(`Session tracking error: ${e.message}`); }
+        try { updateSession(ctx.session, tool.name, cleanArgs, result); } catch (e) { ctx.log?.(`Session tracking error: ${e.message}`); }
 
         // Tool avoidance detection: if there's a validated plan with unvalidated files
         // and the agent is calling tools other than validation, add an advisory note
@@ -98,7 +113,7 @@ export function createToolRegistry(ctx, mcpServer = null) {
       } catch (e) {
         success = false;
         const durationMs = Date.now() - start;
-        ctx.emit?.('tool_call', { tool: tool.name, durationMs, success, input: args, error: e.message });
+        ctx.emit?.('tool_call', { tool: tool.name, durationMs, success, input: cleanArgs, error: e.message });
         throw e;
       }
     };

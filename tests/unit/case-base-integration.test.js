@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { registerRules, clearRules, runRules } from '../../src/core/rules/engine.js';
 import { buildFactGraph } from '../../src/core/project-fact-graph.js';
+import { setEngineMode, resetEngineMode } from '../../src/core/engine-mode.js';
 
 function buildMinimalGraph() {
   return buildFactGraph({
@@ -24,9 +25,12 @@ const testRule = {
 
 describe('Phase H: Case-base scoring in rule engine', () => {
   beforeEach(() => {
+    resetEngineMode();
+    setEngineMode('adaptive');
     clearRules();
     registerRules([testRule]);
   });
+  afterEach(() => { resetEngineMode(); });
 
   it('runs without analytics store (no scoring applied)', () => {
     const graph = buildMinimalGraph();

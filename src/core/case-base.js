@@ -16,8 +16,11 @@
  * view over the existing tables — no additional schema needed.
  */
 
+import { classifyFileType } from './rules/queries.js';
+
 const MIN_CASES = 3;
 const RULE_DISABLE_THRESHOLD = 0.15;
+const GUARD_MIN_SAMPLES = 5;
 
 /**
  * F1: Retrieve cases for a diagnostic template.
@@ -299,13 +302,110 @@ export function suggestedRules(store, existingRuleChecks = new Set(), { minCases
 }
 
 /**
+ * F4: Synthesize guard predicates from historical diagnostic data.
+ *
+ * Analyzes patterns in file paths and diagnostic params to produce a `when`
+ * object compatible with promoted-rules JSON format (see compileWhen()).
+ *
+ * Thresholds:
+ *   param_equals   — ≥90% of values identical
+ *   param_startsWith — ≥80% share a common prefix (len ≥ 2)
+ *   param_contains — ≥80% contain a common substring (len ≥ 3)
+ *   file_type      — ≥80% share the same classified type
+ *
+ * @param {object} store - Analytics store
+ * @param {string} check - Check name
+ * @param {string} templateFp - Template fingerprint
+ * @param {object} [opts]
+ * @param {number} [opts.minSamples=5] - Minimum samples to infer a guard
+ * @returns {object} JSON `when` object for promoted rules
+ */
+export function synthesizeGuardPredicate(store, check, templateFp, { minSamples = GUARD_MIN_SAMPLES } = {}) {
+  const when = {};
+
+  const fileRows = store.query(`
+    SELECT DISTINCT file FROM diagnostics
+    WHERE check_name = ? AND template_fp = ? AND suppressed = 0
+  `, [check, templateFp]);
+
+  if (fileRows.length >= minSamples) {
+    const types = fileRows.map(r => classifyFileType(r.file));
+    const dominant = dominantValue(types);
+    if (dominant && dominant.ratio >= 0.8 && dominant.value !== 'unknown') {
+      when.file_type = dominant.value;
+    }
+  }
+
+  const eventRows = store.query(`
+    SELECT payload FROM events
+    WHERE kind = 'validator_emit'
+    AND json_extract(payload, '$.check') = ?
+    AND json_extract(payload, '$.template_fp') = ?
+  `, [check, templateFp]);
+
+  const paramSamples = [];
+  for (const row of eventRows) {
+    try {
+      const p = JSON.parse(row.payload);
+      if (p.params && typeof p.params === 'object' && Object.keys(p.params).length > 0) {
+        paramSamples.push(p.params);
+      }
+    } catch { /* skip malformed */ }
+  }
+
+  if (paramSamples.length >= minSamples) {
+    const keys = new Set();
+    for (const s of paramSamples) {
+      for (const k of Object.keys(s)) keys.add(k);
+    }
+
+    for (const key of keys) {
+      const values = paramSamples
+        .map(s => s[key])
+        .filter(v => typeof v === 'string' && v.length > 0);
+
+      if (values.length < minSamples) continue;
+
+      const top = dominantValue(values);
+      if (top && top.ratio >= 0.9) {
+        if (!when.param_equals) when.param_equals = {};
+        when.param_equals[key] = top.value;
+        continue;
+      }
+
+      const prefix = findDominantPrefix(values, 2);
+      if (prefix) {
+        if (!when.param_startsWith) when.param_startsWith = {};
+        when.param_startsWith[key] = prefix;
+        continue;
+      }
+
+      const substr = findDominantSubstring(values, 3);
+      if (substr) {
+        if (!when.param_contains) when.param_contains = {};
+        when.param_contains[key] = substr;
+      }
+    }
+  }
+
+  return when;
+}
+
+/**
  * F3: Generate a rule template for a suggested rule.
  * Produces a JS code template that can be saved as a draft for human review.
+ *
+ * @param {object} suggestion - From suggestedRules()
+ * @param {object} [guards={}] - Synthesized when clause from synthesizeGuardPredicate()
  */
-export function generateRuleTemplate(suggestion) {
+export function generateRuleTemplate(suggestion, guards = {}) {
   const { check, template_fp } = suggestion;
   const safeCheck = check.replace(/[^a-zA-Z0-9_]/g, '_');
   const shortFp = template_fp.slice(0, 8);
+
+  const whenBody = Object.keys(guards).length > 0
+    ? renderGuardsAsJs(guards)
+    : '    // TODO: Add guard predicate based on diagnostic params\n    return true;';
 
   return `// Suggested rule — generated from case-base analysis
 // Template fingerprint: ${template_fp}
@@ -319,8 +419,7 @@ export function generateRuleTemplate(suggestion) {
   check: '${check}',
   priority: 50,
   when: (diag) => {
-    // TODO: Add guard predicate based on diagnostic params
-    return true;
+${whenBody}
   },
   apply: (diag) => {
     return {
@@ -386,4 +485,101 @@ export function resolveProbation(store, { minOutcomes = 20 } = {}) {
   }
 
   return resolutions;
+}
+
+// ── Guard synthesis helpers ────────────────────────────────────────────────
+
+function dominantValue(arr) {
+  const freq = new Map();
+  for (const v of arr) freq.set(v, (freq.get(v) || 0) + 1);
+  let best = null;
+  for (const [value, count] of freq) {
+    if (!best || count > best.count) best = { value, count };
+  }
+  return best ? { value: best.value, count: best.count, ratio: best.count / arr.length } : null;
+}
+
+function findDominantPrefix(values, minLen) {
+  if (values.length === 0) return null;
+  const threshold = values.length * 0.8;
+  let best = null;
+  for (const val of values) {
+    for (let len = val.length; len >= minLen; len--) {
+      const prefix = val.slice(0, len);
+      if (best && prefix.length <= best.length) break;
+      const matchCount = values.filter(v => v.startsWith(prefix)).length;
+      if (matchCount >= threshold) {
+        best = prefix;
+        break;
+      }
+    }
+  }
+  return best;
+}
+
+function findDominantSubstring(values, minLen) {
+  if (values.length === 0) return null;
+  const shortest = values.reduce((a, b) => a.length <= b.length ? a : b);
+  let best = null;
+  for (let len = shortest.length; len >= minLen; len--) {
+    for (let start = 0; start <= shortest.length - len; start++) {
+      const candidate = shortest.slice(start, start + len);
+      const matchCount = values.filter(v => v.includes(candidate)).length;
+      if (matchCount / values.length >= 0.8) {
+        if (!best || candidate.length > best.length) best = candidate;
+        return best;
+      }
+    }
+  }
+  return best;
+}
+
+const FILE_TYPE_PATH_HINT = {
+  page: '/pages/',
+  partial: '/partials/',
+  layout: '/layouts/',
+  command: '/commands/',
+  query: '/queries/',
+  graphql: '/graphql/',
+  schema: '/schema/',
+  module: 'modules/',
+};
+
+function renderGuardsAsJs(guards) {
+  const conditions = [];
+
+  if (guards.param_equals) {
+    for (const [k, v] of Object.entries(guards.param_equals)) {
+      conditions.push(`diag.params?.${k} === ${JSON.stringify(v)}`);
+    }
+  }
+
+  if (guards.param_startsWith) {
+    for (const [k, v] of Object.entries(guards.param_startsWith)) {
+      conditions.push(`diag.params?.${k}?.startsWith(${JSON.stringify(v)})`);
+    }
+  }
+
+  if (guards.param_contains) {
+    for (const [k, v] of Object.entries(guards.param_contains)) {
+      conditions.push(`diag.params?.${k}?.includes(${JSON.stringify(v)})`);
+    }
+  }
+
+  if (guards.file_type) {
+    const hint = FILE_TYPE_PATH_HINT[guards.file_type];
+    if (hint) {
+      conditions.push(`diag.file?.includes(${JSON.stringify(hint)})`);
+    }
+  }
+
+  if (conditions.length === 0) {
+    return '    // No guards synthesized — review and narrow this rule\n    return true;';
+  }
+
+  if (conditions.length === 1) {
+    return `    return ${conditions[0]};`;
+  }
+
+  return `    return ${conditions.join(' &&\n           ')};`;
 }

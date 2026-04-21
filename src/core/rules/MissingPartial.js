@@ -24,7 +24,10 @@ export const rules = [
       return {
         rule_id: 'MissingPartial.module_path',
         hint_md: `\`${name}\` is a module path — cannot create files inside installed modules. Use \`module_info\` to verify the correct path.`,
-        fixes: [],
+        fixes: [{
+          type: 'guidance',
+          description: `Cannot create files inside module \`${moduleName}\`. Call \`module_info("${moduleName}", "api")\` to find the correct partial path exported by this module.`,
+        }],
         confidence: 0.9,
         see_also: {
           tool: 'module_info',
@@ -50,7 +53,10 @@ export const rules = [
       return {
         rule_id: 'MissingPartial.file_exists',
         hint_md: `File \`${path}\` exists but the linter still reports it as missing. Check that the file is not empty, has no syntax errors, and the path in the render/function tag matches exactly.`,
-        fixes: [],
+        fixes: [{
+          type: 'guidance',
+          description: `File \`${path}\` exists on disk. Verify: (1) file is not empty, (2) no Liquid syntax errors inside it, (3) the render/function tag path matches exactly (case-sensitive).`,
+        }],
         confidence: 0.7,
       };
     },
@@ -89,10 +95,14 @@ export const rules = [
       const suggestions = nearest.map(n => `\`${n.name}\` (distance: ${n.distance})`).join(', ');
       const tag = type === 'partial' ? 'render' : 'function';
 
+      const bestMatch = nearest[0].name;
       return {
         rule_id: 'MissingPartial.suggest_nearest',
         hint_md: `\`${name}\` not found. Did you mean: ${suggestions}? Fix the name in the \`{% ${tag} %}\` tag.`,
-        fixes: [],
+        fixes: [{
+          type: 'guidance',
+          description: `Replace \`${name}\` with \`${bestMatch}\` in the \`{% ${tag} '${name}' %}\` tag.`,
+        }],
         confidence: 0.6,
       };
     },

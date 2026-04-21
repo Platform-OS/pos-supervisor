@@ -11,7 +11,7 @@ import { buildDashboardHtml } from './dashboard.js';
 import { getProjectMap } from './tools/project-map.js';
 import { buildDependencyGraph } from './core/dependency-graph.js';
 import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams, diagnosticJourney, confidenceCalibration, fixAdoptionFunnel, knowledgeGaps, ruleScoresByCategory, ruleDrilldown } from './core/analytics-queries.js';
-import { ruleScores, suggestedRules, retrieveCasesByCheck, generateRuleTemplate } from './core/case-base.js';
+import { ruleScores, suggestedRules, retrieveCasesByCheck, generateRuleTemplate, synthesizeGuardPredicate } from './core/case-base.js';
 import { addPromotedRule, removePromotedRule, listPromotedRules } from './core/rules/promoted-rules.js';
 import { reloadRules, loadAllRules } from './core/rules/index.js';
 import { runRules, getDisabledRules, getAllChecksWithRules, getRulesForCheck } from './core/rules/engine.js';
@@ -22,7 +22,7 @@ import { buildFactGraph } from './core/project-fact-graph.js';
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
  * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, onAnalyticsRebuild }) {
+export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, onAnalyticsRebuild, switchEngineMode, getEngineMode }) {
   if (!port) return null;
 
   const dashboardHtml = buildDashboardHtml();
@@ -89,6 +89,10 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       return handleGetSuppressions(projectDir, res);
     }
 
+    if (method === 'GET' && url.pathname === '/api/engine/mode') {
+      return sendJson(res, 200, { mode: getEngineMode?.() ?? 'static' });
+    }
+
     if (method === 'GET' && url.pathname === '/api/sessions') {
       return handleGetSessions(sessionsDir, res);
     }
@@ -147,6 +151,10 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
 
       if (url.pathname === '/api/rules/promote') {
         return handlePromoteRule(projectDir, body, res);
+      }
+
+      if (url.pathname === '/api/engine/mode') {
+        return handleSetEngineMode(switchEngineMode, body, log, res);
       }
 
       if (url.pathname === '/api/health-score') {
@@ -550,6 +558,23 @@ async function handleGetDependencyTree(projectDir, getStatus, res) {
     sendJson(res, 200, { nodes, total: Object.keys(nodes).length, generated_at: new Date().toISOString() });
   } catch (err) {
     sendJson(res, 500, { error: err.message });
+  }
+}
+
+// ── Engine mode handler ─────────────────────────────────────────────────────
+
+function handleSetEngineMode(switchEngineMode, body, log, res) {
+  if (!switchEngineMode) return sendJson(res, 503, { error: 'Engine mode switching not available' });
+  const { mode } = body ?? {};
+  if (!mode || (mode !== 'adaptive' && mode !== 'static')) {
+    return sendJson(res, 400, { error: 'Invalid mode. Must be "adaptive" or "static".' });
+  }
+  try {
+    const newMode = switchEngineMode(mode);
+    log?.(`engine-mode: switched to ${newMode} via HTTP`);
+    sendJson(res, 200, { mode: newMode });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
   }
 }
 
@@ -1074,10 +1099,14 @@ function handleRuleDrilldown(analyticsStore, url, res) {
 function handleSuggestedRules(analyticsStore, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
-    const suggestions = suggestedRules(analyticsStore).map(s => ({
-      ...s,
-      template: generateRuleTemplate(s),
-    }));
+    const suggestions = suggestedRules(analyticsStore).map(s => {
+      const guards = synthesizeGuardPredicate(analyticsStore, s.check, s.template_fp);
+      return {
+        ...s,
+        when: guards,
+        template: generateRuleTemplate(s, guards),
+      };
+    });
     sendJson(res, 200, { suggestions });
   } catch (e) {
     sendJson(res, 500, { error: e.message });

@@ -441,3 +441,448 @@ describe('promoted-rules: glob patterns', () => {
     expect(compiled[0].when({ file: 'app/views/pages/blog/index.liquid' })).toBe(false);
   });
 });
+
+// ── Graph-aware guards ──────────────────────────────────────────────────────
+
+function mockGraph(nodes = {}, edges = {}) {
+  return {
+    referencedBy(filePath) {
+      return edges[filePath] ?? [];
+    },
+    hasNode(filePath) {
+      return filePath in nodes;
+    },
+    nodeByPath(filePath) {
+      return nodes[filePath] ?? null;
+    },
+  };
+}
+
+describe('promoted-rules: graph-aware guards', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('has_callers: true matches when file has callers', () => {
+    writeRules([{
+      id: 'test_has_callers_true',
+      check: 'TestCheck',
+      when: { has_callers: true },
+      apply: { hint_md: 'Has callers.', confidence: 0.6 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/card.liquid': { type: 'partial', key: 'card' } },
+      { 'app/views/partials/card.liquid': ['app/views/pages/index.liquid'] },
+    );
+
+    expect(guard({ file: 'app/views/partials/card.liquid' }, { graph })).toBe(true);
+  });
+
+  it('has_callers: true rejects when file has no callers', () => {
+    writeRules([{
+      id: 'test_has_callers_true_no_refs',
+      check: 'TestCheck',
+      when: { has_callers: true },
+      apply: { hint_md: 'Has callers.', confidence: 0.6 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/orphan.liquid': { type: 'partial', key: 'orphan' } },
+      { 'app/views/partials/orphan.liquid': [] },
+    );
+
+    expect(guard({ file: 'app/views/partials/orphan.liquid' }, { graph })).toBe(false);
+  });
+
+  it('has_callers: false matches when file has no callers', () => {
+    writeRules([{
+      id: 'test_has_callers_false',
+      check: 'TestCheck',
+      when: { has_callers: false },
+      apply: { hint_md: 'No callers.', confidence: 0.6 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/orphan.liquid': { type: 'partial', key: 'orphan' } },
+      { 'app/views/partials/orphan.liquid': [] },
+    );
+
+    expect(guard({ file: 'app/views/partials/orphan.liquid' }, { graph })).toBe(true);
+  });
+
+  it('caller_count_gte matches when callers >= threshold', () => {
+    writeRules([{
+      id: 'test_caller_count',
+      check: 'TestCheck',
+      when: { caller_count_gte: 3 },
+      apply: { hint_md: 'Many callers.', confidence: 0.7 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/header.liquid': { type: 'partial', key: 'header' } },
+      { 'app/views/partials/header.liquid': ['page1.liquid', 'page2.liquid', 'page3.liquid'] },
+    );
+
+    expect(guard({ file: 'app/views/partials/header.liquid' }, { graph })).toBe(true);
+  });
+
+  it('caller_count_gte rejects when callers < threshold', () => {
+    writeRules([{
+      id: 'test_caller_count_below',
+      check: 'TestCheck',
+      when: { caller_count_gte: 3 },
+      apply: { hint_md: 'Many callers.', confidence: 0.7 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/header.liquid': { type: 'partial', key: 'header' } },
+      { 'app/views/partials/header.liquid': ['page1.liquid', 'page2.liquid'] },
+    );
+
+    expect(guard({ file: 'app/views/partials/header.liquid' }, { graph })).toBe(false);
+  });
+
+  it('has_params: true matches when file has doc params', () => {
+    writeRules([{
+      id: 'test_has_params_true',
+      check: 'TestCheck',
+      when: { has_params: true },
+      apply: { hint_md: 'Documented partial.', confidence: 0.6 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph({
+      'app/views/partials/card.liquid': { type: 'partial', key: 'card', params: ['title', 'image'] },
+    });
+
+    expect(guard({ file: 'app/views/partials/card.liquid' }, { graph })).toBe(true);
+  });
+
+  it('has_params: false matches when file has no doc params', () => {
+    writeRules([{
+      id: 'test_has_params_false',
+      check: 'TestCheck',
+      when: { has_params: false },
+      apply: { hint_md: 'Undocumented partial.', confidence: 0.6 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph({
+      'app/views/partials/card.liquid': { type: 'partial', key: 'card', params: [] },
+    });
+
+    expect(guard({ file: 'app/views/partials/card.liquid' }, { graph })).toBe(true);
+  });
+
+  it('has_params: true rejects when file has no params', () => {
+    writeRules([{
+      id: 'test_has_params_true_no_params',
+      check: 'TestCheck',
+      when: { has_params: true },
+      apply: { hint_md: 'Documented.', confidence: 0.6 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph({
+      'app/views/partials/card.liquid': { type: 'partial', key: 'card', params: [] },
+    });
+
+    expect(guard({ file: 'app/views/partials/card.liquid' }, { graph })).toBe(false);
+  });
+
+  it('is_orphan: true matches orphan files', () => {
+    writeRules([{
+      id: 'test_is_orphan_true',
+      check: 'TestCheck',
+      when: { is_orphan: true },
+      apply: { hint_md: 'Orphan file.', confidence: 0.5 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/dead.liquid': { type: 'partial', key: 'dead' } },
+      { 'app/views/partials/dead.liquid': [] },
+    );
+
+    expect(guard({ file: 'app/views/partials/dead.liquid' }, { graph })).toBe(true);
+  });
+
+  it('is_orphan: false matches non-orphan files', () => {
+    writeRules([{
+      id: 'test_is_orphan_false',
+      check: 'TestCheck',
+      when: { is_orphan: false },
+      apply: { hint_md: 'Not orphan.', confidence: 0.5 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/used.liquid': { type: 'partial', key: 'used' } },
+      { 'app/views/partials/used.liquid': ['page.liquid'] },
+    );
+
+    expect(guard({ file: 'app/views/partials/used.liquid' }, { graph })).toBe(true);
+  });
+
+  it('is_orphan: true rejects when file has callers', () => {
+    writeRules([{
+      id: 'test_is_orphan_true_has_callers',
+      check: 'TestCheck',
+      when: { is_orphan: true },
+      apply: { hint_md: 'Orphan.', confidence: 0.5 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/used.liquid': { type: 'partial', key: 'used' } },
+      { 'app/views/partials/used.liquid': ['caller.liquid'] },
+    );
+
+    expect(guard({ file: 'app/views/partials/used.liquid' }, { graph })).toBe(false);
+  });
+
+  it('graph guards degrade gracefully when no graph provided', () => {
+    writeRules([{
+      id: 'test_no_graph',
+      check: 'TestCheck',
+      when: { has_callers: true },
+      apply: { hint_md: 'Needs callers.', confidence: 0.5 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+
+    expect(guard({ file: 'app/views/partials/card.liquid' }, {})).toBe(false);
+    expect(guard({ file: 'app/views/partials/card.liquid' }, null)).toBe(false);
+    expect(guard({ file: 'app/views/partials/card.liquid' })).toBe(false);
+  });
+
+  it('graph guards degrade gracefully when no diag.file', () => {
+    writeRules([{
+      id: 'test_no_file',
+      check: 'TestCheck',
+      when: { is_orphan: true },
+      apply: { hint_md: 'Orphan.', confidence: 0.5 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph({ 'app/views/partials/x.liquid': { type: 'partial' } });
+
+    expect(guard({}, { graph })).toBe(false);
+    expect(guard({ file: null }, { graph })).toBe(false);
+    expect(guard({ file: undefined }, { graph })).toBe(false);
+  });
+
+  it('combines graph guards with param guards (AND semantics)', () => {
+    writeRules([{
+      id: 'test_combined_graph_param',
+      check: 'MissingPartial',
+      when: {
+        param_startsWith: { name: 'modules/' },
+        has_callers: true,
+        is_orphan: false,
+      },
+      apply: { hint_md: 'Module partial with callers.', confidence: 0.8 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/mod.liquid': { type: 'partial', key: 'mod' } },
+      { 'app/views/partials/mod.liquid': ['page.liquid'] },
+    );
+
+    expect(guard(
+      { params: { name: 'modules/user/form' }, file: 'app/views/partials/mod.liquid' },
+      { graph },
+    )).toBe(true);
+
+    expect(guard(
+      { params: { name: 'blog/form' }, file: 'app/views/partials/mod.liquid' },
+      { graph },
+    )).toBe(false);
+
+    expect(guard(
+      { params: { name: 'modules/user/form' }, file: 'app/views/partials/mod.liquid' },
+      {},
+    )).toBe(false);
+  });
+
+  it('combines file_type + graph guards', () => {
+    writeRules([{
+      id: 'test_filetype_graph',
+      check: 'TestCheck',
+      when: {
+        file_type: 'partial',
+        caller_count_gte: 2,
+        has_params: true,
+      },
+      apply: { hint_md: 'Popular documented partial.', confidence: 0.9 },
+    }]);
+    const compiled = loadPromotedRules(tmpDir);
+    const guard = compiled[0].when;
+    const graph = mockGraph(
+      { 'app/views/partials/card.liquid': { type: 'partial', key: 'card', params: ['title'] } },
+      { 'app/views/partials/card.liquid': ['page1.liquid', 'page2.liquid'] },
+    );
+
+    expect(guard(
+      { file: 'app/views/partials/card.liquid' },
+      { graph },
+    )).toBe(true);
+
+    const graphFewCallers = mockGraph(
+      { 'app/views/partials/card.liquid': { type: 'partial', key: 'card', params: ['title'] } },
+      { 'app/views/partials/card.liquid': ['page1.liquid'] },
+    );
+    expect(guard(
+      { file: 'app/views/partials/card.liquid' },
+      { graph: graphFewCallers },
+    )).toBe(false);
+  });
+
+  it('engine integration: graph-aware rule fires via runRules', () => {
+    writeRules([{
+      id: 'TestCheck.graph_rule',
+      check: 'TestCheck',
+      priority: 55,
+      when: { has_callers: true, caller_count_gte: 1 },
+      apply: { hint_md: 'File has callers.', confidence: 0.7 },
+    }]);
+    loadPromotedRules(tmpDir);
+
+    const diag = { check: 'TestCheck', file: 'app/views/partials/card.liquid' };
+    const graph = mockGraph(
+      { 'app/views/partials/card.liquid': { type: 'partial', key: 'card' } },
+      { 'app/views/partials/card.liquid': ['page.liquid'] },
+    );
+    const result = runRules(diag, { graph });
+
+    expect(result).not.toBeNull();
+    expect(result.rule_id).toBe('TestCheck.graph_rule');
+  });
+
+  it('engine integration: graph-aware rule skipped when guard fails', () => {
+    writeRules([{
+      id: 'TestCheck.graph_only_callers',
+      check: 'TestCheck',
+      priority: 55,
+      when: { caller_count_gte: 5 },
+      apply: { hint_md: 'Very popular.', confidence: 0.9 },
+    }]);
+    loadPromotedRules(tmpDir);
+
+    const diag = { check: 'TestCheck', file: 'app/views/partials/card.liquid' };
+    const graph = mockGraph(
+      { 'app/views/partials/card.liquid': { type: 'partial', key: 'card' } },
+      { 'app/views/partials/card.liquid': ['page.liquid', 'page2.liquid'] },
+    );
+    const result = runRules(diag, { graph });
+
+    expect(result).toBeNull();
+  });
+});
+
+// ── Query helpers ───────────────────────────────────────────────────────────
+
+import { callerCount, isOrphan, hasDocParams, classifyFileType } from '../../src/core/rules/queries.js';
+
+describe('queries: callerCount', () => {
+  it('returns caller count from graph', () => {
+    const graph = mockGraph({}, { 'a.liquid': ['b.liquid', 'c.liquid'] });
+    expect(callerCount(graph, 'a.liquid')).toBe(2);
+  });
+
+  it('returns 0 for file with no callers', () => {
+    const graph = mockGraph({}, { 'a.liquid': [] });
+    expect(callerCount(graph, 'a.liquid')).toBe(0);
+  });
+
+  it('returns 0 when graph is null', () => {
+    expect(callerCount(null, 'a.liquid')).toBe(0);
+  });
+
+  it('returns 0 when filePath is null', () => {
+    const graph = mockGraph({}, {});
+    expect(callerCount(graph, null)).toBe(0);
+  });
+});
+
+describe('queries: isOrphan', () => {
+  it('returns true for file in graph with no callers', () => {
+    const graph = mockGraph(
+      { 'a.liquid': { type: 'partial' } },
+      { 'a.liquid': [] },
+    );
+    expect(isOrphan(graph, 'a.liquid')).toBe(true);
+  });
+
+  it('returns false for file with callers', () => {
+    const graph = mockGraph(
+      { 'a.liquid': { type: 'partial' } },
+      { 'a.liquid': ['b.liquid'] },
+    );
+    expect(isOrphan(graph, 'a.liquid')).toBe(false);
+  });
+
+  it('returns false for file not in graph', () => {
+    const graph = mockGraph({}, {});
+    expect(isOrphan(graph, 'unknown.liquid')).toBe(false);
+  });
+
+  it('returns false when graph is null', () => {
+    expect(isOrphan(null, 'a.liquid')).toBe(false);
+  });
+});
+
+describe('queries: hasDocParams', () => {
+  it('returns true when node has params array with entries', () => {
+    const graph = mockGraph({ 'a.liquid': { params: ['title', 'image'] } });
+    expect(hasDocParams(graph, 'a.liquid')).toBe(true);
+  });
+
+  it('returns false when node has empty params array', () => {
+    const graph = mockGraph({ 'a.liquid': { params: [] } });
+    expect(hasDocParams(graph, 'a.liquid')).toBe(false);
+  });
+
+  it('returns false when node has no params field', () => {
+    const graph = mockGraph({ 'a.liquid': { type: 'partial' } });
+    expect(hasDocParams(graph, 'a.liquid')).toBe(false);
+  });
+
+  it('returns false when node not found', () => {
+    const graph = mockGraph({});
+    expect(hasDocParams(graph, 'unknown.liquid')).toBe(false);
+  });
+
+  it('returns false when graph is null', () => {
+    expect(hasDocParams(null, 'a.liquid')).toBe(false);
+  });
+});
+
+describe('queries: classifyFileType', () => {
+  const cases = [
+    ['app/views/pages/index.html.liquid', 'page'],
+    ['app/views/partials/card.liquid', 'partial'],
+    ['app/views/layouts/main.liquid', 'layout'],
+    ['app/lib/commands/blog/create.liquid', 'command'],
+    ['app/lib/queries/blog/search.liquid', 'query'],
+    ['app/graphql/blog/create.graphql', 'graphql'],
+    ['app/schema/blog.yml', 'schema'],
+    ['modules/user/form.liquid', 'module'],
+    ['some/other/path.liquid', 'unknown'],
+    [null, 'unknown'],
+    [undefined, 'unknown'],
+    ['', 'unknown'],
+  ];
+
+  for (const [input, expected] of cases) {
+    it(`classifies ${JSON.stringify(input)} as ${expected}`, () => {
+      expect(classifyFileType(input)).toBe(expected);
+    });
+  }
+});

@@ -26,11 +26,29 @@ export const rules = [
 
       const kb = getCheckKnowledge('UndefinedObject', 'default');
 
+      const fixes = [];
+      if (info?.replacement) {
+        fixes.push({
+          type: 'text_edit',
+          range: {
+            start: { line: diag.line, character: diag.column },
+            end: { line: diag.line, character: diag.column + name.length },
+          },
+          new_text: info.replacement,
+          description: `Replace Shopify object \`${name}\` with \`${info.replacement}\``,
+        });
+      } else {
+        fixes.push({
+          type: 'guidance',
+          description: `\`${name}\` is a Shopify theme object. Use \`{% graphql %}\` to fetch data and \`context.*\` for request/user data.`,
+        });
+      }
+
       return {
         rule_id: 'UndefinedObject.shopify_object',
         hint_md: `${kb?.shopify_guidance ?? suggestion}\n\n${suggestion}`,
         suggestion,
-        fixes: [],
+        fixes,
         confidence: 0.95,
         see_also: {
           tool: 'domain_guide',
@@ -58,7 +76,15 @@ export const rules = [
       return {
         rule_id: 'UndefinedObject.context_prefix',
         hint_md: `Use \`context.${name}\` instead of bare \`${name}\`. In pages, all built-in objects require the \`context.\` prefix: \`context.params\`, \`context.session\`, \`context.current_user\`, \`context.page\`.`,
-        fixes: [],
+        fixes: [{
+          type: 'text_edit',
+          range: {
+            start: { line: diag.line, character: diag.column },
+            end: { line: diag.line, character: diag.column + name.length },
+          },
+          new_text: `context.${name}`,
+          description: `Replace \`${name}\` with \`context.${name}\``,
+        }],
         confidence: 0.9,
       };
     },
@@ -83,7 +109,12 @@ export const rules = [
       return {
         rule_id: 'UndefinedObject.declare_param',
         hint_md: `Variable \`${name}\` is not defined. In ${fileType}s, all variables must be passed explicitly. Add a \`{% doc %}\` block: \`{% doc %} @param {object} ${name} {% enddoc %}\` and pass it from the caller.`,
-        fixes: [],
+        fixes: [{
+          type: 'insert',
+          position: { line: 0, character: 0 },
+          text: `{% doc %}\n  @param {object} ${name}\n{% enddoc %}\n`,
+          description: `Add \`@param {object} ${name}\` declaration in a {% doc %} block at the top of the file`,
+        }],
         confidence: 0.85,
       };
     },

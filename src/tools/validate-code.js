@@ -9,11 +9,12 @@ import { getDomainFromPath, getDomainHeader } from '../core/domain-detector.js';
 import { getTriggeredGotchas, getContentTriggers } from '../core/knowledge-loader.js';
 import { generateStructuralWarnings } from '../core/structural-warnings.js';
 import { validateSchema } from '../core/schema-validator.js';
+import { validateTranslationYaml } from '../core/translation-validator.js';
 import { checkSchemaProperties } from '../core/schema-property-checker.js';
 import { runDiagnosticPipeline } from '../core/diagnostic-pipeline.js';
 import { partitionCallersByPending } from '../core/pending-callers.js';
 import { toUri, sanitizePath } from '../core/utils.js';
-import { fingerprint, templateFingerprint, messageTemplate } from '../core/diagnostic-record.js';
+import { fingerprint, templateFingerprint, messageTemplate, extractParams } from '../core/diagnostic-record.js';
 import { getProjectMap } from './project-map.js';
 import { buildFactGraph } from '../core/project-fact-graph.js';
 import { loadAllRules } from '../core/rules/index.js';
@@ -145,6 +146,7 @@ explicitly only if you are validating a file that is NOT part of the most recent
       const isLiquid = file_path.endsWith('.liquid');
       const isGraphql = file_path.endsWith('.graphql');
       const isSchema = file_path.endsWith('.yml') && /(?:^|\/)app\/schema\//.test(file_path);
+      const isTranslationYaml = /\.ya?ml$/.test(file_path) && /(?:^|\/)app\/translations\//.test(file_path);
 
       const result = {
         errors: [],
@@ -305,6 +307,21 @@ explicitly only if you are validating a file that is NOT part of the most recent
           // schema errors flow into result.errors — status derived at the end
         } catch (e) {
           result.infos.push({ check: 'schema-validator', severity: 'info', message: `Schema validation failed: ${e.message}` });
+        }
+      }
+
+      // 2b1. Translation YAML structural validation — catches the missing
+      // top-level locale key case (`app:` at root instead of `en: → app:`).
+      // The LSP won't flag this because the YAML parses fine, but every
+      // `{{ 'key' | t }}` lookup will silently return the raw key. Runs before
+      // the GraphQL/structural branches so the error lands on the file itself.
+      if (isTranslationYaml) {
+        try {
+          const transResult = validateTranslationYaml(content, file_path);
+          result.errors.push(...transResult.errors);
+          result.warnings.push(...transResult.warnings);
+        } catch (e) {
+          result.infos.push({ check: 'translation-validator', severity: 'info', message: `Translation validation failed: ${e.message}` });
         }
       }
 
@@ -510,6 +527,20 @@ explicitly only if you are validating a file that is NOT part of the most recent
 
           result.proposed_fixes = proposedFixes;
 
+          // Merge rule-generated fixes into proposed_fixes
+          for (const d of allDiagnostics) {
+            if (d.fixes?.length > 0) {
+              for (const f of d.fixes) {
+                result.proposed_fixes.push({
+                  ...f,
+                  source: 'rule',
+                  rule_id: d.rule_id ?? null,
+                  check: d.check ?? null,
+                });
+              }
+            }
+          }
+
           // Attach per-diagnostic fix field
           for (const [diagIdx, fix] of diagnosticFixes) {
             const d = allDiagnostics[diagIdx];
@@ -672,6 +703,7 @@ explicitly only if you are validating a file that is NOT part of the most recent
               new_text_hash: ctx.blobStore ? ctx.blobStore.put(f.newText || '') : '',
               kind: f.kind || 'unknown',
             }));
+            const diagParams = extractParams(d.check, d.message || '');
             ctx.sessionBus.emit('validator_emit', {
               fp,
               template_fp: tFp,
@@ -682,6 +714,7 @@ explicitly only if you are validating a file that is NOT part of the most recent
               hint_rule_id: d.rule_id || d.check || null,
               confidence: d.confidence ?? null,
               proposed_fixes: fixes,
+              params: Object.keys(diagParams).length > 0 ? diagParams : undefined,
             });
           }
         } catch { /* best-effort telemetry */ }

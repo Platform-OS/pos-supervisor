@@ -15,7 +15,8 @@ import { invalidateProjectMap } from './tools/project-map.js';
 import { createToolRegistry } from './tools.js';
 import { initPromotedRules, reloadRules } from './core/rules/index.js';
 import { updateDisabledRules } from './core/rules/engine.js';
-import { ruleScores } from './core/case-base.js';
+import { ruleScores, resolveProbation } from './core/case-base.js';
+import { loadEngineMode, isAdaptive, setEngineMode, getEngineMode } from './core/engine-mode.js';
 import { startHttp } from './http-server.js';
 import { createLogger } from './core/logger.js';
 import { LSP_READY_TIMEOUT_MS } from './core/constants.js';
@@ -75,10 +76,14 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     log(`analytics-store: failed to open (${e.message}); analytics will not be available`);
   }
 
+  // ── Engine mode (adaptive vs static) ──────────────────────────────────────
+  const engineMode = loadEngineMode(projectDir);
+  log(`engine-mode: ${engineMode}`);
+
   // ── Promoted rules (Phase J — declarative rules from analytics) ──────────────
   try {
     initPromotedRules(projectDir);
-    log('promoted-rules: loaded');
+    log(`promoted-rules: ${isAdaptive() ? 'loaded' : 'skipped (static mode)'}`);
   } catch (e) {
     log(`promoted-rules: failed to load (${e.message})`);
   }
@@ -111,6 +116,10 @@ export async function createServer({ projectDir, httpPort = 0 }) {
 
   // ── Disabled rule enforcement (Phase J4) ─────────────────────────────────────
   function syncDisabledRules() {
+    if (!isAdaptive()) {
+      updateDisabledRules(null);
+      return;
+    }
     if (!analyticsStore) return;
     try {
       const scores = ruleScores(analyticsStore, { minEmitted: 5 });
@@ -122,6 +131,26 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     }
   }
   syncDisabledRules();
+
+  // ── Engine mode transitions ──────────────────────────────────────────────────
+  function handleModeTransition(prev, mode) {
+    log(`engine-mode: ${prev} → ${mode}`);
+    reloadRules(projectDir);
+    if (mode === 'adaptive') {
+      syncDisabledRules();
+      if (analyticsStore) {
+        try { resolveProbation(analyticsStore); } catch {}
+      }
+    } else {
+      updateDisabledRules(null);
+    }
+    broadcastSse({ event: 'engine_mode_changed', ts: new Date().toISOString(), prev, mode });
+  }
+
+  function switchEngineMode(mode) {
+    setEngineMode(mode, { projectDir, onTransition: handleModeTransition });
+    return getEngineMode();
+  }
 
   // ── In-memory session stats (not written to JSONL to keep log entries small) ──
   const sessionStats = {
@@ -570,6 +599,8 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     analyticsStore,
     log,
     emit,
+    switchEngineMode,
+    getEngineMode,
   };
 
   // ── Create MCP server (SDK) for stdio transport ───────────────────────────
@@ -664,10 +695,11 @@ export async function createServer({ projectDir, httpPort = 0 }) {
         hintEffectiveness: session.hintEffectiveness,
         pipelineTraces: [...session.pipelineTraces.entries()].map(([path, trace]) => ({ path, trace })),
         analytics: analyticsStore ? analyticsStore.stats() : null,
+        engineMode: getEngineMode(),
       };
     }
     const dataRoot = join(__dirname, 'data');
-    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, onAnalyticsRebuild: syncDisabledRules });
+    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, onAnalyticsRebuild: syncDisabledRules, switchEngineMode, getEngineMode });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────

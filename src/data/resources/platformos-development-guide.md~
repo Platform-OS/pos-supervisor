@@ -896,7 +896,7 @@ You MUST NOT use Tailwind, Bootstrap, or custom CSS frameworks. You MUST use `po
 ## 14. Translations (i18n)
 
 You MUST NOT hardcode user-facing text in partials. You MUST always use `{{ 'app.key' | t }}` and define translations in `app/translations/`.
-The YAML file requires top-level language key:
+The YAML file require top-level language key:
 
 ```
 en:

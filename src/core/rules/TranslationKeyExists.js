@@ -25,11 +25,15 @@ export const rules = [
       const nearest = nearestByLevenshtein(key, keys, 3);
       if (nearest.length === 0) return null;
 
+      const bestMatch = nearest[0].name;
       const suggestions = nearest.map(n => `\`${n.name}\``).join(', ');
       return {
         rule_id: 'TranslationKeyExists.suggest_nearest',
         hint_md: `Translation key \`${key}\` not found. Did you mean: ${suggestions}? Or add it to \`app/translations/en.yml\`.`,
-        fixes: [],
+        fixes: [{
+          type: 'guidance',
+          description: `Replace \`${key}\` with \`${bestMatch}\` in the \`{{ '${key}' | t }}\` filter, or add the missing key to \`app/translations/en.yml\`.`,
+        }],
         confidence: 0.7,
       };
     },
@@ -56,7 +60,10 @@ export const rules = [
       return {
         rule_id: 'TranslationKeyExists.create_key',
         hint_md: `Add translation key \`${key}\` to \`app/translations/en.yml\`:\n\`\`\`yaml\n${snippet}\n\`\`\``,
-        fixes: [],
+        fixes: [{
+          type: 'guidance',
+          description: `Add the following YAML to \`app/translations/en.yml\`:\n${snippet}`,
+        }],
         confidence: 0.8,
       };
     },

@@ -57,7 +57,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   if (factGraph && hasRules(diagnostic.check)) {
     const params = extractParams(diagnostic.check, diagnostic.message);
     const tmplFp = templateOf(diagnostic.check, diagnostic.message);
-    const diag = { check: diagnostic.check, params, message: diagnostic.message, file: filePath, line: diagnostic.line, template_fp: tmplFp };
+    const diag = { check: diagnostic.check, params, message: diagnostic.message, file: filePath, line: diagnostic.line, column: diagnostic.column ?? 0, template_fp: tmplFp };
     const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore };
     const ruleResult = runRules(diag, facts);
     if (ruleResult) {
@@ -67,6 +67,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
       if (ruleResult.see_also) result.see_also = ruleResult.see_also;
       if (ruleResult.confidence != null) result.confidence = ruleResult.confidence;
       if (ruleResult.case_base_signal) result.case_base_signal = ruleResult.case_base_signal;
+      if (ruleResult.fixes?.length > 0) result.fixes = ruleResult.fixes;
       attachSeeAlso(result, content);
       return result;
     }

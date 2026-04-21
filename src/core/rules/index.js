@@ -7,6 +7,7 @@
  */
 import { registerRules, clearRules, ruleCount } from './engine.js';
 import { loadPromotedRules } from './promoted-rules.js';
+import { isAdaptive } from '../engine-mode.js';
 import { rules as MissingPartialRules } from './MissingPartial.js';
 import { rules as UndefinedObjectRules } from './UndefinedObject.js';
 import { rules as UnknownFilterRules } from './UnknownFilter.js';
@@ -42,7 +43,7 @@ export function loadAllRules() {
 
 export function initPromotedRules(projectDir) {
   _promotedProjectDir = projectDir;
-  loadPromotedRules(projectDir);
+  if (isAdaptive()) loadPromotedRules(projectDir);
 }
 
 export function reloadRules(projectDir) {
@@ -50,7 +51,7 @@ export function reloadRules(projectDir) {
   _loaded = false;
   loadAllRules();
   const dir = projectDir ?? _promotedProjectDir;
-  if (dir) loadPromotedRules(dir);
+  if (dir && isAdaptive()) loadPromotedRules(dir);
 }
 
 export { ruleCount };

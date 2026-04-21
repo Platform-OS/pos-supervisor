@@ -80,6 +80,35 @@ export function classifyPath(partialName) {
   return { type: 'partial', path: `app/views/partials/${partialName}.liquid` };
 }
 
+export function callerCount(graph, filePath) {
+  if (!graph || !filePath) return 0;
+  return graph.referencedBy(filePath).length;
+}
+
+export function isOrphan(graph, filePath) {
+  if (!graph || !filePath) return false;
+  return graph.hasNode(filePath) && graph.referencedBy(filePath).length === 0;
+}
+
+export function hasDocParams(graph, filePath) {
+  if (!graph || !filePath) return false;
+  const node = graph.nodeByPath(filePath);
+  return Array.isArray(node?.params) && node.params.length > 0;
+}
+
+export function classifyFileType(filePath) {
+  if (!filePath) return 'unknown';
+  if (filePath.startsWith('app/views/pages/')) return 'page';
+  if (filePath.startsWith('app/views/partials/')) return 'partial';
+  if (filePath.startsWith('app/views/layouts/')) return 'layout';
+  if (filePath.startsWith('app/lib/commands/')) return 'command';
+  if (filePath.startsWith('app/lib/queries/')) return 'query';
+  if (filePath.startsWith('app/graphql/')) return 'graphql';
+  if (filePath.startsWith('app/schema/')) return 'schema';
+  if (filePath.startsWith('modules/')) return 'module';
+  return 'unknown';
+}
+
 function levenshtein(a, b) {
   if (a === b) return 0;
   if (a.length === 0) return b.length;

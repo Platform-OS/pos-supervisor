@@ -1,5 +1,6 @@
 import { VALID_DOMAINS } from '../core/domain-detector.js';
 import { ruleScores } from '../core/case-base.js';
+import { getEngineMode } from '../core/engine-mode.js';
 
 export const serverStatusTool = {
   name: 'server_status',
@@ -20,6 +21,7 @@ export const serverStatusTool = {
       return {
         server: 'pos-supervisor',
         version: ctx.version,
+        engine_mode: getEngineMode(),
         project_dir: ctx.directory,
         pos_cli: {
           found: ctx.posCliFound ?? false,

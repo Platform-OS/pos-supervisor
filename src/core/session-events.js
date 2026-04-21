@@ -117,6 +117,7 @@ const ValidatorEmitPayload = z.object({
     new_text_hash: z.string(),
     kind: z.string(),
   })).default([]),
+  params: z.record(z.string(), z.string()).optional(),
 });
 
 const LogPayload = z.object({

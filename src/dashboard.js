@@ -88,6 +88,16 @@ export function buildDashboardHtml() {
   .stat-pill .label { color: var(--muted); text-transform: uppercase; }
   .stat-pill .value { color: var(--text); font-weight: bold; }
   
+  .engine-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  .engine-toggle .et-track { position: relative; width: 32px; height: 16px; border-radius: 8px; background: var(--border); transition: background 0.2s; }
+  .engine-toggle .et-track.on { background: var(--green); }
+  .engine-toggle .et-knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--bg); transition: left 0.2s; }
+  .engine-toggle .et-track.on .et-knob { left: 18px; }
+  .engine-toggle .et-label { font-size: 10px; font-weight: bold; text-transform: uppercase; min-width: 48px; }
+  .engine-toggle .et-label.adaptive { color: var(--green); }
+  .engine-toggle .et-label.static { color: var(--muted); }
+  .engine-toggle.switching .et-track { opacity: 0.5; pointer-events: none; }
+
   .dot { width: 8px; height: 8px; display: inline-block; flex-shrink: 0; }
   .dot.green  { background: var(--green); }
   .dot.red    { background: var(--red); }
@@ -531,6 +541,9 @@ export function buildDashboardHtml() {
   .an-legend code { background: var(--bg); padding: 1px 4px; border: 1px solid var(--border); font-size: 10px; color: var(--text); }
   .an-legend b { color: var(--text); }
   .an-empty { color: var(--muted); font-size: 12px; padding: 12px 0; }
+  /* Reserve vertical space for panels whose content height varies on load, so
+     clicking a row doesn't shift everything below. */
+  #an-journey, #an-calibration, #an-funnel, #an-heatmap, #an-radar { min-height: 160px; }
 
   .an-stats-row { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
   .an-stat { background: var(--bg); border: 1px solid var(--border); padding: 10px 16px; min-width: 140px; box-shadow: 2px 2px 0 var(--border); }
@@ -928,6 +941,13 @@ export function buildDashboardHtml() {
   <div class="stat-pill"><span class="label">VER : </span><span class="value" id="sb-version">—</span></div>
   <div class="stat-pill"><span class="label">CALLS : </span><span class="value" id="sb-calls">0</span></div>
   <div class="stat-pill"><span class="label">ERR : </span><span class="value" id="sb-errors">0</span></div>
+  <div class="stat-pill">
+    <span class="label">ENGINE : </span>
+    <div class="engine-toggle" id="engine-toggle" title="Toggle engine mode (static / adaptive)">
+      <div class="et-track" id="et-track"><div class="et-knob"></div></div>
+      <span class="et-label static" id="et-label">STATIC</span>
+    </div>
+  </div>
   <div class="stat-pill" style="margin-left:auto"><button class="export-btn" id="export-btn" title="Download session report as Markdown">Export Report</button></div>
   <div class="stat-pill"><span class="live-dot off" id="live-dot"></span><span class="label" style="margin-left:8px" id="live-label">CONNECTING</span></div>
 </div>
@@ -1246,7 +1266,15 @@ export function buildDashboardHtml() {
 
   <div class="an-section">
     <div class="an-section-title">Confidence Calibration</div>
-    <div class="an-legend">Compares <b>predicted</b> confidence (from rule output) against <b>actual</b> resolution rate. Points on the diagonal = perfectly calibrated. Points below = overconfident. Points above = underconfident.</div>
+    <div class="an-legend">
+      <b>What this chart shows.</b> Every rule-matched diagnostic carries a <b>predicted confidence</b> (0–100%) — the engine's estimate that the fix will resolve the problem. We bucket all diagnostics by that predicted value (10 buckets: 0-10%, 10-20%, …) and plot one <b>dot per non-empty bucket</b>.<br>
+      <b>X axis</b> — bucket's predicted confidence (mid-point).
+      <b>Y axis</b> — <b>actual resolution rate</b> observed in that bucket (share of diagnostics in the bucket that disappeared after the agent's next edit).
+      <b>Dot size</b> — number of samples in the bucket (bigger = more data, more trustworthy).
+      <b>Dot color</b> — green within 10% of the diagonal, yellow 10–20%, red &gt;20%.<br>
+      <b>How to read it.</b> The dashed diagonal = perfect calibration (predicted = actual). <b>Below the diagonal</b> = overconfident (engine said 80%, reality 40%). <b>Above the diagonal</b> = underconfident (engine said 30%, reality 70%). Hover any dot for exact values and sample count.<br>
+      <b>Data source.</b> <code>GET /api/analytics/calibration?buckets=10</code> — computed from the analytics DB over every diagnostic with a rule-supplied confidence score.
+    </div>
     <div id="an-calibration"><span class="an-empty">No confidence data yet.</span></div>
   </div>
 
@@ -1263,8 +1291,8 @@ export function buildDashboardHtml() {
   </div>
 
   <div class="an-section">
-    <div class="an-section-title">Knowledge Coverage</div>
-    <div class="an-legend">Radar chart showing 5 dimensions of knowledge system health: rule coverage, hint quality, fix adoption, diagnostic freshness, and resolution rate.</div>
+    <div class="an-section-title">Knowledge Coverage (Global System Health)</div>
+    <div class="an-legend"><b>Global 5-axis view — not per-check.</b> Each axis is aggregated across every diagnostic the engine has seen: <b>Rule Coverage</b> (% of checks with a rule), <b>Hint Quality</b> (avg resolution rate after a hint fires), <b>Fix Adoption</b> (proposed fixes the agent applied), <b>Rule Match</b> (emitted diagnostics a rule matched), <b>Resolution</b> (emitted diagnostics that disappeared). Larger area = healthier engine overall. For per-check calibration see the scatter plot above.</div>
     <div id="an-radar"><span class="an-empty">No coverage data yet.</span></div>
   </div>
 
@@ -1649,6 +1677,10 @@ function initSse() {
         } else if (['lsp_ready','lsp_crash','lsp_init_failed','lsp_warmed_up'].includes(entry.event)) {
           fetchStatus();
           renderLspLog();
+        } else if (entry.event === 'engine_mode_changed' && entry.mode) {
+          syncEngineToggle(entry.mode);
+        } else if (entry.event === 'fs_watcher_sync' || entry.event === 'fs_watcher_delete') {
+          scheduleExplorerRefreshFromFsEvent();
         }
       } catch {}
     });
@@ -1679,6 +1711,8 @@ async function fetchStatus() {
     document.getElementById('project-dir').textContent = d.projectDir || '—';
     document.getElementById('sb-version').textContent  = d.version    || '—';
     document.getElementById('sb-tools').textContent    = d.toolCount  ?? '—';
+
+    syncEngineToggle(d.engineMode || 'static');
 
     startTime    = startTime    ?? (Date.now() - (d.uptimeMs ?? 0));
     sessionStart = sessionStart ?? d.startedAt ?? null;
@@ -1717,6 +1751,36 @@ async function fetchStatus() {
     flash('map-tick');
   } catch {}
 }
+
+// ── Engine mode toggle ────────────────────────────────────────────────────
+function syncEngineToggle(mode) {
+  var track = document.getElementById('et-track');
+  var label = document.getElementById('et-label');
+  var toggle = document.getElementById('engine-toggle');
+  if (!track || !label) return;
+  var isAdaptive = mode === 'adaptive';
+  track.className = 'et-track' + (isAdaptive ? ' on' : '');
+  label.textContent = isAdaptive ? 'ADAPTIVE' : 'STATIC';
+  label.className = 'et-label ' + (isAdaptive ? 'adaptive' : 'static');
+  toggle.classList.remove('switching');
+}
+
+document.getElementById('engine-toggle').addEventListener('click', function() {
+  var toggle = document.getElementById('engine-toggle');
+  var label = document.getElementById('et-label');
+  if (toggle.classList.contains('switching')) return;
+  var current = label.textContent === 'ADAPTIVE' ? 'adaptive' : 'static';
+  var next = current === 'adaptive' ? 'static' : 'adaptive';
+  toggle.classList.add('switching');
+  fetch(BASE + '/api/engine/mode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: next }),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(d) { if (d.mode) syncEngineToggle(d.mode); })
+    .catch(function() { toggle.classList.remove('switching'); });
+});
 
 // ── Bootstrap: load historical logs, then switch to SSE ─────────────────
 async function fetchInitialLogs() {
@@ -2969,6 +3033,19 @@ async function fetchExplorerData() {
     document.getElementById('ex-resources').innerHTML = '<span class="explorer-error">FAILED TO LOAD: ' + escHtml(e.message) + '</span>';
   }
   if (btn) { btn.disabled = false; btn.textContent = 'FETCH DATA'; }
+}
+
+// Debounced quiet refresh triggered by fs_watcher SSE events.
+// Only refreshes when explorer data has already been loaded — avoids forcing
+// work before the user opens the tab. Coalesces bursts into a single call.
+let fsRefreshTimer = null;
+function scheduleExplorerRefreshFromFsEvent() {
+  if (!explorerLoaded) return;
+  if (fsRefreshTimer) clearTimeout(fsRefreshTimer);
+  fsRefreshTimer = setTimeout(() => {
+    fsRefreshTimer = null;
+    fetchExplorerData();
+  }, 500);
 }
 
 async function fetchAnalysisData() {
@@ -4779,6 +4856,7 @@ function renderCalibrationChart(el, data) {
   var diagLabel = '<text x="' + (W - PAD - 8) + '" y="' + (PAD + 12) + '" text-anchor="end" style="font-size:8px;fill:var(--muted);font-style:italic">perfect calibration</text>';
 
   var legend = '<div style="margin-top:10px;display:flex;gap:16px;flex-wrap:wrap;font-size:10px;color:var(--muted)">'
+    + '<span><b>Each dot = one confidence bucket</b> (predicted vs actual resolution).</span>'
     + '<span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="var(--green)"/></svg> within 10% of predicted</span>'
     + '<span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="var(--yellow)"/></svg> 10-20% deviation</span>'
     + '<span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="var(--red)"/></svg> &gt;20% deviation</span>'
@@ -4990,7 +5068,7 @@ function renderRadarChart(el, gaps, funnel) {
   const areaCls = area > 0.7 ? 'var(--green)' : area > 0.4 ? 'var(--yellow)' : 'var(--red)';
 
   el.innerHTML = '<div class="radar-container">'
-    + '<h3>Knowledge Coverage</h3>'
+    + '<h3>Knowledge Coverage — Global System Health</h3>'
     + '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">'
     + gridHtml + axisHtml + labelHtml
     + '<polygon class="radar-fill" points="' + dataPts + '"/>'
@@ -5314,14 +5392,15 @@ async function runLiveConsole() {
   statusEl.textContent = '';
   resultEl.style.display = 'none';
 
-  const filePath = currentLiveFilePath || ('<synthetic>' + ext);
+  const virtualPaths = { '.liquid': 'app/views/partials/__pos_live_console__.liquid', '.graphql': 'app/graphql/__pos_live_console__.graphql', '.yml': 'app/schema/__pos_live_console__.yml' };
+  const filePath = currentLiveFilePath || (virtualPaths[ext] || virtualPaths['.liquid']);
 
   const t0 = Date.now();
   try {
     const r = await fetch(BASE + '/call', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tool: 'validate_code', params: { file_path: filePath, content } }),
+      body: JSON.stringify({ tool: 'validate_code', params: { file_path: filePath, content, _source: 'dashboard_live' } }),
     });
     const d = await r.json();
     const dur = fmtDuration(Date.now() - t0);

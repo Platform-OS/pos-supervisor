@@ -25,6 +25,7 @@
  */
 
 import { scoreRule } from '../case-base.js';
+import { isAdaptive } from '../engine-mode.js';
 
 const _registry = new Map();
 const _disabledRules = new Set();
@@ -86,6 +87,7 @@ export function runRules(diag, facts, { multiMatch = false } = {}) {
 }
 
 function applyCaseBaseScoring(result, diag, facts) {
+  if (!isAdaptive()) return;
   if (!facts.analyticsStore || !result.rule_id) return;
   try {
     const templateFp = diag.template_fp ?? null;

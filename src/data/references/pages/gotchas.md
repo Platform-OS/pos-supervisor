@@ -102,7 +102,7 @@ The `function` tag also supports these forms: `{% function data['product'] = 'pr
 
 ### Root page (`/`) — omit the slug entirely
 
-**Cause:** Setting `slug: /` or `slug: ""` in front matter for the home page, then getting an InvalidSlug warning.
+**Cause:** Setting `slug: /` or `slug: ""` or `slug: index` in front matter for the home page, then getting an InvalidSlug warning.
 
 **Solution:** For the home page (root `/`), do not set a slug at all. A page at `app/views/pages/index.html.liquid` serves `/` by default — no front matter slug is needed.
 
