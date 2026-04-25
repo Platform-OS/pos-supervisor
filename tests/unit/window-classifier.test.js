@@ -4,6 +4,8 @@ import {
   classifyWindow,
   classifyFixAdoption,
   classifySession,
+  classifyWriteWindow,
+  extractWriteEvents,
   buildEmitIndex,
   computeCollateral,
 } from '../../src/core/window-classifier.js';
@@ -194,7 +196,81 @@ describe('classifyFixAdoption', () => {
   });
 });
 
+function makeWriteEvent(relPath, ts) {
+  return { kind: 'fs_watcher_sync', rel_path: relPath, ts };
+}
+
+describe('extractWriteEvents', () => {
+  test('groups by rel_path', () => {
+    const events = [
+      makeWriteEvent('app/views/pages/a.liquid', 't1'),
+      makeWriteEvent('app/views/pages/b.liquid', 't2'),
+      makeWriteEvent('app/views/pages/a.liquid', 't3'),
+    ];
+    const writes = extractWriteEvents(events);
+    expect(writes.size).toBe(2);
+    expect(writes.get('app/views/pages/a.liquid')).toHaveLength(2);
+    expect(writes.get('app/views/pages/b.liquid')).toHaveLength(1);
+  });
+
+  test('returns empty map for no write events', () => {
+    const events = [makeVcCall()];
+    expect(extractWriteEvents(events).size).toBe(0);
+  });
+
+  test('ignores events without rel_path', () => {
+    const events = [{ kind: 'fs_watcher_sync', path: '/abs/path/file.liquid', ts: 't1' }];
+    expect(extractWriteEvents(events).size).toBe(0);
+  });
+
+  test('sorts events chronologically per file', () => {
+    const events = [
+      makeWriteEvent('app/views/pages/a.liquid', '2026-04-17T10:02:00Z'),
+      makeWriteEvent('app/views/pages/a.liquid', '2026-04-17T10:01:00Z'),
+    ];
+    const writes = extractWriteEvents(events);
+    const sorted = writes.get('app/views/pages/a.liquid');
+    expect(sorted[0].ts).toBe('2026-04-17T10:01:00Z');
+    expect(sorted[1].ts).toBe('2026-04-17T10:02:00Z');
+  });
+});
+
+describe('classifyWriteWindow', () => {
+  const FILE = 'app/views/pages/index.html.liquid';
+
+  test('produces write_unverified outcomes for all diagnostics', () => {
+    const vc = makeVcCall({
+      ts: '2026-04-17T10:00:00Z',
+      output: {
+        errors: [
+          makeDiag('MissingPartial', "Missing partial 'blog_posts/card'"),
+          makeDiag('UndefinedObject', "The object 'item' is undefined"),
+        ],
+        warnings: [],
+      },
+    });
+    const write = makeWriteEvent(FILE, '2026-04-17T10:01:00Z');
+    const { window, outcomes } = classifyWriteWindow(vc, write);
+
+    expect(outcomes).toHaveLength(2);
+    expect(outcomes.every(o => o.outcome === 'write_unverified')).toBe(true);
+    expect(window.closed_by).toBe('write');
+    expect(window.is_draft).toBe(false);
+    expect(window.ts_end).toBe('2026-04-17T10:01:00Z');
+    expect(window.content_hash_end).toBeNull();
+  });
+
+  test('produces empty outcomes when validation was clean', () => {
+    const vc = makeVcCall({ output: { errors: [], warnings: [] } });
+    const write = makeWriteEvent(FILE, 't2');
+    const { outcomes } = classifyWriteWindow(vc, write);
+    expect(outcomes).toHaveLength(0);
+  });
+});
+
 describe('classifySession', () => {
+  const FILE = 'app/views/pages/index.html.liquid';
+
   test('builds windows for files with multiple calls', () => {
     const events = [
       makeVcCall({
@@ -212,13 +288,13 @@ describe('classifySession', () => {
     expect(results[0].outcomes[0].outcome).toBe('resolved');
   });
 
-  test('skips files with only one call', () => {
+  test('skips files with only one call and no write event', () => {
     const events = [makeVcCall()];
     const results = classifySession(events);
     expect(results).toHaveLength(0);
   });
 
-  test('creates N-1 windows for N calls to same file', () => {
+  test('creates N-1 windows for N calls to same file (no writes)', () => {
     const events = [
       makeVcCall({ ts: 't1', output: { errors: [], warnings: [] } }),
       makeVcCall({ ts: 't2', output: { errors: [], warnings: [] } }),
@@ -228,6 +304,89 @@ describe('classifySession', () => {
     expect(results).toHaveLength(2);
     expect(results[0].window.idx).toBe(0);
     expect(results[1].window.idx).toBe(1);
+  });
+
+  test('validate-to-validate windows are tagged is_draft=1 when no write between them', () => {
+    const events = [
+      makeVcCall({ ts: '2026-04-17T10:00:00Z', output: { errors: [], warnings: [] } }),
+      makeVcCall({ ts: '2026-04-17T10:01:00Z', output: { errors: [], warnings: [] } }),
+    ];
+    const results = classifySession(events);
+    expect(results[0].window.is_draft).toBe(1);
+    expect(results[0].window.closed_by).toBe('validate');
+  });
+
+  test('validate-to-validate windows are tagged is_draft=0 when write falls between them', () => {
+    const events = [
+      makeVcCall({ ts: '2026-04-17T10:00:00Z', output: { errors: [], warnings: [] } }),
+      makeWriteEvent(FILE, '2026-04-17T10:00:30Z'),
+      makeVcCall({ ts: '2026-04-17T10:01:00Z', output: { errors: [], warnings: [] } }),
+    ];
+    const results = classifySession(events);
+    // One validate-to-validate window, no write after last validate
+    expect(results).toHaveLength(1);
+    expect(results[0].window.is_draft).toBe(0);
+  });
+
+  test('creates write-closed window for validate then write (no re-validate)', () => {
+    const events = [
+      makeVcCall({
+        ts: '2026-04-17T10:00:00Z',
+        output: { errors: [makeDiag('MissingPartial', "Missing partial 'x'")], warnings: [] },
+      }),
+      makeWriteEvent(FILE, '2026-04-17T10:01:00Z'),
+    ];
+    const results = classifySession(events);
+    expect(results).toHaveLength(1);
+    expect(results[0].window.closed_by).toBe('write');
+    expect(results[0].outcomes[0].outcome).toBe('write_unverified');
+  });
+
+  test('creates both validate-to-validate and write-closed window for full multi-draft sequence', () => {
+    // Draft 1 → Draft 2 → write
+    const events = [
+      makeVcCall({
+        ts: '2026-04-17T10:00:00Z',
+        output: { errors: [makeDiag('MissingPartial', "Missing partial 'x'")], warnings: [] },
+      }),
+      makeVcCall({
+        ts: '2026-04-17T10:01:00Z',
+        output: { errors: [makeDiag('MissingPartial', "Missing partial 'x'")], warnings: [] },
+      }),
+      makeWriteEvent(FILE, '2026-04-17T10:02:00Z'),
+    ];
+    const results = classifySession(events);
+    expect(results).toHaveLength(2);
+
+    const validateWindow = results.find(r => r.window.closed_by === 'validate');
+    const writeWindow = results.find(r => r.window.closed_by === 'write');
+
+    expect(validateWindow).toBeDefined();
+    expect(validateWindow.window.is_draft).toBe(1);  // no write between the two validates
+    expect(writeWindow).toBeDefined();
+    expect(writeWindow.outcomes[0].outcome).toBe('write_unverified');
+  });
+
+  test('proper workflow: validate → write → re-validate produces non-draft window + no write-closed', () => {
+    // The ideal agent workflow
+    const events = [
+      makeVcCall({
+        ts: '2026-04-17T10:00:00Z',
+        output: { errors: [makeDiag('MissingPartial', "Missing partial 'x'")], warnings: [] },
+      }),
+      makeWriteEvent(FILE, '2026-04-17T10:01:00Z'),
+      makeVcCall({
+        ts: '2026-04-17T10:02:00Z',
+        output: { errors: [], warnings: [] },
+      }),
+    ];
+    const results = classifySession(events);
+    // One validate-to-validate window (write falls between → is_draft=0 → resolved)
+    // No write after last validate → no write-closed window
+    expect(results).toHaveLength(1);
+    expect(results[0].window.is_draft).toBe(0);
+    expect(results[0].window.closed_by).toBe('validate');
+    expect(results[0].outcomes[0].outcome).toBe('resolved');
   });
 });
 

@@ -283,7 +283,7 @@ async function resyncFile(absPath, lsp, log, emit, counters, hooks = {}) {
       // Also send workspace/didChangeWatchedFiles — LSPs that honor this spec
       // method take it as a hint to re-scan. Harmless on LSPs that do not.
       notifyDidChangeWatched(lsp, uri, 2 /* Changed */, log, counters);
-      emit('fs_watcher_sync', { path: absPath });
+      emit('fs_watcher_sync', { path: absPath, rel_path: relPath });
     }
   } catch (e) {
     counters.errors++;

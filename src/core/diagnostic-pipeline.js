@@ -28,6 +28,15 @@
  *  15. verifyOrphanedPartialOnDisk     — independent (filesystem check) — must run AFTER 8
  *      so pending-plan suppression runs first; this catches the post-write case where
  *      the files ARE on disk but the checker hasn't re-indexed (scaffold write:true).
+ *  16. verifyMissingPartialsOnDisk     — independent (filesystem check) — must run AFTER 9
+ *      so pending suppression handles in-plan partials first; the disk check then
+ *      catches partials that ARE on disk but the LSP hasn't re-indexed yet.
+ *  17. populateDefaultConfidence       — must run LAST (after all suppressions/verifications)
+ *      so it only stamps diagnostics that actually survive to the agent. The rule
+ *      engine sets confidence and rule_id when a rule matches; this step covers
+ *      everything else with a severity-based default confidence and a stable
+ *      `${check}.unmatched` rule_id fallback (A4) so confidenceCalibration can bucket
+ *      every row and the Rule Performance table attributes every emit to some rule.
  *
  * NOTE: MissingPartial, MissingPage and TranslationKeyExists are real errors — do NOT downgrade
  * them based on isPreWrite or other implicit state. Use pending_files / pending_pages /
@@ -42,6 +51,7 @@ import { getKnownModulesMissingDocs } from './knowledge-loader.js';
 import { buildAssetIndex, resolveAssetPath } from './asset-index.js';
 import { buildTranslationIndex } from './translation-index.js';
 import { buildPageRouteIndex, parseMissingPageMessage, resolvePageRoute } from './page-route-index.js';
+import { DEFAULT_CONFIDENCE_BY_SEVERITY, STRUCTURAL_DEFAULT_CONFIDENCE } from './constants.js';
 
 /**
  * Run the full diagnostic post-processing pipeline.
@@ -187,6 +197,16 @@ export function runDiagnosticPipeline(result, opts) {
   if (projectDir) {
     traceStep('verifyOrphanedPartialOnDisk', () => verifyOrphanedPartialOnDisk(result, filePath, projectDir));
   }
+
+  // 16. Verify MissingPartial against filesystem
+  if (projectDir) {
+    traceStep('verifyMissingPartialsOnDisk', () => verifyMissingPartialsOnDisk(result, projectDir));
+  }
+
+  // 17. Stamp a default confidence on every surviving diagnostic that the rule
+  //     engine did not already score. Runs last so suppressed/downgraded items
+  //     are gone by now.
+  traceStep('populateDefaultConfidence', () => populateDefaultConfidence(result));
 
   // Attach pipeline trace for dashboard inspector (D2)
   result._pipelineTrace = trace;
@@ -886,9 +906,106 @@ function verifyOrphanedPartialOnDisk(result, filePath, projectDir) {
   });
 }
 
+/**
+ * Cross-check every MissingPartial against the real filesystem.
+ *
+ * The LSP's partial index lags behind disk writes. A partial written during a
+ * scaffold step produces a false-positive MissingPartial until the LSP re-indexes.
+ * Module partials (names starting with 'modules/') are skipped — they are not local
+ * disk files and cannot be suppressed by presence checks.
+ */
+function verifyMissingPartialsOnDisk(result, projectDir) {
+  const candidates = [...result.errors, ...result.warnings].filter(d => d.check === 'MissingPartial');
+  if (candidates.length === 0) return;
+
+  const suppressed = new Set();
+  const verified = [];
+
+  for (const d of candidates) {
+    const nameMatch = d.message?.match(/['"]([^'"]+)['"]/);
+    if (!nameMatch) continue;
+    const name = nameMatch[1];
+    if (name.startsWith('modules/')) continue;
+
+    if (resolveMissingPartialPaths(name, projectDir).some(p => existsSync(p))) {
+      suppressed.add(d);
+      verified.push(name);
+    }
+  }
+
+  if (suppressed.size === 0) return;
+
+  result.errors = result.errors.filter(d => !suppressed.has(d));
+  result.warnings = result.warnings.filter(d => !suppressed.has(d));
+  result.infos.push({
+    check: 'pos-supervisor:MissingPartialSuppressed',
+    severity: 'info',
+    message: `Suppressed ${verified.length} MissingPartial diagnostic(s) — partial(s) exist on disk: ${verified.join(', ')}. (LSP cache lag — partial was written but not yet re-indexed.)`,
+  });
+}
+
+function resolveMissingPartialPaths(name, projectDir) {
+  if (/(?:^|\/)commands\//.test(name) || /(?:^|\/)queries\//.test(name)) {
+    const stripped = name.replace(/^lib\//, '');
+    return [join(projectDir, 'app', 'lib', `${stripped}.liquid`)];
+  }
+  return [
+    join(projectDir, 'app', 'views', 'partials', `${name}.liquid`),
+    join(projectDir, 'app', 'views', 'partials', `${name}.html.liquid`),
+  ];
+}
+
 function extractPartialNameFromPath(filePath) {
   const m = filePath.match(/^app\/views\/partials\/(.+?)\.(?:html\.)?liquid$/);
   return m ? m[1] : null;
+}
+
+function defaultConfidenceFor(diag) {
+  if (typeof diag.check === 'string' && diag.check.startsWith('pos-supervisor:')) {
+    return STRUCTURAL_DEFAULT_CONFIDENCE;
+  }
+  const sev = diag.severity;
+  if (sev && DEFAULT_CONFIDENCE_BY_SEVERITY[sev] != null) {
+    return DEFAULT_CONFIDENCE_BY_SEVERITY[sev];
+  }
+  return DEFAULT_CONFIDENCE_BY_SEVERITY.warning;
+}
+
+function defaultRuleIdFor(diag) {
+  // Stable fallback so rule-less diagnostics cluster under a single bucket per
+  // check instead of scattering into `unknown` or the check name alone (which
+  // collides with the check-level scorecard and muddles rule attribution).
+  // See A4 in docs/new-task/implementation-plan.md.
+  return diag.check ? `${diag.check}.unmatched` : 'unknown.unmatched';
+}
+
+function populateDefaultConfidence(result) {
+  const stamp = (d) => {
+    if (d.confidence == null) d.confidence = defaultConfidenceFor(d);
+    if (!d.rule_id) d.rule_id = defaultRuleIdFor(d);
+  };
+  for (const d of result.errors) stamp(d);
+  for (const d of result.warnings) stamp(d);
+  for (const d of result.infos) stamp(d);
+}
+
+/**
+ * Stand-alone entry point — same semantics as the pipeline's step 17, callable
+ * from outside the pipeline.
+ *
+ * Reason it exists: `validate-code.js` pushes several diagnostic sources
+ * (structural warnings, schema validation, translation YAML check, diff-aware
+ * RemovedRender/RemovedGraphQL/AddedParam, new-partial caller check) into
+ * `result.errors` / `result.warnings` AFTER `runDiagnosticPipeline` finishes.
+ * Those late additions would otherwise escape `populateDefaultConfidence` and
+ * land in the analytics store with `confidence = null` / `rule_id` missing.
+ * See the confidence-stamp bug identified in the 2026-04-23 DEMO report.
+ *
+ * Idempotent — calling twice is safe because the helper only fills when
+ * fields are null/missing.
+ */
+export function stampDefaultsOn(result) {
+  populateDefaultConfidence(result);
 }
 
 function hasRenderReferenceOnDisk(projectDir, partialName, selfPath) {

@@ -1314,10 +1314,18 @@ export function generateFixes(diagnostics, ast, content, filePath, ctx, projectD
 
     if (!fix) continue;
 
+    // I1 — rule attribution for heuristic fixes. Tagging once here keeps every
+    // per-check branch above free of boilerplate. The emit loop propagates this
+    // into the proposed_fixes.rule_id column so Rule Performance can attribute
+    // adoption to a specific heuristic variant (heuristic:<Check>.<fix_type>).
+    if (!fix.rule_id) {
+      fix.rule_id = `heuristic:${d.check ?? 'Unknown'}.${fix.type ?? 'fix'}`;
+    }
+
     if (fix.type === 'add_doc_param') {
       docParamFixes.push({ index: i, ...fix });
       // Attach per-diagnostic fix reference
-      diagnosticFixes.set(i, { type: 'add_doc_param', description: fix.description, param_name: fix.param_name });
+      diagnosticFixes.set(i, { type: 'add_doc_param', description: fix.description, param_name: fix.param_name, rule_id: fix.rule_id });
     } else {
       diagnosticFixes.set(i, fix);
       // Deduplicate: don't add identical fixes

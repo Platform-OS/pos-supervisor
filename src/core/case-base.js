@@ -47,7 +47,7 @@ export function retrieveCases(store, check, templateFp, { minCases = MIN_CASES }
   const outcomeRows = store.query(`
     SELECT o.outcome, o.fix_applied, o.collateral_added, COUNT(*) as cnt
     FROM outcomes o
-    JOIN diagnostics d ON o.fp = d.fp
+    JOIN diagnostics d ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
     WHERE d.check_name = ? AND d.template_fp = ?
     GROUP BY o.outcome, o.fix_applied
     ORDER BY cnt DESC
@@ -101,10 +101,18 @@ export function retrieveCasesByCheck(store, check, { minCases = MIN_CASES, limit
 }
 
 /**
- * F2: Per-rule rolling stats.
+ * F2: Per-rule rolling stats — **promotion-gating view.**
  *
- * For each rule_id, compute (emitted, adopted, resolved, regressed) from
- * the diagnostics + outcomes tables.
+ * Drives `syncDisabledRules` and probation resolution. Default threshold is 5
+ * because promotion decisions must be statistically meaningful — one bad
+ * resolution on a rule that has only fired twice is not evidence to disable it.
+ * Reporting views that want to list every rule regardless of sample size use
+ * `rulePerformance()` in analytics-queries.js (threshold 1, no `disabled` flag).
+ *
+ * `${check}.unmatched` fallback rule_ids (set by the diagnostic pipeline for
+ * rule-less diagnostics — A4) are excluded here: they don't correspond to a
+ * registered rule, so "disabling" them has no effect and they shouldn't count
+ * toward promotion/probation decisions.
  *
  * @param {object} store
  * @param {object} [opts]
@@ -114,12 +122,15 @@ export function retrieveCasesByCheck(store, check, { minCases = MIN_CASES, limit
 export function ruleScores(store, { minEmitted = 5 } = {}) {
   const ruleRows = store.query(`
     SELECT d.hint_rule_id as rule_id,
-           COUNT(DISTINCT d.fp) as emitted,
+           COUNT(*) as emitted,
            d.check_name as check_name
     FROM diagnostics d
-    WHERE d.hint_rule_id IS NOT NULL AND d.hint_rule_id != 'unknown' AND d.suppressed = 0
+    WHERE d.hint_rule_id IS NOT NULL
+      AND d.hint_rule_id != 'unknown'
+      AND d.hint_rule_id NOT LIKE '%.unmatched'
+      AND d.suppressed = 0
     GROUP BY d.hint_rule_id
-    HAVING COUNT(DISTINCT d.fp) >= ?
+    HAVING COUNT(*) >= ?
   `, [minEmitted]);
 
   const scores = [];
@@ -128,8 +139,10 @@ export function ruleScores(store, { minEmitted = 5 } = {}) {
     const outcomeRows = store.query(`
       SELECT o.outcome, o.fix_applied, COUNT(*) as cnt
       FROM outcomes o
-      JOIN diagnostics d ON o.fp = d.fp
-      WHERE d.hint_rule_id = ?
+      WHERE o.fp IN (
+        SELECT DISTINCT fp FROM diagnostics
+        WHERE hint_rule_id = ? AND suppressed = 0
+      )
       GROUP BY o.outcome, o.fix_applied
     `, [row.rule_id]);
 
@@ -195,7 +208,7 @@ export function scoreRule(store, ruleId, templateFp) {
   const outcomes = store.query(`
     SELECT o.outcome, COUNT(*) as cnt
     FROM outcomes o
-    JOIN diagnostics d ON o.fp = d.fp
+    JOIN diagnostics d ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
     WHERE d.hint_rule_id = ? AND d.template_fp = ?
     GROUP BY o.outcome
   `, [ruleId, templateFp]);
@@ -253,7 +266,7 @@ export function suggestedRules(store, existingRuleChecks = new Set(), { minCases
     const outcomeRows = store.query(`
       SELECT o.outcome, o.fix_applied, COUNT(*) as cnt
       FROM outcomes o
-      JOIN diagnostics d ON o.fp = d.fp
+      JOIN diagnostics d ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
       WHERE d.check_name = ? AND d.template_fp = ?
       GROUP BY o.outcome, o.fix_applied
     `, [c.check_name, c.template_fp]);
@@ -452,7 +465,7 @@ export function resolveProbation(store, { minOutcomes = 20 } = {}) {
     const outcomeRows = store.query(`
       SELECT o.outcome, COUNT(*) as cnt
       FROM outcomes o
-      JOIN diagnostics d ON o.fp = d.fp
+      JOIN diagnostics d ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
       WHERE d.hint_rule_id = ?
       GROUP BY o.outcome
     `, [promo.rule_id]);

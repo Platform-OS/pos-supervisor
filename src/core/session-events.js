@@ -114,8 +114,17 @@ const ValidatorEmitPayload = z.object({
   confidence: z.number().nullable().optional(),
   proposed_fixes: z.array(z.object({
     range: z.unknown(),
-    new_text_hash: z.string(),
+    // Nullable because some fix types (`guidance`, `create_file`) have no
+    // new_text to hash. We still record that a fix was proposed so the
+    // dashboard sees fix-proposal rate — adoption classification skips
+    // these naturally (classifyFixAdoption requires a hash).
+    new_text_hash: z.string().nullable(),
     kind: z.string(),
+    // I1 — attribution. Rule-engine rules supply their own id
+    // (e.g. "UnknownFilter.suggest_nearest"); heuristic-generator fixes are
+    // tagged centrally as "heuristic:<Check>.<fix_type>". Nullable for
+    // back-compat with older events (pre-I1) that don't carry the field.
+    rule_id: z.string().nullable().optional(),
   })).default([]),
   params: z.record(z.string(), z.string()).optional(),
 });

@@ -92,6 +92,7 @@ tools will reject.
    `validate_code` passed on the files you edited. Individual-file green
    lights do not imply project integrity.
 
+
 ### MUST-CALL domains (by feature type)
 
 - **Auth code** — `domain_guide(domain: "authentication")`
@@ -107,11 +108,12 @@ tools will reject.
   `{% function %}`.
 - Use Shopify objects (`shop`, `cart`, `customer`, `product`, `collection`). These
   do not exist in platformOS.
-- Write files to disk without calling `validate_code` on the proposed content first.
+- Write hand-drafted files to disk without calling `validate_code` on the proposed
+  content first. (Scaffold-written files are exempt — they are pre-validated.)
 - Assume module call syntax from memory — call `module_info(name)` to get the
   authoritative live-scan API surface.
 - Ignore `consult_before_writing` in a scaffold response. Every domain listed there
-  MUST be consulted via `domain_guide` before step 5.
+  MUST be consulted via `domain_guide` before writing.
 
 ### Session-start checklist
 
@@ -124,8 +126,6 @@ Before your first tool call, the following are true:
 - [ ] `project_map` called once for full project baseline.
 
 Proceed only when all three are checked.
-
----
 
 ## 1. Technology Stack
 
@@ -172,66 +172,26 @@ project-root/
 │   │   ├── layouts/               # Wrapper templates
 │   │   └── partials/              # Reusable template snippets
 │   ├── lib/
-│   │   ├── commands/              # Business logic (build -> check -> execute)
+│   │   ├── commands/              # Business logic (build → check → execute)
 │   │   ├── queries/               # Data retrieval wrappers
 │   │   ├── events/                # Event definitions
 │   │   └── consumers/             # Event handlers
 │   ├── schema/                    # Database table definitions (YAML)
 │   ├── graphql/                   # GraphQL query/mutation files
-│   ├── forms/                     # Form configurations (YAML + Liquid front matter)
 │   ├── emails/                    # Email templates
 │   ├── smses/                     # SMS templates
 │   ├── api_calls/                 # Third-party API integrations
 │   ├── translations/              # i18n content (YAML)
-│   ├── authorization_policies/    # Access control rules (page/form level)
+│   ├── authorization_policies/    # DO NOT USE — use pos-module-user
 │   ├── migrations/                # One-time migration scripts
 │   └── config.yml                 # Feature flags
 ├── modules/                       # Downloaded/custom modules (READ-ONLY)
-│   └── MODULE_NAME/
-│       ├── public/                # Publicly accessible files
-│       └── private/               # IP-protected files (not downloadable)
 └── .pos                           # Environment endpoints
 ```
 
 All application files MUST reside in the `app/` directory. You MUST NOT create or modify application files outside `app/`.
 
 The `modules/` directory is READ-ONLY. You MUST NOT edit files in `modules/` — override via documented mechanisms only.
-
-### Module Structure Details
-
-Modules have `public/` and `private/` subdirectories with the same internal structure:
-
-```
-modules/my_module/
-├── public/
-│   ├── views/
-│   ├── forms/
-│   ├── graphql/
-│   └── assets/
-└── private/
-    ├── views/
-    └── forms/
-```
-
-- **Public files** — accessible for preview/download after deployment
-- **Private files** — IP-protected, not accessible for download
-- When referencing module files, omit `public/` and `private/` from the path
-- Files with the same name in both directories will conflict — do not do this
-
-**Module file referencing:**
-```liquid
-{% render 'modules/my_module/header' %}
-{% graphql result = 'modules/my_module/get_data' %}
-{% render_form 'modules/my_module/contact_form' %}
-{{ 'modules/my_module/style.css' | asset_url }}
-```
-
-**Module deletion behavior:** By default, module files are NOT deleted during `pos-cli deploy` to protect private files. To enable deletion:
-```yaml
-# app/config.yml
-modules_that_allow_delete_on_deploy:
-  - my_module
-```
 
 ### File Naming Conventions
 
@@ -263,13 +223,13 @@ Pages MUST contain NO HTML, JS, or CSS. Pages MUST ONLY fetch data and delegate 
 
 ### Business Logic MUST Live in Commands
 
-All business logic MUST reside in `app/lib/commands/`. Pages MUST delegate to commands. Commands MUST follow the build -> check -> execute pattern.
+All business logic MUST reside in `app/lib/commands/`. Pages MUST delegate to commands. Commands MUST follow the build → check → execute pattern.
 
 ### Path Resolution
 
-- `{% render 'blog_posts/card' %}` -> `app/views/partials/blog_posts/card.liquid`
-- `{% function r = 'commands/blog_posts/create' %}` -> `app/lib/commands/blog_posts/create.liquid`
-- `{% function r = 'queries/blog_posts/search' %}` -> `app/lib/queries/blog_posts/search.liquid`
+- `{% render 'blog_posts/card' %}` → `app/views/partials/blog_posts/card.liquid`
+- `{% function r = 'commands/blog_posts/create' %}` → `app/lib/commands/blog_posts/create.liquid`
+- `{% function r = 'queries/blog_posts/search' %}` → `app/lib/queries/blog_posts/search.liquid`
 
 The `lib/` prefix is implicit in `function` calls — do NOT include it.
 
@@ -305,13 +265,16 @@ metadata:
 ---
 ```
 
-**For the home page (root /), omit the slug entirely — app/views/pages/index.liquid serves / by default.**
-
 | Property | Default | Notes |
 |----------|---------|-------|
 | `slug` | From file path | Supports `:param`, `*wildcard`, `(/:optional)` |
 | `method` | `get` | `get`, `post`, `put`, `delete` |
 | `layout` | `application` | Empty string for no layout |
+
+**You MUST NOT use `authorization_policies` in front matter — use User Module helpers instead.**
+**For the home page (root /), omit the slug entirely — app/views/pages/index.liquid serves / by default.**
+**For the home page omit method as it can only be `get` which is default.**
+**One REST method per page**
 
 ### Dynamic Routes
 
@@ -385,7 +348,7 @@ Partials MUST NOT contain hardcoded user-facing text — always use translations
 
 Partials MUST NOT have underscore-prefixed filenames.
 
-The render path maps: `render 'path/name'` -> `app/views/partials/path/name.liquid`.
+The render path maps: `render 'path/name'` → `app/views/partials/path/name.liquid`.
 
 ### Layouts
 
@@ -395,7 +358,7 @@ The default layout is `application`. Set `layout: ""` (empty string) in front ma
 
 ## 6. Commands (Business Logic)
 
-All business logic MUST be encapsulated in commands following the build -> check -> execute pattern.
+All business logic MUST be encapsulated in commands following the build → check → execute pattern.
 
 ### Main Command
 
@@ -580,41 +543,6 @@ All mutations MUST alias the result as `record:` so `modules/core/commands/execu
 - `record: record_update(id: $id, record: { properties: [...] }) { id }`
 - `record: record_delete(table: "...", id: $id) { id }` — **`table` is required**, without it: runtime error "You must specify table"
 
-### Soft Delete vs Hard Delete
-
-**Soft delete** (default) — sets `deleted_at` timestamp:
-```graphql
-mutation {
-  record_delete(table: "article", id: "123") {
-    id
-    deleted_at  # Timestamp is set
-  }
-}
-```
-
-**Hard delete** (permanent) — requires `hard_delete: true`:
-```graphql
-mutation {
-  record_delete(table: "article", id: "123", hard_delete: true) {
-    id
-  }
-}
-```
-
-Soft-deleted records can be queried using the `deleted_at` filter:
-```graphql
-query {
-  records(
-    filter: {
-      table: { value: "article" }
-      deleted_at: { exists: true }
-    }
-  ) {
-    results { id deleted_at }
-  }
-}
-```
-
 ### Pagination Component
 
 ```liquid
@@ -641,53 +569,12 @@ properties:
   - name: image
     type: upload
     options:
-      public: true
-      versions:
-        - name: thumbnail
-          resize: "200x200>"
-        - name: medium
-          resize: "800x600>"
+      acl: public
 ```
 
 ### Property Types
 
 `string`, `text`, `integer`, `float`, `boolean`, `datetime`, `date`, `array`, `upload`
-
-### Upload Options
-
-| Option | Type | Description |
-|--------|------|-------------|
-| `public` | boolean | `true` = public URL, `false` = requires auth |
-| `max_size` | integer | Max file size in bytes |
-| `versions` | array | Image resize versions |
-| `extensions` | array | Allowed file extensions |
-
-Version resize syntax:
-- `100x100>` — Resize only if larger (downscale only)
-- `100x100<` — Resize only if smaller (upscale only)
-- `100x100#` — Exact dimensions (may crop)
-- `100x100^` — Minimum dimensions (may crop)
-- `100x100` — Fit within dimensions
-
-### Reserved Names (MUST NOT Use)
-
-The following names are reserved by platformOS and MUST NOT be used as custom table or property names:
-
-**System fields (automatically created on every record):**
-- `id` — Record UUID
-- `created_at` — Creation timestamp
-- `updated_at` — Last update timestamp
-- `deleted_at` — Soft delete timestamp
-- `type_name` — Table name
-- `properties` — Property container
-
-**Reserved table names:**
-- `user`, `users` — Built-in User table
-- `session`, `sessions` — Session management
-- `record`, `records` — Record operations
-- `constant`, `constants` — System constants
-- `table`, `tables` — Table metadata
-- `background_job`, `background_jobs` — Background job system
 
 ---
 
@@ -706,8 +593,8 @@ The following names are reserved by platformOS and MUST NOT be used as custom ta
 {% redirect_to '/path', status: 302 %}
 {% session key = value %}
 {% log variable, type: 'debug' %}
-{% cache key: 'key_name', expire: 3600 %}...{% endcache %}
-{% background source_name: 'job_name', priority: 'low', delay: 5.0, max_attempts: 3 %}...{% endbackground %}
+{% cache 'key', expire: 3600 %}...{% endcache %}
+{% background source_name: 'job_name', priority: 'low' %}...{% endbackground %}
 {% content_for_layout %}
 {% theme_render_rc 'modules/common-styling/toasts' %}
 ```
@@ -769,28 +656,13 @@ You MUST NOT line-wrap statements within `{% liquid %}` blocks. Each statement M
 | `context.constants` | Environment constants (hidden from `{{ context }}` for security) |
 | `context.page.metadata` | Page metadata from front matter |
 
-### context.current_user
-
-`context.current_user` is a documented platformOS object that returns basic data of the currently logged-in user:
-
-```liquid
-{{ context.current_user.id }}         # User UUID
-{{ context.current_user.email }}      # User email
-{{ context.current_user.first_name }} # First name
-{{ context.current_user.last_name }}  # Last name
-{{ context.current_user.slug }}       # User slug
-{{ context.current_user.properties }} # Custom properties hash
-```
-
-Returns `null` if no user is logged in.
-
-For projects using pos-module-user, prefer `modules/user/queries/user/current` as it provides additional normalized user data and role information. Use `context.current_user` for simple checks (e.g., checking if anyone is logged in) and the User Module query for full user data operations.
+You MUST NOT use `context.current_user` directly — always use `modules/user/queries/user/current`.
 
 ---
 
 ## 11. User Module (Authentication & Authorization)
 
-You MUST use the User Module for all authentication and authorization. You MUST NOT duplicate login logic. You MUST NOT customize auth routes unless explicitly requested.
+You MUST use the User Module for all authentication and authorization. You MUST NOT use `authorization_policies/` directly. You MUST NOT duplicate login logic. You MUST NOT customize auth routes unless explicitly requested.
 
 ### Built-in Roles
 
@@ -837,31 +709,6 @@ Define roles:
 {% return data %}
 ```
 
-### Native Authorization Policies (Optional)
-
-platformOS also provides `authorization_policies/` for page and form-level access control. These work independently of the User Module and are useful for simple checks:
-
-**File:** `app/authorization_policies/requires_login.liquid`
-```liquid
----
-name: requires_login
-redirect_to: /sign-in
-flash_alert: Please sign in to access this page
----
-{% if context.current_user %}true{% else %}false{% endif %}
-```
-
-**Usage in page front matter:**
-```liquid
----
-slug: admin/dashboard
-authorization_policies:
-  - requires_login
----
-```
-
-For projects using pos-module-user, prefer the module's authorization helpers. Use native authorization policies only for simple use cases not covered by the module.
-
 ---
 
 ## 12. Core Module
@@ -898,14 +745,6 @@ You MUST NOT use Tailwind, Bootstrap, or custom CSS frameworks. You MUST use `po
 ## 14. Translations (i18n)
 
 You MUST NOT hardcode user-facing text in partials. You MUST always use `{{ 'app.key' | t }}` and define translations in `app/translations/`.
-The YAML file requires top-level language key:
-
-```
-en:
-  app:
-    contact_form:
-      title: "..."
-```
 
 ---
 
@@ -934,60 +773,7 @@ Form fields MUST use bracket notation for resource binding:
 
 Access in page: `context.params.resource`
 
-HTML forms submit checkbox values as "on" (string), but GraphQL expects boolean field to be Boolean type, not string.
-
-### Form Configurations (app/forms/)
-
-platformOS also supports form configurations in `app/forms/` that define validation, callbacks, and processing. These are YAML + Liquid files:
-
-```liquid
----
-name: contact_form
-resource: contact_message
-resource_owner: anyone
-redirect_to: /contact/thank-you
-flash_notice: Message sent successfully!
-fields:
-  properties:
-    name:
-      validation:
-        presence: true
-    email:
-      validation:
-        presence: true
-        email: true
----
-
-{% form %}
-  <input name="{{ form.fields.properties.name.name }}" value="{{ form.fields.properties.name.value }}">
-  <input name="{{ form.fields.properties.email.name }}" value="{{ form.fields.properties.email.value }}">
-  <button>Submit</button>
-{% endform %}
-```
-
-The `{% form %}` tag automatically generates the `<form>` element with correct attributes and CSRF token. It also provides the `form` object with field metadata.
-
-When using the Core Module command pattern (recommended), use HTML forms with bracket notation. The `{% form %}` tag is available for simpler use cases.
-
-### Form Validation Error Display
-
-```liquid
-{% if form.fields.properties.name.errors %}
-  <span class="error">{{ form.fields.properties.name.errors }}</span>
-{% endif %}
-```
-
-### Validation Types
-
-| Validation | Description |
-|------------|-------------|
-| `presence: true` | Field is required |
-| `email: true` | Must be valid email format |
-| `uniqueness: true` | Must be unique across records |
-| `length: { minimum: 5, maximum: 100 }` | String length constraints |
-| `numericality: { greater_than: 0 }` | Numeric range constraints |
-| `confirmation: true` | Must match `_confirmation` field |
-| `url: true` | Must be valid URL |
+HTML forms submit checkbox values as \"on\" (string), but GraphQL expects boolean field to be Boolean type, not string.
 
 ---
 
@@ -1108,99 +894,7 @@ Handle events via consumers: `payments_transaction_succeeded`, `payments_transac
 
 ---
 
-## 20. Background Jobs
-
-Background jobs run code asynchronously outside the HTTP request cycle.
-
-### Syntax
-
-```liquid
-{% background
-  source_name: 'send_welcome_email',
-  delay: 5.0,
-  priority: 'default',
-  max_attempts: 3
-%}
-  {% graphql user = 'users/find', id: user_id %}
-  {% graphql _ = 'emails/send_welcome', email: user.email %}
-{% endbackground %}
-```
-
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `source_name` | String | — | Human-readable job identifier |
-| `priority` | String | `default` | `high` (1min), `default` (5min), `low` (60min) |
-| `delay` | Float | 0 | Minutes to delay execution |
-| `max_attempts` | Integer | 1 | Retry count (1-5) |
-
-### CRITICAL: Variable Scope
-
-Only variables **explicitly passed** to the background tag are available inside it. The `context` object is available by default but with limitations.
-
-**WRONG:**
-```liquid
-{% assign user_id = context.current_user.id %}
-{% background source_name: 'job' %}
-  {{ user_id }}  {# nil — not passed #}
-{% endbackground %}
-```
-
-**CORRECT:**
-```liquid
-{% assign user_id = context.current_user.id %}
-{% background source_name: 'job', user_id: user_id %}
-  {{ user_id }}  {# Works! Explicitly passed #}
-{% endbackground %}
-```
-
-### Priority Levels & Execution Limits
-
-| Priority | Max Execution | Use Case |
-|----------|---------------|----------|
-| `high` | 1 minute | Critical, time-sensitive tasks |
-| `default` | 5 minutes | Standard operations |
-| `low` | 60 minutes | Heavy processing, batch jobs |
-
-### Monitoring Jobs
-
-```graphql
-query {
-  background_jobs(
-    per_page: 20
-    sort: [{ created_at: { order: DESC } }]
-  ) {
-    results {
-      id
-      source_name
-      priority
-      attempts
-      max_attempts
-      created_at
-      started_at
-      completed_at
-      failed_at
-      error_message
-    }
-  }
-}
-```
-
-### Payload Limits
-
-Keep background job payloads under 100KB. For large data, pass references (IDs) and fetch data inside the job:
-
-```liquid
-{% background record_id: record_id, source_name: 'process' %}
-  {% graphql record = 'records/find', id: record_id %}
-  {# Process the record #}
-{% endbackground %}
-```
-
----
-
-## 21. Migrations
+## 20. Migrations
 
 Migrations execute code outside the regular application cycle — useful for seeding data, initializing constants, and database modifications.
 
@@ -1256,269 +950,11 @@ pos-cli migrations generate dev init_staging_constants
 - **done** — successfully completed (will not run again)
 - **error** — failed (can edit and retry)
 
-### Migration Best Practices
-
-1. **Make migrations idempotent** — running twice should not cause errors:
-```liquid
-{% graphql record = 'records/find', id: record_id %}
-{% unless record.properties.status %}
-  {% graphql _ = 'records/update', id: record_id, status: 'active' %}
-{% endunless %}
-```
-
-2. **Use background jobs for large migrations:**
-```liquid
-{% background source_name: 'data_migration', priority: 'low' %}
-  {% graphql records = 'records/list_all' %}
-  {% for record in records.records.results %}
-    {# Process each record #}
-  {% endfor %}
-{% endbackground %}
-```
-
-3. **Test migrations on staging first**
-4. **Log progress:**
-```liquid
-{% log 'Migration started' %}
-{% log 'Processed 50 records' %}
-```
-
 For large data imports, use Data Import/Export instead of migrations.
 
 ---
 
-## 22. Data Import/Export
-
-### Exporting Data
-
-```bash
-# Export all data
-pos-cli data export staging --path=./export.json
-
-# Export specific tables
-pos-cli data export staging --tables=products,orders --path=./products.json
-```
-
-### Importing Data
-
-```bash
-# Import data
-pos-cli data import staging ./export.json
-
-# Import with transformations
-pos-cli data import staging ./data.json --transform=./transform.js
-```
-
-### Export Format
-
-```json
-{
-  "users": [
-    {
-      "id": "123",
-      "email": "user@example.com",
-      "properties": { "first_name": "John" }
-    }
-  ],
-  "records": {
-    "product": [
-      {
-        "id": "456",
-        "properties": { "name": "Widget", "price": 19.99 }
-      }
-    ]
-  }
-}
-```
-
-### Cleaning Instance Data
-
-```bash
-# WARNING: Deletes all data!
-pos-cli data clean staging
-
-# Clean specific tables
-pos-cli data clean staging --tables=products,orders
-```
-
----
-
-## 23. JSON Documents
-
-JSON Documents provide schemaless data storage for flexible, document-based data.
-
-**Use Cases:** Configuration data, unstructured content, temporary data storage.
-
-### Creating JSON Documents
-
-```graphql
-mutation {
-  json_document_create(
-    document: {
-      name: "site_config"
-      content: "{\"theme\": \"dark\", \"features\": [\"blog\", \"shop\"]}"
-    }
-  ) {
-    id
-    name
-    content
-  }
-}
-```
-
-### Querying
-
-```graphql
-query {
-  json_document(name: "site_config") {
-    id
-    name
-    content
-  }
-
-  json_documents(per_page: 10) {
-    results { id name content }
-  }
-}
-```
-
-### Updating
-
-```graphql
-mutation {
-  json_document_update(
-    name: "site_config"
-    document: { content: "{\"theme\": \"light\"}" }
-  ) {
-    id
-    content
-  }
-}
-```
-
-### Using in Liquid
-
-```liquid
-{% graphql config = 'json_documents/find', name: 'site_config' %}
-{% assign settings = config.json_document.content | parse_json %}
-Theme: {{ settings.theme }}
-```
-
----
-
-## 24. Activity Feeds
-
-Activity Feeds implement the W3C Activity Streams 2.0 specification for tracking user activities.
-
-**Characteristics:** Activities are immutable (append-only), each has a unique UUID.
-
-### Creating Activities
-
-```graphql
-mutation {
-  activity_create(
-    activity: {
-      type: "Join"
-      actor: { type: "Person", id: "User.123", name: "John" }
-      object: { type: "Group", id: "Group.456" }
-    }
-  ) {
-    id
-    uuid
-  }
-}
-```
-
-### Publishing to Feeds
-
-```graphql
-mutation {
-  feed_publish(
-    feed_id: "user_123_notifications"
-    activity_uuid: "abc-123-uuid"
-  ) { id }
-}
-```
-
-### Querying Feeds
-
-```graphql
-query {
-  feeds(feed_id: "user_123_notifications", per_page: 20) {
-    total_entries
-    results { id uuid type actor object target created_at }
-  }
-}
-```
-
-### Common Activity Types
-
-| Type | Description |
-|------|-------------|
-| `Create` | Created something |
-| `Update` | Updated something |
-| `Delete` | Deleted something |
-| `Join` | Joined a group |
-| `Follow` | Started following |
-| `Like` | Liked content |
-| `Comment` | Commented |
-| `Approve` | Approved a request |
-
----
-
-## 25. AI Embeddings
-
-platformOS supports AI embeddings for semantic search and similarity matching.
-
-### Creating Embeddings
-
-```graphql
-mutation {
-  embedding_create(
-    embedding: {
-      name: "product_description"
-      value: "High-quality wireless headphones"
-      target_id: "product_123"
-      target_type: "Product"
-    }
-  ) {
-    id
-    vector
-  }
-}
-```
-
-### Semantic Search
-
-```graphql
-query {
-  embeddings_search(
-    query: "wireless audio devices"
-    limit: 10
-    threshold: 0.7
-  ) {
-    results {
-      id
-      target_id
-      similarity
-      value
-    }
-  }
-}
-```
-
-### Parameters
-
-| Parameter | Description |
-|-----------|-------------|
-| `name` | Embedding type identifier |
-| `value` | Text to embed |
-| `target_id` | Associated entity ID |
-| `target_type` | Associated entity type |
-
----
-
-## 26. Testing
+## 21. Testing
 
 Tests MUST go in `app/lib/tests/*_test.liquid`. Testing ONLY works in staging/development.
 
@@ -1535,7 +971,7 @@ Run tests: `/_tests/run` in browser, or `pos-cli test run staging` for CI.
 
 ---
 
-## 27. CLI Commands
+## 22. CLI Commands
 
 ```bash
 # Deployment
@@ -1572,16 +1008,11 @@ pos-cli generate run modules/core/generators/crud <resource> <props> --include-v
 # Migrations
 pos-cli migrations generate dev <name>
 pos-cli migrations run TIMESTAMP dev
-
-# Data Import/Export
-pos-cli data export staging --path=./export.json
-pos-cli data import staging ./data.json
-pos-cli data clean staging
 ```
 
 ---
 
-## 28. Modules Reference
+## 23. Modules Reference
 
 | Module | Install | Purpose | Required |
 |--------|---------|---------|----------|
@@ -1595,27 +1026,37 @@ pos-cli data clean staging
 
 ---
 
-## 29. Forbidden Behaviors
+## 24. Forbidden Behaviors
 
 You MUST NOT:
 - Edit files in `./modules/` (read-only)
 - Break long lines in `{% liquid %}` blocks (causes syntax errors)
 - Invent Liquid tags, filters, or GraphQL types that do not exist
+- Use `{% form %}` tag (use HTML `<form>` only)
 - Bypass security (CSRF tokens, authorization)
 - Access databases directly outside GraphQL
 - Deploy without running `platformos-check`
 - Sync files outside `./app/`
+- Use `authorization_policies/` directly (use pos-module-user)
+- Use `context.current_user` directly (use user module queries)
+- Use Tailwind, Bootstrap, or custom CSS frameworks (use common-styling)
 - Hardcode API keys, secrets, or environment-specific URLs
 - Hardcode user-facing text in partials (use translations)
 - Put HTML, JS, or CSS in page files
 - Call GraphQL from partials
 - Put raw GraphQL in pages (use `.graphql` files)
 - Create or modify application files outside the `app/` directory
-- Use reserved names (`id`, `created_at`, `deleted_at`, `type_name`, `properties`) as custom property/table names
+- Use more than one HTTP methods per page:
+```
+#Never try to handle POST + rendering + redirect in the same root page. Keep it clean:
+/ → GET → renders page
+/contact (or similar) → POST → processes + redirects
+```
+- Set main page methos as POST - it is not PHP!
 
 ---
 
-## 30. Pre-Flight Checklist
+## 25. Pre-Flight Checklist
 
 Before every change, verify:
 

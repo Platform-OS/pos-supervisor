@@ -81,7 +81,19 @@ export function createToolRegistry(ctx, mcpServer = null) {
       }
 
       if (untracked) {
-        return rawHandler(cleanArgs);
+        // `ctx.untracked = true` is read by tool handlers that emit directly
+        // to sessionBus (currently validate-code.js → `validator_emit`). The
+        // flag is transient — restore the previous value in a finally so a
+        // tool handler that happens to trigger another tool mid-flight does
+        // not lose state. Single-threaded event loop: concurrent calls
+        // already share ctx, so this is consistent with existing practice.
+        const prevUntracked = ctx.untracked;
+        ctx.untracked = true;
+        try {
+          return await rawHandler(cleanArgs);
+        } finally {
+          ctx.untracked = prevUntracked;
+        }
       }
 
       const start = Date.now();

@@ -190,7 +190,19 @@ authorization_policies:
 <p>Author: {{ context.current_user.email }}</p>
 ```
 
-### Page Configuration Options
+### Front Matter
+
+```liquid
+---
+slug: products/:id
+method: post
+layout: application
+metadata:
+  title: "Product Details"
+---
+```
+
+### Front Matter: Page Configuration Options
 
 | Option | Type | Description |
 |--------|------|-------------|
@@ -200,6 +212,17 @@ authorization_policies:
 | `authorization_policies` | Array | Policies to check |
 | `response_headers` | Hash | Custom HTTP headers |
 | `method` | String | HTTP method restriction |
+
+| Property | Default | Notes |
+|----------|---------|-------|
+| `slug` | From file path | Supports `:param`, `*wildcard`, `(/:optional)` |
+| `method` | `get` | `get`, `post`, `put`, `delete` |
+| `layout` | `application` | Empty string for no layout |
+
+**You MUST NOT use `authorization_policies` in front matter — use User Module helpers instead.**
+**For the home page (root /), omit the slug entirely — app/views/pages/index.liquid serves / by default.**
+**For the home page omit method as it can only be `get` which is default.**
+**One REST method per page**
 
 ### Dynamic URL Parameters
 

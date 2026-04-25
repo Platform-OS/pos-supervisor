@@ -9,6 +9,11 @@
 
 const MIN_COHORT = 10;
 
+function tryParseJson(str) {
+  if (!str) return null;
+  try { return JSON.parse(str); } catch { return null; }
+}
+
 /**
  * Beta-binomial posterior: given `successes` out of `total` trials
  * with prior Beta(a, b), return { mean, lower95, upper95 }.
@@ -319,11 +324,14 @@ export function diagnosticJourney(store, templateFp) {
     SELECT d.session_id,
            d.ts,
            d.hint_rule_id,
+           d.hint_md_hash,
            d.fp,
+           d.content_hash,
+           d.file,
            o.outcome,
            o.fix_applied
     FROM diagnostics d
-    LEFT JOIN outcomes o ON o.fp = d.fp
+    LEFT JOIN outcomes o ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
     WHERE d.template_fp = ? AND d.suppressed = 0
     ORDER BY d.ts ASC
   `, [templateFp]);
@@ -337,12 +345,35 @@ export function diagnosticJourney(store, templateFp) {
         occurrences: 0,
         rule_id: null,
         outcomes: [],
+        content_hash: null,
+        hint_md_hash: null,
+        fp: null,
+        file: null,
       });
     }
     const entry = bySession.get(row.session_id);
     entry.occurrences++;
     if (row.hint_rule_id && row.hint_rule_id !== 'unknown') entry.rule_id = row.hint_rule_id;
     if (row.outcome) entry.outcomes.push({ outcome: row.outcome, fix_applied: row.fix_applied ?? null });
+    if (row.content_hash && !entry.content_hash) {
+      entry.content_hash = row.content_hash;
+      entry.fp = row.fp;
+      entry.file = row.file;
+    }
+    if (row.hint_md_hash && !entry.hint_md_hash) {
+      entry.hint_md_hash = row.hint_md_hash;
+    }
+  }
+
+  // Fetch fix data for each session entry that has a diagnostic fingerprint.
+  for (const entry of bySession.values()) {
+    if (!entry.fp) continue;
+    const fixRow = store.queryOne(`
+      SELECT new_text_hash, range_json FROM proposed_fixes
+      WHERE fp = ? AND session_id = ? LIMIT 1
+    `, [entry.fp, entry.session_id]);
+    entry.fix_hash = fixRow?.new_text_hash ?? null;
+    entry.fix_range = tryParseJson(fixRow?.range_json);
   }
 
   const timeline = [...bySession.values()].map(s => {
@@ -360,6 +391,11 @@ export function diagnosticJourney(store, templateFp) {
       rule_id: s.rule_id,
       dominant_outcome: dominant,
       fix_applied: s.outcomes.find(o => o.fix_applied)?.fix_applied ?? null,
+      content_hash: s.content_hash ?? null,
+      hint_md_hash: s.hint_md_hash ?? null,
+      fix_hash: s.fix_hash ?? null,
+      fix_range: s.fix_range ?? null,
+      file: s.file ?? null,
     };
   });
 
@@ -384,11 +420,16 @@ export function diagnosticJourney(store, templateFp) {
  * @returns {Array<{ bucket, predicted, actual_resolution, sample_size }>}
  */
 export function confidenceCalibration(store, { buckets = 10 } = {}) {
+  // Post-A2: every surviving diagnostic gets a default confidence in the
+  // pipeline, so dropping the `confidence IS NOT NULL` guard widens the
+  // calibration sample to cover non-rule-matched diagnostics too. Rows
+  // predating A2 (no pipeline default) will have NULL confidence — exclude
+  // those explicitly so the bucketing math doesn't see NaN.
   const rows = store.query(`
     SELECT d.confidence, o.outcome
     FROM diagnostics d
-    JOIN outcomes o ON o.fp = d.fp
-    WHERE d.confidence IS NOT NULL AND d.suppressed = 0
+    JOIN outcomes o ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
+    WHERE d.suppressed = 0 AND d.confidence IS NOT NULL
   `);
 
   if (rows.length === 0) return [];
@@ -445,11 +486,14 @@ export function fixAdoptionFunnel(store) {
   `);
   const fix_proposed = fixProposedRow?.cnt ?? 0;
 
+  // Post-A1 (dedup): outcomes has one row per (session, file, fp). A plain
+  // JOIN to diagnostics on fp cross-joins by emit count — use EXISTS to
+  // keep the count at one-per-outcome-row.
   const fixAdoptionRows = store.query(`
     SELECT o.fix_applied, COUNT(*) as cnt
     FROM outcomes o
-    JOIN diagnostics d ON o.fp = d.fp
-    WHERE d.suppressed = 0 AND o.fix_applied IS NOT NULL
+    WHERE o.fix_applied IS NOT NULL
+      AND EXISTS (SELECT 1 FROM diagnostics d WHERE d.fp = o.fp AND d.suppressed = 0)
     GROUP BY o.fix_applied
   `);
   let fix_adopted_verbatim = 0, fix_adopted_partial = 0, fix_ignored = 0;
@@ -462,8 +506,7 @@ export function fixAdoptionFunnel(store) {
   const outcomeRows = store.query(`
     SELECT o.outcome, COUNT(*) as cnt
     FROM outcomes o
-    JOIN diagnostics d ON o.fp = d.fp
-    WHERE d.suppressed = 0
+    WHERE EXISTS (SELECT 1 FROM diagnostics d WHERE d.fp = o.fp AND d.suppressed = 0)
     GROUP BY o.outcome
   `);
   let resolved = 0, regressed = 0, unchanged = 0;
@@ -500,7 +543,7 @@ export function ruleScoresByCategory(store) {
            d.file,
            o.outcome
     FROM diagnostics d
-    JOIN outcomes o ON o.fp = d.fp
+    JOIN outcomes o ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
     WHERE d.hint_rule_id IS NOT NULL AND d.hint_rule_id != 'unknown' AND d.suppressed = 0
   `);
 
@@ -527,12 +570,12 @@ export function ruleScoresByCategory(store) {
 
 function classifyFilePath(file) {
   if (!file) return 'other';
-  if (file.includes('/pages/') || file.includes('/layouts/')) return 'pages';
-  if (file.includes('/partials/') || file.includes('/lib/')) return 'partials';
-  if (file.includes('/commands/') || file.includes('/mutations/')) return 'commands';
-  if (file.includes('/queries/')) return 'queries';
-  if (file.endsWith('.graphql') || file.includes('/graphql/')) return 'graphql';
-  if (file.includes('/schema/') || file.endsWith('.yml') || file.endsWith('.yaml')) return 'schema';
+  if (file.startsWith('app/views/pages/') || file.startsWith('app/views/layouts/')) return 'pages';
+  if (file.startsWith('app/views/partials/')) return 'partials';
+  if (file.startsWith('app/lib/commands/') || file.includes('/mutations/')) return 'commands';
+  if (file.startsWith('app/lib/queries/')) return 'queries';
+  if (file.endsWith('.graphql') || file.startsWith('app/graphql/')) return 'graphql';
+  if (file.startsWith('app/schema/') || file.endsWith('.yml') || file.endsWith('.yaml')) return 'schema';
   return 'other';
 }
 
@@ -560,7 +603,7 @@ export function knowledgeGaps(store) {
       SELECT COUNT(*) as total,
              SUM(CASE WHEN o.outcome = 'resolved' THEN 1 ELSE 0 END) as resolved
       FROM outcomes o
-      JOIN diagnostics d ON o.fp = d.fp
+      JOIN diagnostics d ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
       WHERE d.check_name = ? AND d.suppressed = 0
     `, [row.check_name]);
 
@@ -578,19 +621,109 @@ export function knowledgeGaps(store) {
 }
 
 /**
+ * Rule performance — **reporting view.**
+ *
+ * Mirror of `ruleScores()` (case-base.js) but intended for dashboards and
+ * reports, not promotion decisions:
+ *   - Default threshold 1 (not 5): surface every rule that fired at least
+ *     once so operators can see the long tail, including brand-new rules.
+ *   - Includes `${check}.unmatched` fallback rule_ids (set by the pipeline
+ *     for rule-less diagnostics — A4). These don't correspond to a
+ *     registered rule, but they belong in reporting so the coverage gap is
+ *     visible.
+ *   - Omits the `disabled` flag. Disabling is a promotion decision; reports
+ *     shouldn't imply one by displaying a derived threshold label.
+ *   - Uses `EXISTS` for the outcome join. Post-A1 `outcomes` carries one row
+ *     per (session, file, fp); a plain JOIN cross-multiplies with per-emit
+ *     diagnostic rows. EXISTS keeps counts at one-per-outcome.
+ *
+ * @param {object} store
+ * @param {object} [opts]
+ * @param {number} [opts.minEmitted=1]
+ * @returns {Array<RulePerformance>}
+ */
+export function rulePerformance(store, { minEmitted = 1 } = {}) {
+  const ruleRows = store.query(`
+    SELECT d.hint_rule_id as rule_id,
+           COUNT(*) as emitted,
+           MIN(d.check_name) as check_name
+    FROM diagnostics d
+    WHERE d.hint_rule_id IS NOT NULL
+      AND d.hint_rule_id != 'unknown'
+      AND d.suppressed = 0
+    GROUP BY d.hint_rule_id
+    HAVING COUNT(*) >= ?
+  `, [minEmitted]);
+
+  const scores = [];
+
+  for (const row of ruleRows) {
+    const outcomeRows = store.query(`
+      SELECT o.outcome, o.fix_applied, COUNT(*) as cnt
+      FROM outcomes o
+      WHERE EXISTS (
+        SELECT 1 FROM diagnostics d
+        WHERE d.fp = o.fp AND d.hint_rule_id = ? AND d.suppressed = 0
+      )
+      GROUP BY o.outcome, o.fix_applied
+    `, [row.rule_id]);
+
+    let resolved = 0, regressed = 0, unchanged = 0, moved = 0;
+    let adopted = 0, totalOutcomes = 0;
+
+    for (const o of outcomeRows) {
+      totalOutcomes += o.cnt;
+      if (o.outcome === 'resolved') resolved += o.cnt;
+      else if (o.outcome === 'regressed') regressed += o.cnt;
+      else if (o.outcome === 'unchanged') unchanged += o.cnt;
+      else if (o.outcome === 'moved') moved += o.cnt;
+      if (o.fix_applied === 'verbatim') adopted += o.cnt;
+    }
+
+    const resolutionRate = totalOutcomes > 0 ? resolved / totalOutcomes : 0;
+    const regressionRate = totalOutcomes > 0 ? regressed / totalOutcomes : 0;
+    const adoptionRate = totalOutcomes > 0 ? adopted / totalOutcomes : 0;
+    const effectiveness = resolutionRate - regressionRate;
+
+    scores.push({
+      rule_id: row.rule_id,
+      check: row.check_name,
+      emitted: row.emitted,
+      total_outcomes: totalOutcomes,
+      resolved,
+      regressed,
+      unchanged,
+      moved,
+      adopted,
+      resolution_rate: resolutionRate,
+      regression_rate: regressionRate,
+      adoption_rate: adoptionRate,
+      effectiveness,
+      unmatched: row.rule_id.endsWith('.unmatched'),
+    });
+  }
+
+  scores.sort((a, b) => a.effectiveness - b.effectiveness);
+  return scores;
+}
+
+/**
  * Rule drilldown — detailed diagnostic samples for a specific rule.
  * Returns recent instances where this rule fired, with outcomes, fix status,
  * and file distribution. Used by the dashboard drill-down panel.
  */
 export function ruleDrilldown(store, ruleId, { limit = 30 } = {}) {
-  // Each diagnostic row gets at most one outcome via a correlated subquery,
+  // Each diagnostic row gets at most one outcome via correlated subqueries,
   // avoiding the cartesian product from a plain LEFT JOIN on fp.
   const samples = store.query(`
     SELECT d.rowid as did, d.fp, d.template_fp, d.file, d.check_name, d.ts,
-           d.confidence, d.session_id,
-           (SELECT o.outcome FROM outcomes o WHERE o.fp = d.fp ORDER BY o.id DESC LIMIT 1) as outcome,
-           (SELECT o.fix_applied FROM outcomes o WHERE o.fp = d.fp ORDER BY o.id DESC LIMIT 1) as fix_applied,
-           (SELECT o.collateral_added FROM outcomes o WHERE o.fp = d.fp ORDER BY o.id DESC LIMIT 1) as collateral_added
+           d.confidence, d.session_id, d.content_hash, d.hint_md_hash,
+           (SELECT o.outcome FROM outcomes o WHERE o.fp = d.fp AND o.session_id = d.session_id ORDER BY o.id DESC LIMIT 1) as outcome,
+           (SELECT o.fix_applied FROM outcomes o WHERE o.fp = d.fp AND o.session_id = d.session_id ORDER BY o.id DESC LIMIT 1) as fix_applied,
+           (SELECT o.collateral_added FROM outcomes o WHERE o.fp = d.fp AND o.session_id = d.session_id ORDER BY o.id DESC LIMIT 1) as collateral_added,
+           (SELECT pf.new_text_hash FROM proposed_fixes pf WHERE pf.fp = d.fp AND pf.session_id = d.session_id LIMIT 1) as fix_hash,
+           (SELECT pf.range_json FROM proposed_fixes pf WHERE pf.fp = d.fp AND pf.session_id = d.session_id LIMIT 1) as fix_range_json,
+           (SELECT pf.rule_id FROM proposed_fixes pf WHERE pf.fp = d.fp AND pf.session_id = d.session_id LIMIT 1) as fix_rule_id
     FROM diagnostics d
     WHERE d.hint_rule_id = ? AND d.suppressed = 0
     GROUP BY d.fp, d.session_id
@@ -645,6 +778,11 @@ export function ruleDrilldown(store, ruleId, { limit = 30 } = {}) {
       outcome: s.outcome ?? null,
       fix_applied: s.fix_applied ?? null,
       collateral: s.collateral_added ?? 0,
+      content_hash: s.content_hash ?? null,
+      hint_md_hash: s.hint_md_hash ?? null,
+      fix_hash: s.fix_hash ?? null,
+      fix_range: tryParseJson(s.fix_range_json),
+      fix_rule_id: s.fix_rule_id ?? null,
     })),
     file_distribution: fileStats.map(f => ({
       file: f.file,
@@ -659,5 +797,190 @@ export function ruleDrilldown(store, ruleId, { limit = 30 } = {}) {
       regressed: t.regressed,
       sample_file: t.sample_file,
     })),
+  };
+}
+
+/**
+ * I1 — heuristic + rule fix-proposal performance.
+ *
+ * Reports per-rule_id stats grouped by `proposed_fixes.rule_id`. Covers BOTH
+ * rule-engine rules (e.g. "UnknownFilter.suggest_nearest") and heuristic-
+ * generator variants (e.g. "heuristic:UnknownFilter.text_edit"). Complements
+ * `rulePerformance()`, which groups on `diagnostics.hint_rule_id` — that one
+ * measures rule *matching*, this one measures fix *proposal / adoption*.
+ *
+ * Uses EXISTS when joining back to diagnostics so post-A1 outcome dedup isn't
+ * re-inflated by multiple emit rows sharing the same fp.
+ *
+ * @param {object} store
+ * @param {object} [opts]
+ * @param {number} [opts.minProposed=1]
+ * @returns {Array<{
+ *   rule_id, source, fix_kind,
+ *   proposed, outcomes, adopted_verbatim, adopted_partial,
+ *   adoption_rate, resolution_rate,
+ * }>}
+ */
+export function fixRulePerformance(store, { minProposed = 1 } = {}) {
+  const rows = store.query(`
+    SELECT pf.rule_id,
+           MIN(pf.kind)  AS fix_kind,
+           COUNT(*)      AS proposed
+    FROM proposed_fixes pf
+    WHERE pf.rule_id IS NOT NULL
+    GROUP BY pf.rule_id
+    HAVING COUNT(*) >= ?
+  `, [minProposed]);
+
+  const out = [];
+  for (const r of rows) {
+    const outcomeRows = store.query(`
+      SELECT o.outcome, o.fix_applied, COUNT(*) AS n
+      FROM outcomes o
+      WHERE EXISTS (
+        SELECT 1 FROM proposed_fixes pf
+        WHERE pf.fp = o.fp AND pf.session_id = o.session_id AND pf.rule_id = ?
+      )
+      GROUP BY o.outcome, o.fix_applied
+    `, [r.rule_id]);
+
+    let resolved = 0, regressed = 0, unchanged = 0, moved = 0;
+    let adopted_verbatim = 0, adopted_partial = 0, adopted_none = 0, total = 0;
+    for (const o of outcomeRows) {
+      total += o.n;
+      if (o.outcome === 'resolved')       resolved   += o.n;
+      else if (o.outcome === 'regressed') regressed  += o.n;
+      else if (o.outcome === 'unchanged') unchanged  += o.n;
+      else if (o.outcome === 'moved')     moved      += o.n;
+
+      if (o.fix_applied === 'verbatim')      adopted_verbatim += o.n;
+      else if (o.fix_applied === 'partial')  adopted_partial  += o.n;
+      else                                   adopted_none     += o.n;
+    }
+
+    const source = r.rule_id.startsWith('heuristic:') ? 'heuristic' : 'rule';
+    out.push({
+      rule_id: r.rule_id,
+      source,
+      fix_kind: r.fix_kind,
+      proposed: r.proposed,
+      outcomes: total,
+      resolved,
+      regressed,
+      unchanged,
+      moved,
+      adopted_verbatim,
+      adopted_partial,
+      adopted_none,
+      adoption_rate: total ? (adopted_verbatim + adopted_partial) / total : 0,
+      resolution_rate: total ? resolved / total : 0,
+    });
+  }
+
+  out.sort((a, b) => b.proposed - a.proposed);
+  return out;
+}
+
+/**
+ * Part G — adaptive-mode impact summary.
+ *
+ * Answers "what is adaptive mode actually doing right now, and what would
+ * static mode have done differently?" Two halves:
+ *
+ * 1. Current adaptive state:
+ *    - which rules are disabled (+ their scores & outcome counts)
+ *    - active force-enable / force-disable overrides
+ *    - avg |adaptive_confidence - raw_confidence| over the last N emits
+ *      (measures how aggressively case-base is bending scores)
+ *
+ * 2. Counterfactual for the recent window:
+ *    - diagnostics suppressed by auto-disable (would have been surfaced
+ *      under static mode)
+ *    - fix proposals contributed by promoted rules (would be missing under
+ *      static mode — promoted rules only exist in adaptive)
+ *    - net delta headline for the dashboard summary row
+ *
+ * The query itself is schema-only — it doesn't touch the engine. The caller
+ * (server.js → /api/engine/impact) merges in the live engine state
+ * (`getDisabledRuleDetails`, override sets, `listPromotedRules`) that isn't
+ * in the DB.
+ *
+ * @param {object} store
+ * @param {object} [opts]
+ * @param {number} [opts.windowMs=86400000]  Look-back window, default 24h.
+ * @returns {{
+ *   window_ms, window_start, window_end,
+ *   emits_in_window, rule_matched_in_window,
+ *   avg_confidence_delta,
+ *   confidence_delta_samples,
+ *   suppressed_by_disabled,
+ *   promoted_fix_contributions
+ * }}
+ */
+export function adaptiveModeImpact(store, { windowMs = 86400000 } = {}) {
+  const windowEnd = new Date().toISOString();
+  const windowStart = new Date(Date.now() - windowMs).toISOString();
+
+  const emitsRow = store.queryOne(`
+    SELECT COUNT(*) AS cnt
+    FROM diagnostics
+    WHERE ts BETWEEN ? AND ? AND suppressed = 0
+  `, [windowStart, windowEnd]);
+
+  const ruleMatchedRow = store.queryOne(`
+    SELECT COUNT(*) AS cnt
+    FROM diagnostics
+    WHERE ts BETWEEN ? AND ?
+      AND suppressed = 0
+      AND hint_rule_id IS NOT NULL
+      AND hint_rule_id != 'unknown'
+      AND hint_rule_id NOT LIKE '%.unmatched'
+  `, [windowStart, windowEnd]);
+
+  // avg |adaptive - raw| is not computable from the DB — the store only
+  // records the final confidence. To surface *some* adjustment signal we
+  // return the spread of confidence values across rule-matched diagnostics
+  // in the window, which moves when case-base scoring bends confidences.
+  const confRow = store.queryOne(`
+    SELECT COUNT(*) AS n,
+           AVG(confidence) AS mean,
+           MIN(confidence) AS min_c,
+           MAX(confidence) AS max_c
+    FROM diagnostics
+    WHERE ts BETWEEN ? AND ?
+      AND suppressed = 0
+      AND confidence IS NOT NULL
+      AND hint_rule_id NOT LIKE '%.unmatched'
+  `, [windowStart, windowEnd]);
+
+  // Counterfactual: diagnostics whose hint_rule_id is in the currently-
+  // disabled set. The query can't know the live disabled set — it's set
+  // from the engine at call time — so we return a helper sub-query result
+  // keyed by rule_id that the caller filters.
+  const byRuleRows = store.query(`
+    SELECT hint_rule_id AS rule_id, COUNT(*) AS n
+    FROM diagnostics
+    WHERE ts BETWEEN ? AND ? AND suppressed = 0
+    GROUP BY hint_rule_id
+  `, [windowStart, windowEnd]);
+  const byRule = {};
+  for (const r of byRuleRows) if (r.rule_id) byRule[r.rule_id] = r.n;
+
+  return {
+    window_ms: windowMs,
+    window_start: windowStart,
+    window_end: windowEnd,
+    emits_in_window: emitsRow?.cnt ?? 0,
+    rule_matched_in_window: ruleMatchedRow?.cnt ?? 0,
+    confidence: {
+      samples: confRow?.n ?? 0,
+      mean: confRow?.mean ?? null,
+      min: confRow?.min_c ?? null,
+      max: confRow?.max_c ?? null,
+    },
+    // The caller (HTTP handler) takes this map + the live disabled set and
+    // sums up hits for only those rule_ids. Keeping the split here — DB
+    // side can't see the live engine state — means the query stays pure.
+    emits_by_rule: byRule,
   };
 }

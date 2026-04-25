@@ -65,6 +65,8 @@ tools will reject.
 6. **Feedback loop.** When `validate_code` returns `status !== "ok"` or
    `must_fix_before_write: true`, fix every error and re-validate. MUST NOT
    write the file to disk until validation passes.
+   When debugging existing files, always read them from disk first and submit
+   their actual content to `validat_code` tool.
 7. Creation order matters: schema → graphql → partial → page.
 8. **`analyze_project` — project-wide health check.** MUST be called:
    - **Before reporting task completion.** `validate_code` only sees one
@@ -303,13 +305,16 @@ metadata:
 ---
 ```
 
-**For the home page (root /), omit the slug entirely — app/views/pages/index.liquid serves / by default.**
-
 | Property | Default | Notes |
 |----------|---------|-------|
 | `slug` | From file path | Supports `:param`, `*wildcard`, `(/:optional)` |
 | `method` | `get` | `get`, `post`, `put`, `delete` |
 | `layout` | `application` | Empty string for no layout |
+
+**You MUST NOT use `authorization_policies` in front matter — use User Module helpers instead.**
+**For the home page (root /), omit the slug entirely — app/views/pages/index.liquid serves / by default.**
+**For the home page omit method as it can only be `get` which is default.**
+**One REST method per page**
 
 ### Dynamic Routes
 
@@ -896,7 +901,7 @@ You MUST NOT use Tailwind, Bootstrap, or custom CSS frameworks. You MUST use `po
 ## 14. Translations (i18n)
 
 You MUST NOT hardcode user-facing text in partials. You MUST always use `{{ 'app.key' | t }}` and define translations in `app/translations/`.
-The YAML file require top-level language key:
+The YAML file requires top-level language key:
 
 ```
 en:
@@ -1610,7 +1615,12 @@ You MUST NOT:
 - Put raw GraphQL in pages (use `.graphql` files)
 - Create or modify application files outside the `app/` directory
 - Use reserved names (`id`, `created_at`, `deleted_at`, `type_name`, `properties`) as custom property/table names
-
+- Use more than one HTTP methods per page:
+```
+#Never try to handle POST + rendering + redirect in the same root page. Keep it clean:
+/ → GET → renders page
+/contact (or similar) → POST → processes + redirects
+```
 ---
 
 ## 30. Pre-Flight Checklist

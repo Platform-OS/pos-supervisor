@@ -10,11 +10,12 @@ import { HTTP_MAX_BODY } from './core/constants.js';
 import { buildDashboardHtml } from './dashboard.js';
 import { getProjectMap } from './tools/project-map.js';
 import { buildDependencyGraph } from './core/dependency-graph.js';
-import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams, diagnosticJourney, confidenceCalibration, fixAdoptionFunnel, knowledgeGaps, ruleScoresByCategory, ruleDrilldown } from './core/analytics-queries.js';
+import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams, diagnosticJourney, confidenceCalibration, fixAdoptionFunnel, knowledgeGaps, ruleScoresByCategory, ruleDrilldown, rulePerformance, adaptiveModeImpact, fixRulePerformance } from './core/analytics-queries.js';
 import { ruleScores, suggestedRules, retrieveCasesByCheck, generateRuleTemplate, synthesizeGuardPredicate } from './core/case-base.js';
 import { addPromotedRule, removePromotedRule, listPromotedRules } from './core/rules/promoted-rules.js';
 import { reloadRules, loadAllRules } from './core/rules/index.js';
-import { runRules, getDisabledRules, getAllChecksWithRules, getRulesForCheck } from './core/rules/engine.js';
+import { runRules, getDisabledRules, getAllChecksWithRules, getRulesForCheck, getDisabledRuleDetails, getForceEnabledRules, getForceDisabledRules } from './core/rules/engine.js';
+import { loadOverrides, addForceEnable, addForceDisable, removeOverride } from './core/rule-overrides.js';
 import { extractParams, templateOf, KNOWN_EXTRACTOR_CHECKS } from './core/diagnostic-record.js';
 import { buildFactGraph } from './core/project-fact-graph.js';
 
@@ -22,7 +23,7 @@ import { buildFactGraph } from './core/project-fact-graph.js';
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
  * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, onAnalyticsRebuild, switchEngineMode, getEngineMode }) {
+export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild, onOverridesChanged, switchEngineMode, getEngineMode }) {
   if (!port) return null;
 
   const dashboardHtml = buildDashboardHtml();
@@ -168,6 +169,10 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       if (url.pathname === '/api/rules/test') {
         return handleRuleTest(body, res, analyticsStore, projectDir);
       }
+
+      if (url.pathname === '/api/engine/rule-overrides') {
+        return handleRuleOverridesMutate(projectDir, body, res, log, onOverridesChanged);
+      }
     }
 
     // ── Analytics GET routes ──────────────────────────────────────────────
@@ -194,6 +199,14 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
 
     if (method === 'GET' && url.pathname === '/api/analytics/rule-scores') {
       return handleRuleScores(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/rule-performance') {
+      return handleRulePerformance(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/fix-rule-performance') {
+      return handleFixRulePerformance(analyticsStore, url, res);
     }
 
     if (method === 'GET' && url.pathname === '/api/analytics/rule-drilldown') {
@@ -239,6 +252,20 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
     if (method === 'GET' && url.pathname === '/api/engine-map') {
       return handleEngineMap(analyticsStore, res);
     }
+
+    if (method === 'GET' && url.pathname === '/api/blob') {
+      return handleBlobRead(blobStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/engine/impact') {
+      return handleEngineImpact(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/engine/rule-overrides') {
+      return handleRuleOverridesList(projectDir, res, log);
+    }
+    // POST on this path is dispatched inside the POST block above so the
+    // shared body-parser isn't read twice.
 
     // ── Fallback ────────────────────────────────────────────────────────
     sendJson(res, 404, { error: 'Not found' });
@@ -989,6 +1016,111 @@ function handleEngineMap(analyticsStore, res) {
   }
 }
 
+function handleBlobRead(blobStore, url, res) {
+  if (!blobStore) return sendJson(res, 503, { error: 'blob store not available' });
+  const hash = url.searchParams.get('hash');
+  if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) {
+    return sendJson(res, 400, { error: 'hash must be a 64-char hex SHA256 string' });
+  }
+  const text = blobStore.getText(hash);
+  if (text == null) return sendJson(res, 404, { error: 'blob not found' });
+  return sendJson(res, 200, { text });
+}
+
+/**
+ * GET /api/engine/impact
+ *
+ * Returns the adaptive-mode impact summary: what rules are currently
+ * disabled/promoted/overridden, window-scoped emit counts and the split
+ * between rules that *would* fire under static mode (currently disabled)
+ * vs adaptive (currently firing). Payload is a merge of the live engine
+ * state (not in the DB) and adaptiveModeImpact() (DB-derived window query).
+ */
+function handleEngineImpact(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const windowMs = parseInt(url.searchParams.get('window_ms') || String(86_400_000), 10);
+    const impact = adaptiveModeImpact(analyticsStore, { windowMs });
+
+    const disabled = getDisabledRuleDetails();
+    const forceEnabled = [...getForceEnabledRules()];
+    const forceDisabled = [...getForceDisabledRules()];
+
+    // Counterfactual: sum window emits that hit currently-disabled rule_ids.
+    // These are the diagnostics the operator would have seen under static
+    // mode. A rule in force_enabled is disabled-by-data but running anyway,
+    // so it still contributes to the adaptive view — exclude it from the
+    // suppressed sum.
+    let suppressed_by_disabled = 0;
+    const per_rule_suppressed = {};
+    for (const row of disabled) {
+      if (row.force_enabled) continue;
+      const hits = impact.emits_by_rule[row.rule_id] ?? 0;
+      if (hits > 0) {
+        suppressed_by_disabled += hits;
+        per_rule_suppressed[row.rule_id] = hits;
+      }
+    }
+
+    return sendJson(res, 200, {
+      window: {
+        ms: impact.window_ms,
+        start: impact.window_start,
+        end: impact.window_end,
+      },
+      emits_in_window: impact.emits_in_window,
+      rule_matched_in_window: impact.rule_matched_in_window,
+      confidence: impact.confidence,
+      disabled_rules: disabled,
+      force_enabled: forceEnabled,
+      force_disabled: forceDisabled,
+      counterfactual: {
+        suppressed_by_disabled,
+        per_rule_suppressed,
+      },
+    });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleRuleOverridesList(projectDir, res, log) {
+  try {
+    const state = loadOverrides(projectDir, { log });
+    sendJson(res, 200, state);
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+/**
+ * POST /api/engine/rule-overrides
+ *
+ * Body: `{ action: 'force_enable' | 'force_disable' | 'clear', rule_id: string, reason?: string }`.
+ *
+ * clear → removes any override for the rule. The `onOverridesChanged` hook
+ * re-reads the file into the engine and runs `syncDisabledRules` so the
+ * effect is visible immediately without restart.
+ */
+function handleRuleOverridesMutate(projectDir, body, res, log, onOverridesChanged) {
+  const { action, rule_id, reason } = body ?? {};
+  if (!rule_id || typeof rule_id !== 'string') {
+    return sendJson(res, 400, { error: 'rule_id required' });
+  }
+  try {
+    let state;
+    if (action === 'force_enable')       state = addForceEnable(projectDir, rule_id, reason ?? '', { log });
+    else if (action === 'force_disable') state = addForceDisable(projectDir, rule_id, reason ?? '', { log });
+    else if (action === 'clear')         state = removeOverride(projectDir, rule_id, { log });
+    else return sendJson(res, 400, { error: 'action must be force_enable | force_disable | clear' });
+
+    try { onOverridesChanged?.(); } catch (e) { log(`onOverridesChanged failed: ${e.message}`); }
+    sendJson(res, 200, state);
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function sendJson(res, status, data) {
@@ -1077,6 +1209,28 @@ function handleRuleScores(analyticsStore, url, res) {
   try {
     const minEmitted = parseInt(url.searchParams.get('min_emitted') || '5', 10);
     const scores = ruleScores(analyticsStore, { minEmitted });
+    sendJson(res, 200, { scores });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleRulePerformance(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const minEmitted = parseInt(url.searchParams.get('min_emitted') || '1', 10);
+    const scores = rulePerformance(analyticsStore, { minEmitted });
+    sendJson(res, 200, { scores });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleFixRulePerformance(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const minProposed = parseInt(url.searchParams.get('min_proposed') || '1', 10);
+    const scores = fixRulePerformance(analyticsStore, { minProposed });
     sendJson(res, 200, { scores });
   } catch (e) {
     sendJson(res, 500, { error: e.message });

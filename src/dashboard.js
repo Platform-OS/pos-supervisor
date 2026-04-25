@@ -698,6 +698,25 @@ export function buildDashboardHtml() {
   .journey-label { font-size: 8px; color: var(--muted); text-align: center; max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .journey-occ { font-size: 8px; color: var(--text); font-weight: bold; }
   .journey-meta { margin-top: 8px; font-size: 10px; color: var(--muted); display: flex; gap: 16px; }
+  .journey-node.clickable { cursor: pointer; }
+  .journey-node.clickable:hover .journey-dot { box-shadow: 0 0 0 2px var(--blue); }
+  .journey-node.selected .journey-dot { box-shadow: 0 0 0 3px white; }
+
+  /* ── Code context panel ───────────────────────────────────────────── */
+  .code-ctx { margin-top: 10px; background: #1d2021; border: 1px solid var(--border); border-radius: 3px; overflow: hidden; }
+  .code-ctx-header { padding: 5px 10px; background: #282c2e; color: var(--muted); font-size: 10px; display: flex; justify-content: space-between; align-items: center; }
+  .code-ctx-pre { margin: 0; padding: 8px 10px; font-size: 10px; overflow-x: auto; line-height: 1.5; color: var(--text); }
+  .code-ctx-lnum { display: inline-block; min-width: 28px; text-align: right; margin-right: 8px; color: #555; user-select: none; }
+  .code-ctx-err-line { background: rgba(204,36,29,0.18); display: block; }
+  .code-ctx-fix { margin: 0; padding: 8px 10px; font-size: 10px; overflow-x: auto; line-height: 1.5; color: #b8d9a8; }
+  .code-ctx-fix-label { padding: 4px 10px; color: var(--green); font-size: 10px; background: rgba(142,192,124,0.12); border-top: 1px solid var(--border); }
+  .code-ctx-hint { margin: 0; padding: 8px 10px; font-size: 10px; overflow-x: auto; line-height: 1.5; color: #e6d4a3; white-space: pre-wrap; }
+  .code-ctx-hint-label { padding: 4px 10px; color: var(--yellow); font-size: 10px; background: rgba(215,153,33,0.12); border-top: 1px solid var(--border); }
+  .code-ctx-empty { padding: 12px; color: var(--muted); font-size: 11px; font-style: italic; }
+  .rd-expandable { cursor: pointer; }
+  .rd-expandable:hover td { background: rgba(255,255,255,0.04); }
+  .rd-expanded-row td { padding: 0 !important; }
+  .rd-expanded-row .code-ctx { margin: 0; border-radius: 0; border-left: none; border-right: none; }
 
   /* ── L3: Confidence Calibration Chart ────────────────────────────── */
   .cal-container { padding: 14px; background: var(--surface); border: 1px solid var(--border); box-shadow: 2px 2px 0 var(--border); }
@@ -875,6 +894,37 @@ export function buildDashboardHtml() {
   .sess-diff-up { color: var(--red); }
   .sess-diff-down { color: var(--green); }
   .sess-diff-same { color: var(--muted); }
+
+  /* ── Adaptive Mode Impact (Part G + I4) ─────────────────────────────── */
+  .ami-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin: 10px 0; }
+  .ami-stat { background: var(--surface); border: 1px solid var(--border); padding: 8px 10px; }
+  .ami-stat .n { font-size: 18px; font-weight: bold; color: var(--text); }
+  .ami-stat .l { font-size: 9px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.5px; }
+  .ami-stat.delta .n { color: var(--yellow); }
+  .ami-section-title { margin: 12px 0 6px; font-size: 11px; font-weight: bold; text-transform: uppercase; color: var(--muted); }
+  .ami-section-title .muted { color: var(--muted); font-weight: normal; text-transform: none; font-size: 10px; margin-left: 6px; }
+  .ami-table { width: 100%; border-collapse: collapse; font-size: 10px; margin-top: 4px; }
+  .ami-table th { text-align: left; padding: 6px 8px; background: var(--surface); border-bottom: 1px solid var(--border); font-weight: normal; color: var(--muted); text-transform: uppercase; font-size: 9px; }
+  .ami-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .ami-table .rule-id { font-family: var(--mono); color: var(--text); }
+  .ami-table .reason { color: var(--muted); font-size: 9px; }
+  .ami-table .fe-flag { background: rgba(142,192,124,0.15); color: var(--green); padding: 1px 5px; border-radius: 2px; font-size: 9px; }
+  .ami-btn { font-size: 10px; padding: 2px 6px; background: none; border: 1px solid var(--border); color: var(--text); cursor: pointer; margin-right: 4px; }
+  .ami-btn:hover { background: rgba(255,255,255,0.06); }
+  .ami-btn.green { border-color: var(--green); color: var(--green); }
+  .ami-btn.red { border-color: var(--red); color: var(--red); }
+  .ami-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
+  .ami-chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ami-chip { background: var(--surface); border: 1px solid var(--border); padding: 3px 6px 3px 8px; font-size: 10px; display: inline-flex; align-items: center; gap: 6px; }
+  .ami-chip .clear-x { cursor: pointer; color: var(--muted); font-weight: bold; }
+  .ami-chip .clear-x:hover { color: var(--red); }
+  .ami-empty { color: var(--muted); font-size: 10px; font-style: italic; padding: 8px; }
+  .ami-legend-tiny { color: var(--muted); font-size: 9px; margin: 0 0 10px; font-style: italic; }
+  .ami-legend-tiny code { background: var(--surface); padding: 0 3px; border-radius: 2px; }
+  .ami-add-form { display: flex; gap: 6px; margin: 4px 0 4px; flex-wrap: wrap; align-items: center; }
+  .ami-input { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 6px; font-size: 10px; font-family: var(--mono); min-width: 280px; }
+  .ami-input-reason { min-width: 200px; }
+  .ami-input:focus { outline: none; border-color: var(--blue); }
 
   /* ── Engine Map ────────────────────────────────────────────────────── */
   .em-header { margin-bottom: 16px; }
@@ -1479,6 +1529,41 @@ export function buildDashboardHtml() {
 
   <div class="em-stats-row" id="em-stats"></div>
 
+  <!-- ── Adaptive Mode Impact (Part G + I4) ──────────────────────────── -->
+  <div class="em-panels">
+    <div class="em-panel">
+      <div class="em-section-title">
+        Adaptive Mode Impact
+        <button id="ami-refresh-btn" class="primary" style="margin-left:10px;font-size:10px">Refresh</button>
+        <span class="ts" id="ami-last-fetched" style="margin-left:6px"></span>
+      </div>
+      <div class="an-legend">
+        What adaptive mode is doing right now vs what static mode would do.
+        Disabled rules are suppressed by low case-base effectiveness. Force-enable
+        a rule to run it anyway (e.g. to re-test after a false-positive fix);
+        force-disable is an emergency kill-switch.
+      </div>
+      <div id="ami-summary" class="ami-summary"></div>
+
+      <div class="ami-section-title">Add manual override</div>
+      <div class="ami-add-form">
+        <input type="text" id="ami-add-rule-id" class="ami-input" list="ami-known-rules" placeholder="rule_id OR check name (e.g. pos-supervisor:HtmlInPage)" autocomplete="off" />
+        <datalist id="ami-known-rules"></datalist>
+        <input type="text" id="ami-add-reason" class="ami-input ami-input-reason" placeholder="reason (optional)" />
+        <button class="ami-btn green" id="ami-add-fe-btn">Force-enable</button>
+        <button class="ami-btn red"   id="ami-add-fd-btn">Force-disable</button>
+      </div>
+      <div class="ami-legend-tiny">Autocomplete populated from rules that have ever fired. You can also type a raw check name (e.g. <code>pos-supervisor:HtmlInPage</code>) to suppress structural warnings that don't have a rule module.</div>
+
+      <div class="ami-section-title">Disabled rules <span class="muted" id="ami-disabled-count"></span></div>
+      <div id="ami-disabled-table"></div>
+      <div class="ami-section-title">Force-enabled <span class="muted" id="ami-fe-count"></span></div>
+      <div id="ami-fe-list" class="ami-chip-list"></div>
+      <div class="ami-section-title">Force-disabled <span class="muted" id="ami-fd-count"></span></div>
+      <div id="ami-fd-list" class="ami-chip-list"></div>
+    </div>
+  </div>
+
   <div class="em-layout">
     <div class="em-graph-container">
       <div class="em-section-title">Rule Topology</div>
@@ -1581,7 +1666,7 @@ const TAB_LOADERS = {
   insights: () => { fetchInsightsData(); if (!hintsLoaded) fetchHints(); },
   analytics: () => { fetchAnalytics(); },
   toollab:  () => { if (!toolsLoaded) fetchTools(); fetchToolLab(); loadRuleChecks(); if (!suppressionsLoaded) fetchSuppressions(); },
-  engine:   () => { if (!engineMapLoaded) fetchEngineMap(); },
+  engine:   () => { if (!engineMapLoaded) fetchEngineMap(); fetchAdaptiveImpact(); },
   'pos-cli': () => { if (!cliEnvsLoaded) fetchCliEnvs(); },
   // overview, activity, lsp: eagerly loaded via boot sequence / SSE
 };
@@ -1674,6 +1759,10 @@ function initSse() {
           // Also refresh status for stats/plan on interesting calls
           const important = ['validate_code','validate_intent','analyze_project','scaffold'];
           if (important.includes(entry.tool)) fetchStatus();
+          // Keep file picker in sync with every validated file
+          if (entry.tool === 'validate_code' && entry.file_path) {
+            addToLivePickerFiles(entry.file_path);
+          }
         } else if (['lsp_ready','lsp_crash','lsp_init_failed','lsp_warmed_up'].includes(entry.event)) {
           fetchStatus();
           renderLspLog();
@@ -1681,6 +1770,17 @@ function initSse() {
           syncEngineToggle(entry.mode);
         } else if (entry.event === 'fs_watcher_sync' || entry.event === 'fs_watcher_delete') {
           scheduleExplorerRefreshFromFsEvent();
+          // Immediately reflect file creation/deletion in the picker without
+          // waiting for a full project_map refresh (which requires explorer tab open)
+          if (entry.path && lastStatus?.project_dir) {
+            const rel = entry.path.startsWith(lastStatus.project_dir + '/')
+              ? entry.path.slice(lastStatus.project_dir.length + 1)
+              : entry.path;
+            if (rel.startsWith('app/')) {
+              if (entry.event === 'fs_watcher_sync') addToLivePickerFiles(rel);
+              else removeFromLivePickerFiles(rel);
+            }
+          }
         }
       } catch {}
     });
@@ -2023,7 +2123,7 @@ async function exportSession() {
   var [analyticsStats, scorecards, ruleScoresData, funnelData, gapsData, engineMap, recommendations, sessionsData] = await Promise.all([
     fetch(BASE + '/api/analytics/stats').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
     fetch(BASE + '/api/analytics/scorecards?min_cohort=1').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
-    fetch(BASE + '/api/analytics/rule-scores').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/rule-performance').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
     fetch(BASE + '/api/analytics/funnel').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
     fetch(BASE + '/api/analytics/knowledge-gaps').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
     fetch(BASE + '/api/engine-map').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
@@ -2278,7 +2378,7 @@ async function exportSession() {
     var sortedRules = [...rules].sort(function(x, y) { return (x.effectiveness || 0) - (y.effectiveness || 0); });
     for (var ri = 0; ri < sortedRules.length; ri++) {
       var r = sortedRules[ri];
-      var rStatus = r.disabled ? 'DISABLED' : (r.effectiveness || 0) < 0.15 ? 'AT RISK' : 'OK';
+      var rStatus = r.unmatched ? 'UNMATCHED' : (r.effectiveness || 0) < 0.15 ? 'AT RISK' : 'OK';
       L.push('| ' + r.rule_id + ' | ' + r.emitted + ' | ' + ((r.resolution_rate || 0) * 100).toFixed(0) + '% | ' + ((r.regression_rate || 0) * 100).toFixed(0) + '% | ' + ((r.effectiveness || 0) * 100).toFixed(0) + '% | ' + rStatus + ' |');
     }
     L.push('');
@@ -3929,6 +4029,9 @@ function renderSchemaGqlMatrix() {
 
 // ── Analytics tab ────────────────────────────────────────────────────────
 let analyticsData = null;
+let currentJourneyData = null;
+let selectedJourneyIdx = -1;
+let currentDrilldownData = null;
 
 async function fetchAnalytics() {
   const tsEl = document.getElementById('an-last-fetched');
@@ -3941,7 +4044,7 @@ async function fetchAnalytics() {
       fetch(BASE + '/api/analytics/sessions').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(BASE + '/api/analytics/recommendations').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(BASE + '/api/analytics/bigrams').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(BASE + '/api/analytics/rule-scores?min_emitted=1').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/rule-performance?min_emitted=1').then(r => r.ok ? r.json() : null).catch(() => null),
       fetch(BASE + '/api/analytics/suggested-rules').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
 
@@ -4168,9 +4271,11 @@ function renderRuleScores() {
         + '<td style="color:var(--red)">' + s.regressed + '</td>'
         + '<td style="color:var(--blue)">' + s.adopted + '</td>'
         + '<td><span class="an-ci-val ' + effCls + '">' + effPct + '%</span></td>'
-        + '<td>' + (s.disabled
-          ? '<span class="badge error">DISABLE</span>'
-          : '<span class="badge ok">ACTIVE</span>') + '</td>'
+        + '<td>' + (s.unmatched
+          ? '<span class="badge warn">UNMATCHED</span>'
+          : s.effectiveness < 0.15
+            ? '<span class="badge error">AT RISK</span>'
+            : '<span class="badge ok">ACTIVE</span>') + '</td>'
         + '</tr>';
     }).join('')
     + '</tbody></table>';
@@ -4240,6 +4345,7 @@ function closeDrilldown() {
 }
 
 function renderDrilldownPanel(panel, ruleId, check, drill, hint, ruleScore) {
+  currentDrilldownData = drill;
   const baseCheck = check.includes('.') ? check.split('.')[0] : check;
   const s = drill.samples;
   const outcomes = { resolved: 0, regressed: 0, unchanged: 0, moved: 0, pending: 0 };
@@ -4280,22 +4386,33 @@ function renderDrilldownPanel(panel, ruleId, check, drill, hint, ruleScore) {
   html += '<div class="rd-subsection">'
     + '<div class="rd-subsection-title">Recent diagnostic samples (' + total + ')</div>'
     + '<table class="rd-sample-table"><thead><tr>'
-    + '<th>File</th><th>Outcome</th><th>Fix</th><th>Collateral</th><th>Session</th><th>Time</th>'
+    + '<th></th><th>File</th><th>Outcome</th><th>Fix</th><th>Conf</th><th>Collateral</th><th>Session</th><th>Time</th>'
     + '</tr></thead><tbody>';
-  for (const sample of s) {
+  for (let si = 0; si < s.length; si++) {
+    const sample = s[si];
     const outCls = sample.outcome || 'pending';
     const outLabel = sample.outcome || 'pending';
     const fixLabel = sample.fix_applied === 'verbatim' ? '<span style="color:var(--green)">verbatim</span>'
       : sample.fix_applied === 'partial' ? '<span style="color:var(--blue)">partial</span>'
       : sample.fix_applied ? '<span style="color:var(--muted)">' + escHtml(sample.fix_applied) + '</span>'
       : '<span style="color:var(--muted)">--</span>';
-    const shortFile = sample.file.length > 45 ? '...' + sample.file.slice(-42) : sample.file;
+    const confLabel = sample.confidence != null
+      ? '<span style="color:' + (sample.confidence >= 0.8 ? 'var(--green)' : sample.confidence >= 0.5 ? 'var(--yellow)' : 'var(--red)') + '">' + (sample.confidence * 100).toFixed(0) + '%</span>'
+      : '<span style="color:var(--muted)">n/a</span>';
+    const shortFile = sample.file && sample.file.length > 42 ? '...' + sample.file.slice(-39) : (sample.file || '--');
     const shortSession = sample.session_id ? sample.session_id.slice(0, 8) : '--';
     const ts = sample.ts ? sample.ts.replace('T', ' ').slice(0, 19) : '--';
-    html += '<tr>'
-      + '<td title="' + escHtml(sample.file) + '">' + escHtml(shortFile) + '</td>'
+    const hasCtx = !!(sample.content_hash);
+    const expandBtn = hasCtx
+      ? '<button style="font-size:9px;padding:1px 4px;background:none;border:1px solid var(--border);color:var(--muted);cursor:pointer" onclick="toggleSampleCodeCtx(' + si + ')">+</button>'
+      : '<span style="color:#333">·</span>';
+    const expandableClass = hasCtx ? ' rd-expandable' : '';
+    html += '<tr id="rd-sample-row-' + si + '" class="' + expandableClass + '">'
+      + '<td style="text-align:center;width:20px">' + expandBtn + '</td>'
+      + '<td title="' + escHtml(sample.file || '') + '">' + escHtml(shortFile) + '</td>'
       + '<td><span class="rd-outcome ' + outCls + '">' + outLabel + '</span></td>'
       + '<td>' + fixLabel + '</td>'
+      + '<td>' + confLabel + '</td>'
       + '<td style="color:' + (sample.collateral > 0 ? 'var(--red)' : 'var(--muted)') + '">' + (sample.collateral || '--') + '</td>'
       + '<td style="color:var(--muted);font-size:9px" title="' + escHtml(sample.session_id || '') + '">' + shortSession + '</td>'
       + '<td style="color:var(--muted);font-size:9px">' + ts + '</td>'
@@ -4781,11 +4898,20 @@ function renderJourneyTimeline(el, j) {
     return;
   }
 
+  currentJourneyData = j;
+  selectedJourneyIdx = -1;
+
   const nodesHtml = j.timeline.map((t, i) => {
     const cls = t.dominant_outcome || 'pending';
-    const tip = t.session_id.slice(0, 8) + ' — ' + (t.dominant_outcome || 'no outcome') + (t.rule_id ? ' — rule: ' + t.rule_id : '') + (t.fix_applied ? ' — fix: ' + t.fix_applied : '');
+    const hasCtx = !!(t.content_hash);
+    const tip = t.session_id.slice(0, 8) + ' — ' + (t.dominant_outcome || 'no outcome')
+      + (t.rule_id ? ' — rule: ' + t.rule_id : '')
+      + (t.fix_applied ? ' — fix: ' + t.fix_applied : '')
+      + (hasCtx ? ' — click to see code' : '');
     const edge = i < j.timeline.length - 1 ? '<div class="journey-edge"></div>' : '';
-    return '<div class="journey-node" title="' + escHtml(tip) + '">'
+    const clickableClass = hasCtx ? ' clickable' : '';
+    const clickAttr = hasCtx ? ' data-idx="' + i + '" onclick="selectJourneySession(' + i + ')"' : '';
+    return '<div class="journey-node' + clickableClass + '" title="' + escHtml(tip) + '"' + clickAttr + '>'
       + '<div class="journey-occ">' + t.occurrences + '</div>'
       + '<div class="journey-dot ' + cls + '"></div>'
       + '<div class="journey-label">' + t.session_id.slice(0, 7) + '</div>'
@@ -4793,14 +4919,158 @@ function renderJourneyTimeline(el, j) {
   }).join('');
 
   el.innerHTML = '<div class="journey-container">'
-    + '<h3>Journey: ' + escHtml(j.check || '?') + ' (' + escHtml(j.template_fp?.slice(0, 8) || '') + ')</h3>'
+    + '<h3>Journey: ' + escHtml(j.check || '?') + ' (' + escHtml(j.template_fp ? j.template_fp.slice(0, 8) : '') + ')</h3>'
     + '<div class="journey-tl">' + nodesHtml + '</div>'
     + '<div class="journey-meta">'
     + '<span>SESSIONS: ' + j.session_count + '</span>'
     + '<span>FIRST: ' + (j.first_seen || '—') + '</span>'
     + '<span>LAST: ' + (j.last_seen || '—') + '</span>'
     + '</div>'
+    + '<div id="journey-code-ctx"></div>'
     + '</div>';
+}
+
+async function selectJourneySession(idx) {
+  if (!currentJourneyData) return;
+  const entry = currentJourneyData.timeline[idx];
+  if (!entry) return;
+
+  // Toggle deselect
+  if (selectedJourneyIdx === idx) {
+    selectedJourneyIdx = -1;
+    document.querySelectorAll('.journey-node.selected').forEach(function(n) { n.classList.remove('selected'); });
+    const ctx = document.getElementById('journey-code-ctx');
+    if (ctx) ctx.innerHTML = '';
+    return;
+  }
+
+  selectedJourneyIdx = idx;
+  document.querySelectorAll('.journey-node.selected').forEach(function(n) { n.classList.remove('selected'); });
+  const nodes = document.querySelectorAll('.journey-node.clickable');
+  // Find by data-idx since clickable nodes are a subset
+  nodes.forEach(function(n) {
+    if (parseInt(n.dataset.idx, 10) === idx) n.classList.add('selected');
+  });
+
+  const ctx = document.getElementById('journey-code-ctx');
+  if (!ctx) return;
+  await fetchAndRenderCodeCtx(ctx, entry.content_hash, entry.fix_hash, entry.fix_range, entry.file, entry.hint_md_hash);
+}
+
+async function fetchAndRenderCodeCtx(el, contentHash, fixHash, fixRange, file, hintHash) {
+  el.innerHTML = '<div class="code-ctx"><div class="code-ctx-empty">Loading...</div></div>';
+
+  let content = null;
+  let fixText = null;
+  let hintText = null;
+
+  try {
+    const fetches = [];
+    if (contentHash) {
+      fetches.push(fetch(BASE + '/api/blob?hash=' + encodeURIComponent(contentHash))
+        .then(r => r.ok ? r.json() : null).then(d => { content = d?.text || null; }));
+    }
+    if (fixHash) {
+      fetches.push(fetch(BASE + '/api/blob?hash=' + encodeURIComponent(fixHash))
+        .then(r => r.ok ? r.json() : null).then(d => { fixText = d?.text || null; }));
+    }
+    if (hintHash) {
+      fetches.push(fetch(BASE + '/api/blob?hash=' + encodeURIComponent(hintHash))
+        .then(r => r.ok ? r.json() : null).then(d => { hintText = d?.text || null; }));
+    }
+    await Promise.all(fetches);
+  } catch (e) {
+    el.innerHTML = '<div class="code-ctx"><div class="code-ctx-empty">Error loading code context: ' + escHtml(e.message) + '</div></div>';
+    return;
+  }
+
+  el.innerHTML = buildCodeCtxHtml(file, content, fixText, fixRange, hintText);
+}
+
+function buildCodeCtxHtml(file, content, fixText, fixRange, hintText) {
+  if (!content) {
+    return '<div class="code-ctx"><div class="code-ctx-empty">No file snapshot captured for this diagnostic.</div></div>';
+  }
+
+  var shortFile = file && file.length > 60 ? '...' + file.slice(-57) : (file || 'unknown');
+  var lines = content.split('\\n');
+
+  // Determine highlighted line range from fix_range
+  var hlStart = -1, hlEnd = -1;
+  if (fixRange && typeof fixRange.start === 'object') {
+    hlStart = fixRange.start.line || 0;
+    hlEnd = fixRange.end ? (fixRange.end.line || hlStart) : hlStart;
+  }
+
+  // Show up to 40 lines; if range is set, center on it
+  var totalLines = lines.length;
+  var windowStart = 0;
+  var windowSize = 40;
+  if (hlStart >= 0) {
+    windowStart = Math.max(0, hlStart - 10);
+  }
+  var windowEnd = Math.min(totalLines, windowStart + windowSize);
+  var shown = lines.slice(windowStart, windowEnd);
+
+  var codeHtml = shown.map(function(line, i) {
+    var lineNo = windowStart + i + 1;
+    var isHl = hlStart >= 0 && lineNo >= hlStart + 1 && lineNo <= hlEnd + 1;
+    var cls = isHl ? ' class="code-ctx-err-line"' : '';
+    var lnSpan = '<span class="code-ctx-lnum">' + lineNo + '</span>';
+    return '<span' + cls + '>' + lnSpan + escHtml(line) + '</span>';
+  }).join('\\n');
+
+  var truncNote = (windowStart > 0 || windowEnd < totalLines)
+    ? ' (lines ' + (windowStart + 1) + '-' + windowEnd + ' of ' + totalLines + ')'
+    : '';
+
+  var html = '<div class="code-ctx">'
+    + '<div class="code-ctx-header">'
+    + '<span>' + escHtml(shortFile) + truncNote + '</span>'
+    + (hlStart >= 0 ? '<span>line ' + (hlStart + 1) + '</span>' : '')
+    + '</div>'
+    + '<pre class="code-ctx-pre">' + codeHtml + '</pre>';
+
+  if (fixText) {
+    html += '<div class="code-ctx-fix-label">Proposed fix:</div>'
+      + '<pre class="code-ctx-fix">' + escHtml(fixText) + '</pre>';
+  }
+
+  if (hintText) {
+    html += '<div class="code-ctx-hint-label">Hint:</div>'
+      + '<pre class="code-ctx-hint">' + escHtml(hintText) + '</pre>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+async function toggleSampleCodeCtx(idx) {
+  if (!currentDrilldownData) return;
+  const sample = currentDrilldownData.samples[idx];
+  if (!sample) return;
+
+  const existingRow = document.getElementById('rd-ctx-row-' + idx);
+  if (existingRow) {
+    existingRow.remove();
+    return;
+  }
+
+  // Insert expanded row after the sample row
+  const sampleRow = document.getElementById('rd-sample-row-' + idx);
+  if (!sampleRow) return;
+
+  const colspan = sampleRow.cells.length;
+  const newRow = document.createElement('tr');
+  newRow.id = 'rd-ctx-row-' + idx;
+  newRow.className = 'rd-expanded-row';
+  const td = document.createElement('td');
+  td.colSpan = colspan;
+  td.innerHTML = '<div class="code-ctx"><div class="code-ctx-empty">Loading...</div></div>';
+  newRow.appendChild(td);
+  sampleRow.insertAdjacentElement('afterend', newRow);
+
+  await fetchAndRenderCodeCtx(td, sample.content_hash, sample.fix_hash, sample.fix_range, sample.file, sample.hint_md_hash);
 }
 
 // ── L3: Confidence Calibration Chart ────────────────────────────────────
@@ -5317,23 +5587,51 @@ let currentLiveFilePath = null;
 
 let livePickerFiles = [];
 
+function addToLivePickerFiles(path) {
+  if (!path || !path.startsWith('app/')) return;
+  if (!livePickerFiles.includes(path)) {
+    livePickerFiles.push(path);
+    livePickerFiles.sort();
+    renderLivePickerOptions();
+  }
+}
+
+function removeFromLivePickerFiles(path) {
+  const idx = livePickerFiles.indexOf(path);
+  if (idx !== -1) {
+    livePickerFiles.splice(idx, 1);
+    renderLivePickerOptions();
+  }
+}
+
 function populateLiveFilePicker() {
   const sel = document.getElementById('lc-file-picker');
-  if (!sel || !explorerData) return;
+  if (!sel) return;
 
   const files = [];
-  for (const k of Object.keys(explorerData.pages    || {})) files.push(explorerData.pages[k].path || k);
-  for (const k of Object.keys(explorerData.partials || {})) files.push(explorerData.partials[k].path || k);
-  for (const k of Object.keys(explorerData.layouts  || {})) files.push(explorerData.layouts[k].path || k);
-  for (const k of Object.keys(explorerData.commands || {})) files.push(k);
-  for (const k of Object.keys(explorerData.queries  || {})) files.push(k);
-  for (const k of Object.keys(explorerData.graphql  || {})) files.push('app/graphql/' + k + '.graphql');
-  for (const k of Object.keys(explorerData.schema   || {})) {
-    const p = explorerData.schema[k]?.path;
-    if (p) files.push(p);
+
+  if (explorerData) {
+    for (const k of Object.keys(explorerData.pages    || {})) files.push(explorerData.pages[k].path || k);
+    for (const k of Object.keys(explorerData.partials || {})) files.push(explorerData.partials[k].path || k);
+    for (const k of Object.keys(explorerData.layouts  || {})) files.push(explorerData.layouts[k].path || k);
+    for (const k of Object.keys(explorerData.commands || {})) files.push(k);
+    for (const k of Object.keys(explorerData.queries  || {})) files.push(k);
+    for (const k of Object.keys(explorerData.graphql  || {})) files.push('app/graphql/' + k + '.graphql');
+    for (const k of Object.keys(explorerData.schema   || {})) {
+      const p = explorerData.schema[k]?.path;
+      if (p) files.push(p);
+    }
+    for (const locale of Object.keys(explorerData.translations || {})) {
+      files.push('app/translations/' + locale + '.yml');
+    }
   }
-  for (const locale of Object.keys(explorerData.translations || {})) {
-    files.push('app/translations/' + locale + '.yml');
+
+  // Also include every file that was validated in this session
+  // (covers files created after the last project_map fetch)
+  for (const e of [...allLogEntries, ...liveEntries]) {
+    if (e.event === 'tool_call' && e.tool === 'validate_code' && e.file_path) {
+      files.push(e.file_path);
+    }
   }
 
   livePickerFiles = [...new Set(files)].filter(f => f && f.startsWith('app/')).sort();
@@ -6215,7 +6513,186 @@ function showEmInspector(d) {
 document.getElementById('em-refresh-btn')?.addEventListener('click', () => {
   engineMapLoaded = false;
   fetchEngineMap();
+  fetchAdaptiveImpact();
 });
+
+// ── Adaptive Mode Impact (Part G + I4) ─────────────────────────────────────
+let adaptiveImpactCache = null;
+
+async function fetchAdaptiveImpact() {
+  const tsEl = document.getElementById('ami-last-fetched');
+  if (tsEl) tsEl.textContent = 'Loading...';
+
+  try {
+    // Parallel: impact summary (live engine state) + rule-performance list
+    // (every rule_id ever seen — powers the autocomplete datalist).
+    const [impactR, perfR] = await Promise.all([
+      fetch(BASE + '/api/engine/impact'),
+      fetch(BASE + '/api/analytics/rule-performance?min_emitted=1'),
+    ]);
+    if (!impactR.ok) throw new Error('HTTP ' + impactR.status);
+    adaptiveImpactCache = await impactR.json();
+    const perfData = perfR.ok ? await perfR.json() : { scores: [] };
+    renderAdaptiveImpact();
+    populateRuleIdDatalist(adaptiveImpactCache, perfData.scores ?? []);
+    if (tsEl) tsEl.textContent = new Date().toLocaleTimeString();
+  } catch (e) {
+    if (tsEl) tsEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+// Populate the autocomplete datalist. Merges rule_ids seen in analytics
+// (rulePerformance) with rule_ids currently disabled or overridden, plus
+// bare check names so an entry like "pos-supervisor:HtmlInPage.unmatched"
+// also suggests its check form. Sorted alphabetically.
+function populateRuleIdDatalist(impact, perfScores) {
+  const dl = document.getElementById('ami-known-rules');
+  if (!dl) return;
+
+  const ids = new Set();
+  for (const s of perfScores) if (s.rule_id) ids.add(s.rule_id);
+  for (const r of (impact.disabled_rules ?? [])) if (r.rule_id) ids.add(r.rule_id);
+  for (const r of (impact.force_enabled ?? [])) if (r) ids.add(r);
+  for (const r of (impact.force_disabled ?? [])) if (r) ids.add(r);
+
+  // Also add the bare check names so "pos-supervisor:HtmlInPage" completes
+  // even if only its ".unmatched" variant has fired.
+  const checks = new Set();
+  for (const id of ids) {
+    const base = id.replace(/\.(unmatched|recommended|default|generic|[a-z_]+)$/, '');
+    if (base && base !== id) checks.add(base);
+  }
+  for (const c of checks) ids.add(c);
+
+  const sorted = [...ids].sort();
+  dl.innerHTML = sorted.map(function(id) {
+    return '<option value="' + escHtml(id) + '"></option>';
+  }).join('');
+}
+
+function renderAdaptiveImpact() {
+  const d = adaptiveImpactCache;
+  if (!d) return;
+
+  // ── summary stats ──────────────────────────────────────────────────────
+  const sEl = document.getElementById('ami-summary');
+  if (sEl) {
+    const winH = Math.round((d.window?.ms ?? 0) / 3_600_000);
+    const cf = d.counterfactual?.suppressed_by_disabled ?? 0;
+    const conf = d.confidence ?? {};
+    sEl.innerHTML = [
+      '<div class="ami-stat"><div class="n">' + (d.emits_in_window ?? 0) + '</div><div class="l">Emits (' + winH + 'h)</div></div>',
+      '<div class="ami-stat"><div class="n">' + (d.rule_matched_in_window ?? 0) + '</div><div class="l">Rule-matched</div></div>',
+      '<div class="ami-stat delta"><div class="n">' + cf + '</div><div class="l">Suppressed by disable</div></div>',
+      '<div class="ami-stat"><div class="n">' + (conf.samples ?? 0) + '</div><div class="l">Confidence samples</div></div>',
+      '<div class="ami-stat"><div class="n">' + (conf.mean != null ? conf.mean.toFixed(2) : '—') + '</div><div class="l">Avg confidence</div></div>',
+    ].join('');
+  }
+
+  // ── disabled rules table ───────────────────────────────────────────────
+  const disabled = d.disabled_rules ?? [];
+  document.getElementById('ami-disabled-count').textContent = disabled.length ? '(' + disabled.length + ')' : '(0)';
+  const tEl = document.getElementById('ami-disabled-table');
+  if (disabled.length === 0) {
+    tEl.innerHTML = '<div class="ami-empty">No rules disabled by analytics. Adaptive mode is running every registered rule.</div>';
+  } else {
+    const rows = disabled.map(function(r) {
+      const effPct = r.effectiveness != null ? (r.effectiveness * 100).toFixed(0) + '%' : '—';
+      const resPct = r.resolution_rate != null ? (r.resolution_rate * 100).toFixed(0) + '%' : '—';
+      const regPct = r.regression_rate != null ? (r.regression_rate * 100).toFixed(0) + '%' : '—';
+      const hits = (d.counterfactual?.per_rule_suppressed ?? {})[r.rule_id] ?? 0;
+      const feFlag = r.force_enabled ? '<span class="fe-flag">FORCE-ENABLED</span>' : '';
+      const feBtn = r.force_enabled
+        ? '<button class="ami-btn" onclick="clearOverride(\\'' + escAttr(r.rule_id) + '\\')">Clear override</button>'
+        : '<button class="ami-btn green" onclick="forceEnable(\\'' + escAttr(r.rule_id) + '\\')">Force-enable</button>';
+      return '<tr>'
+        + '<td><div class="rule-id">' + escHtml(r.rule_id) + ' ' + feFlag + '</div>'
+        +   '<div class="reason">' + escHtml(r.check ?? '') + ' · ' + (r.emitted ?? 0) + ' emits / ' + (r.total_outcomes ?? 0) + ' outcomes</div></td>'
+        + '<td>' + effPct + '</td>'
+        + '<td>' + resPct + '</td>'
+        + '<td>' + regPct + '</td>'
+        + '<td>' + hits + '</td>'
+        + '<td>' + feBtn + '</td>'
+        + '</tr>';
+    }).join('');
+    tEl.innerHTML = '<table class="ami-table"><thead><tr>'
+      + '<th>Rule</th><th>Eff</th><th>Resolved</th><th>Regressed</th><th>Suppressed (window)</th><th></th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  // ── force-enable / force-disable chips ────────────────────────────────
+  renderAmiChipList('ami-fe-list', 'ami-fe-count', d.force_enabled ?? [], 'ami-fe-count');
+  renderAmiChipList('ami-fd-list', 'ami-fd-count', d.force_disabled ?? [], 'ami-fd-count');
+}
+
+function renderAmiChipList(listId, countId, ids) {
+  const el = document.getElementById(listId);
+  const countEl = document.getElementById(countId);
+  if (countEl) countEl.textContent = ids.length ? '(' + ids.length + ')' : '(0)';
+  if (!el) return;
+  if (ids.length === 0) {
+    el.innerHTML = '<span class="ami-empty">None</span>';
+    return;
+  }
+  el.innerHTML = ids.map(function(id) {
+    return '<span class="ami-chip">' + escHtml(id)
+      + ' <span class="clear-x" title="Clear override" onclick="clearOverride(\\'' + escAttr(id) + '\\')">✕</span></span>';
+  }).join('');
+}
+
+async function mutateOverride(ruleId, action, reason) {
+  try {
+    const r = await fetch(BASE + '/api/engine/rule-overrides', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, rule_id: ruleId, reason: reason ?? '' }),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(function() { return { error: 'HTTP ' + r.status }; });
+      alert('Override failed: ' + (err.error || r.status));
+      return;
+    }
+    await fetchAdaptiveImpact();
+  } catch (e) {
+    alert('Override failed: ' + e.message);
+  }
+}
+
+function forceEnable(ruleId) {
+  const reason = prompt('Reason for force-enabling "' + ruleId + '" (optional):') ?? '';
+  mutateOverride(ruleId, 'force_enable', reason);
+}
+function forceDisable(ruleId) {
+  const reason = prompt('Reason for force-disabling "' + ruleId + '" (optional):') ?? '';
+  mutateOverride(ruleId, 'force_disable', reason);
+}
+function clearOverride(ruleId) {
+  mutateOverride(ruleId, 'clear', '');
+}
+
+document.getElementById('ami-refresh-btn')?.addEventListener('click', function() { fetchAdaptiveImpact(); });
+
+function amiSubmitOverride(action) {
+  const idEl = document.getElementById('ami-add-rule-id');
+  const reasonEl = document.getElementById('ami-add-reason');
+  const id = (idEl?.value || '').trim();
+  const reason = (reasonEl?.value || '').trim();
+  if (!id) { alert('rule_id or check name required'); idEl?.focus(); return; }
+  mutateOverride(id, action, reason).then(function() {
+    if (idEl) idEl.value = '';
+    if (reasonEl) reasonEl.value = '';
+  });
+}
+document.getElementById('ami-add-fe-btn')?.addEventListener('click', function() { amiSubmitOverride('force_enable'); });
+document.getElementById('ami-add-fd-btn')?.addEventListener('click', function() { amiSubmitOverride('force_disable'); });
+
+// Two-backslash sequence is deliberate: the entire dashboard JS lives inside
+// an outer template literal in buildDashboardHtml(). \\' in the source
+// collapses to \' in the emitted script, which the browser then parses as a
+// literal single quote inside the JS string. Using \' in the source would
+// collapse to ' at template-literal parse time, breaking the emitted JS.
+function escAttr(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, "\\\\'");
+}
 
 // ── Uptime counter ─────────────────────────────────────────────────────────
 setInterval(() => {

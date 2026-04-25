@@ -66,10 +66,18 @@ export function generateStructuralWarnings(ast, content, filePath, structural, e
   const warnings = [];
   const domain = getDomainFromPath(filePath);
 
-  // 1. HTML in pages — pages should be controller-only (no inline HTML)
+  // 1. HTML in pages — pages should be controller-only (no inline HTML).
+  //    Guard: if the page composes partials via {% render %}, the HTML is
+  //    usually incidental glue (landing layouts, section wrappers) rather
+  //    than a violation. The check had 100% regression in the 2026-04-23
+  //    DEMO report because it fired on exactly this pattern. Suppress when
+  //    at least one partial is rendered — the composite-page case.
   if (domain === 'pages') {
-    const htmlWarning = detectHtmlInPage(ast, content);
-    if (htmlWarning) warnings.push(htmlWarning);
+    const rendersPartials = Array.isArray(structural?.renders_used) && structural.renders_used.length > 0;
+    if (!rendersPartials) {
+      const htmlWarning = detectHtmlInPage(ast, content);
+      if (htmlWarning) warnings.push(htmlWarning);
+    }
   }
 
   // 2. Shopify objects in variable output not caught by linter
@@ -117,6 +125,15 @@ export function generateStructuralWarnings(ast, content, filePath, structural, e
   if (domain === 'pages' && structural?.method) {
     const methodWarning = validateMethod(structural.method, content);
     if (methodWarning) warnings.push(methodWarning);
+
+    // 9b. Non-GET pages don't render on browser GET requests. Agents
+    //     sometimes set `method: post` on a landing page because they
+    //     confuse "this page has a form that POSTs" with "this page
+    //     itself is a POST handler". The result: the page loads blank
+    //     because browsers do GETs. Flag the pattern when the file
+    //     clearly renders user-facing content.
+    const nonGetWarning = validateNonGetRenderingPage(structural.method, structural, content);
+    if (nonGetWarning) warnings.push(nonGetWarning);
   }
 
   // 10. Front matter key validation — unknown/misleading keys, missing slug
@@ -131,11 +148,12 @@ export function generateStructuralWarnings(ast, content, filePath, structural, e
     if (returnWarning) warnings.push(returnWarning);
   }
 
-  // 12. Missing {% doc %} block in commands — undocumented parameters
-  if (domain === 'commands') {
-    const docWarning = detectMissingDocBlock(content, structural, domain);
-    if (docWarning) warnings.push(docWarning);
-  }
+  // 12. (Removed per plan B1.5 — 2026-04-23.)
+  //     MissingDocBlock previously also fired on commands but the production
+  //     sample was 10% resolution / 40% regression: most internal command
+  //     files are utility helpers or one-shot scripts with no caller-facing
+  //     contract. Keeping the check on partials only — where a missing doc
+  //     block is unambiguously a defect because renders need @param signals.
 
   // 13. Missing {{ content_for_layout }} in layouts — page content won't render
   if (domain === 'layouts') {
@@ -238,17 +256,21 @@ function detectMissingContentForLayout(content) {
  * They should document their expected parameters.
  */
 function detectMissingDocBlock(content, structural, domain) {
+  // Scoped to partials only — commands were producing a high false-positive
+  // rate in production (utility commands, one-shot scripts, private helpers
+  // with no external callers). See call site comment and plan B1.5.
+  if (domain !== 'partials') return null;
+
   // Has {% doc %} block (parsed by liquid-html-parser as LiquidRawTag 'doc')
   if (structural?.tags_used?.includes('doc')) return null;
 
   // Has @prompt in a comment block (older convention)
   if (/@prompt\s*:/m.test(content)) return null;
 
-  const label = domain === 'commands' ? 'Command' : 'Partial';
   return {
     check: 'pos-supervisor:MissingDocBlock',
     severity: 'warning',
-    message: `${label} is missing a \`{% doc %}\` block. Document expected parameters so callers know what variables to pass. Example: \`{% doc %} @param title {string} Card title {% enddoc %}\`.`,
+    message: `Partial is missing a \`{% doc %}\` block. Document expected parameters so callers know what variables to pass. Example: \`{% doc %} @param title {string} Card title {% enddoc %}\`.`,
     line: 0,
     column: 0,
   };
@@ -507,6 +529,49 @@ function validateMethod(method, content) {
     check: 'pos-supervisor:InvalidMethod',
     severity: 'error',
     message: `Invalid method \`${method}\`. Valid values: \`get\`, \`post\`, \`put\`, \`delete\`, \`patch\`.`,
+    line: line >= 0 ? line : 0,
+    column: 0,
+  };
+}
+
+/**
+ * Flag pages whose `method` is non-GET but whose body clearly renders
+ * HTML / uses a layout. On platformOS these pages will not respond to
+ * browser navigation — GET requests get a 404. The agent's usual mistake
+ * pattern is `method: post` on a landing page that includes forms; the
+ * correct shape is `method: get` (or omit) with the form POSTing to a
+ * command endpoint.
+ *
+ * Intentionally permissive: if the page is clearly an API endpoint
+ * (returns JSON, slug under /api/, filename suggests an action), skip
+ * the warning. Trust the developer when the signal is strong.
+ */
+function validateNonGetRenderingPage(method, structural, content) {
+  const lower = (method || '').toLowerCase();
+  if (lower === 'get' || lower === '') return null;
+  if (!['post', 'put', 'delete', 'patch'].includes(lower)) return null;
+
+  const line = findFrontmatterLine(content, 'method');
+  const slug = (structural?.slug || '').toLowerCase();
+
+  // API heuristics — skip warning if the page is clearly a backend endpoint.
+  const hasLayout = !!structural?.layout;
+  const rendersPartials = Array.isArray(structural?.renders_used) && structural.renders_used.length > 0;
+  const hasOutput = /\{\{/.test(content);
+  const hasHtmlTags = /<(html|body|div|main|section|article|form|h[1-6]|p|ul|ol|nav|header|footer)\b/i.test(content);
+
+  // If the page has no layout, no renders, no {{ ... }} outputs, and no HTML,
+  // it's almost certainly a JSON/redirect endpoint. Respect that.
+  const looksLikeUiPage = hasLayout || rendersPartials || hasOutput || hasHtmlTags;
+  if (!looksLikeUiPage) return null;
+
+  // Agent-convention API slugs: `/api/...`, `/_/…`, explicit verb suffixes.
+  if (/^\/?(api|_|internal)\//i.test(slug)) return null;
+
+  return {
+    check: 'pos-supervisor:NonGetRenderingPage',
+    severity: 'warning',
+    message: `Page has \`method: ${lower}\` but renders HTML (layout, partials, or {{ ... }} output). Browser GETs to this URL return 404 — only ${lower.toUpperCase()} requests reach the handler. If this page should display content, remove the \`method\` field (defaults to \`get\`). If it's a form endpoint, move the handler to \`app/lib/commands/\` and have the form \`POST\` there.`,
     line: line >= 0 ? line : 0,
     column: 0,
   };

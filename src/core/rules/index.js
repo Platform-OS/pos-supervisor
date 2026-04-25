@@ -17,6 +17,10 @@ import { rules as MissingRenderPartialArgumentsRules } from './MissingRenderPart
 import { rules as UnknownPropertyRules } from './UnknownProperty.js';
 import { rules as MetadataParamsCheckRules } from './MetadataParamsCheck.js';
 import { rules as GraphQLCheckRules } from './GraphQLCheck.js';
+import { rules as ImgLazyLoadingRules } from './ImgLazyLoading.js';
+import { rules as ImgWidthAndHeightRules } from './ImgWidthAndHeight.js';
+import { rules as ConvertIncludeToRenderRules } from './ConvertIncludeToRender.js';
+import { rules as NonGetRenderingPageRules } from './NonGetRenderingPage.js';
 
 const ALL_RULE_MODULES = [
   MissingPartialRules,
@@ -28,6 +32,10 @@ const ALL_RULE_MODULES = [
   UnknownPropertyRules,
   MetadataParamsCheckRules,
   GraphQLCheckRules,
+  ImgLazyLoadingRules,
+  ImgWidthAndHeightRules,
+  ConvertIncludeToRenderRules,
+  NonGetRenderingPageRules,
 ];
 
 let _loaded = false;

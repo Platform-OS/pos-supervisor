@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { parseLiquidFile, extractAllFromAST } from '../core/liquid-parser.js';
 import { checkContent } from '../core/check-runner.js';
 import { normalizeLspDiagnostics } from '../core/lsp-client.js';
-import { enrichAll } from '../core/error-enricher.js';
+import { enrichAll, bridgeRulesOntoUnattributed } from '../core/error-enricher.js';
 import { generateFixes, clusterDiagnostics, generateScorecard } from '../core/fix-generator.js';
 import { getDomainFromPath, getDomainHeader } from '../core/domain-detector.js';
 import { getTriggeredGotchas, getContentTriggers } from '../core/knowledge-loader.js';
@@ -11,7 +11,8 @@ import { generateStructuralWarnings } from '../core/structural-warnings.js';
 import { validateSchema } from '../core/schema-validator.js';
 import { validateTranslationYaml } from '../core/translation-validator.js';
 import { checkSchemaProperties } from '../core/schema-property-checker.js';
-import { runDiagnosticPipeline } from '../core/diagnostic-pipeline.js';
+import { runDiagnosticPipeline, stampDefaultsOn } from '../core/diagnostic-pipeline.js';
+import { isCheckForceDisabled } from '../core/rules/engine.js';
 import { partitionCallersByPending } from '../core/pending-callers.js';
 import { toUri, sanitizePath } from '../core/utils.js';
 import { fingerprint, templateFingerprint, messageTemplate, extractParams } from '../core/diagnostic-record.js';
@@ -682,6 +683,59 @@ explicitly only if you are validating a file that is NOT part of the most recent
         if (d.endLine != null) d.endLine += 1;
       }
 
+      // 12a. Run rule-engine rules against diagnostics that didn't pass through
+      //      enrichAll (structural warnings, schema / translation / GraphQL
+      //      validators, diff-aware RemovedRender/AddedParam, new-partial
+      //      caller check). Rule modules for structural checks (like
+      //      `pos-supervisor:NonGetRenderingPage`) register against the check
+      //      name but only fire inside error-enricher.enrichAll, which ran
+      //      before these diagnostics were pushed. This bridge lets their
+      //      rules fire, attaching the rule_id + hint_md that would otherwise
+      //      be lost — see the 2026-04-24 DEMO report finding.
+      try {
+        const projectMapForBridge = await getProjectMap(ctx.directory);
+        const factGraphForBridge = buildFactGraph(projectMapForBridge);
+        bridgeRulesOntoUnattributed(result, {
+          filePath: file_path,
+          content,
+          factGraph: factGraphForBridge,
+          filtersIndex: ctx.filtersIndex,
+          objectsIndex: ctx.objectsIndex,
+          tagsIndex: ctx.tagsIndex,
+          schemaIndex: ctx.schemaIndex,
+          analyticsStore: ctx.analyticsStore,
+        });
+      } catch { /* bridge is best-effort — fall through to default stamping */ }
+
+      // 12b. Re-stamp default confidence + rule_id across the final diagnostic
+      //      set. runDiagnosticPipeline already ran this as its last step, but
+      //      several sources push into result.errors / result.warnings AFTER
+      //      the pipeline finishes (structural warnings, schema validation,
+      //      translation YAML check, diff-aware RemovedRender/AddedParam, the
+      //      new-partial caller check). Without this second pass those late
+      //      additions land in the analytics store with confidence = null and
+      //      no rule_id, breaking the calibration chart and rule-performance
+      //      attribution. Idempotent — the helper only fills when a field is
+      //      missing. See the 2026-04-23 DEMO report finding.
+      stampDefaultsOn(result);
+
+      // 12b. Apply force-disable overrides at the check-name level.
+      //
+      //      runRules() already honors force-disable for rule_ids, but many
+      //      diagnostics originate outside the rule engine — structural
+      //      warnings (pos-supervisor:*), LSP checks without a rule module.
+      //      An operator who force-disables a check like "pos-supervisor:HtmlInPage"
+      //      expects the diagnostic to stop appearing entirely, not just the
+      //      (nonexistent) rule to stop firing. Filter here so the override
+      //      semantics match operator intent. Also covers rule_id-level
+      //      disables as a belt-and-braces second gate (a rule that fires
+      //      despite _forceDisabled containing its id gets dropped here too).
+      const dropForceDisabled = (d) =>
+        !(isCheckForceDisabled(d.check) || isCheckForceDisabled(d.rule_id));
+      result.errors = result.errors.filter(dropForceDisabled);
+      result.warnings = result.warnings.filter(dropForceDisabled);
+      result.infos = result.infos.filter(dropForceDisabled);
+
       // 12. Strip null hint fields — diagnostics without hints should omit the field
       // entirely rather than returning hint: null which looks like a bug in the output.
       for (const d of [...result.errors, ...result.warnings, ...result.infos]) {
@@ -690,7 +744,9 @@ explicitly only if you are validating a file that is NOT part of the most recent
 
       // 13. Emit validator_emit events — one per diagnostic shown to the agent.
       // Best-effort: failures never propagate into the tool response.
-      if (ctx.sessionBus) {
+      // Skipped when ctx.untracked is set (dashboard live-console calls) so
+      // experimental validations don't pollute the analytics store.
+      if (ctx.sessionBus && !ctx.untracked) {
         try {
           const contentHash = ctx.blobStore ? ctx.blobStore.put(content) : null;
           for (const d of [...result.errors, ...result.warnings]) {
@@ -698,10 +754,28 @@ explicitly only if you are validating a file that is NOT part of the most recent
             const fp = fingerprint(d.check, file_path, tmpl);
             const tFp = templateFingerprint(d.check, tmpl);
             const hintHash = d.hint && ctx.blobStore ? ctx.blobStore.put(d.hint) : null;
-            const fixes = (d.proposed_fixes || []).map(f => ({
+            // Union both fix channels so analytics sees every proposal the agent
+            // saw: rule engine → d.fixes (plural), heuristic fix-generator → d.fix
+            // (singular). Both use the same { type, range, new_text, ... } shape.
+            // Each fix carries its own rule_id so Rule Performance can attribute
+            // adoption to a specific rule-engine or heuristic-generator branch
+            // (I1). The rule-engine path stamps rule_id on the rule's HintResult;
+            // the heuristic path stamps `heuristic:<Check>.<fix_type>` centrally
+            // inside generateFixes.
+            const diagFixes = [
+              ...(Array.isArray(d.fixes) ? d.fixes : []),
+              ...(d.fix ? [d.fix] : []),
+            ];
+            const fixes = diagFixes.map(f => ({
               range: f.range ?? null,
-              new_text_hash: ctx.blobStore ? ctx.blobStore.put(f.newText || '') : '',
-              kind: f.kind || 'unknown',
+              new_text_hash: ctx.blobStore && f.new_text ? ctx.blobStore.put(f.new_text) : null,
+              kind: f.type || 'unknown',
+              // Rule-engine rules attach rule_id to the HintResult (and therefore
+              // to d.rule_id), not to each individual fix object. Heuristic
+              // fixes carry their own rule_id from fix-generator's central stamp.
+              // Falling back to d.rule_id lets rule-engine fixes inherit the
+              // matching rule's id so fixRulePerformance can attribute them.
+              rule_id: f.rule_id ?? d.rule_id ?? null,
             }));
             const diagParams = extractParams(d.check, d.message || '');
             ctx.sessionBus.emit('validator_emit', {

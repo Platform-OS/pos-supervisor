@@ -22,7 +22,7 @@ function emitDiag(store, { fp, template_fp, session_id, check, confidence, file 
     kind: 'validator_emit',
     fp,
     template_fp,
-    file: file ?? 'app/views/pages/index.html.liquid',
+    file: file ?? 'test.liquid',
     hint_rule_id: check ?? null,
     confidence: confidence ?? null,
     proposed_fixes: [],
@@ -138,6 +138,28 @@ describe('K3: confidenceCalibration', () => {
 
     const cal5 = confidenceCalibration(store, { buckets: 5 });
     expect(cal5.length).toBeLessThanOrEqual(5);
+  });
+
+  test('includes pipeline-stamped default confidences alongside rule-scored ones (A2)', () => {
+    const wid = store.insertWindow({ session_id: 's1', file: 'test.liquid', idx: 0, ts_start: '2026-04-17T10:00:00Z', ts_end: '2026-04-17T10:01:00Z' });
+
+    // Rule-scored high-confidence row — resolved.
+    emitDiag(store, { fp: 'rule-1', template_fp: 'tpl', session_id: 's1', check: 'X', confidence: 0.92 });
+    store.insertOutcome({ fp: 'rule-1', window_id: wid, outcome: 'resolved' });
+
+    // Pipeline-default warning (0.7) — unchanged. Pre-A2 this row would have
+    // been excluded by the NULL filter in the query; post-A2 every surviving
+    // diagnostic carries a default, so the bucket sees it.
+    emitDiag(store, { fp: 'default-1', template_fp: 'tpl', session_id: 's1', check: 'X', confidence: 0.7 });
+    store.insertOutcome({ fp: 'default-1', window_id: wid, outcome: 'unchanged' });
+
+    const cal = confidenceCalibration(store, { buckets: 10 });
+    const totalSample = cal.reduce((sum, b) => sum + b.sample_size, 0);
+    expect(totalSample).toBe(2);
+
+    const mid = cal.find(b => b.predicted >= 0.6 && b.predicted <= 0.8);
+    expect(mid?.sample_size).toBe(1);
+    expect(mid?.actual_resolution).toBe(0);
   });
 });
 

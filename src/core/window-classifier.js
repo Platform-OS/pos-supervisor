@@ -148,7 +148,71 @@ export function classifyFixAdoption(startContent, endContent, proposedFixes, blo
 }
 
 /**
+ * Extract fs_watcher_sync events from the event list, grouped by relative file path.
+ * These represent files written to disk by the agent (via Write/Edit tools or scaffold).
+ * Requires fs-watcher.js to emit rel_path alongside path.
+ *
+ * @param {Array} events
+ * @returns {Map<string, Array>} file → sorted write events
+ */
+export function extractWriteEvents(events) {
+  const byFile = new Map();
+  for (const event of events) {
+    if (event.kind !== 'fs_watcher_sync') continue;
+    const relPath = event.rel_path ?? null;
+    if (!relPath) continue;
+    if (!byFile.has(relPath)) byFile.set(relPath, []);
+    byFile.get(relPath).push(event);
+  }
+  for (const writes of byFile.values()) {
+    writes.sort((a, b) => (a.ts > b.ts ? 1 : a.ts < b.ts ? -1 : 0));
+  }
+  return byFile;
+}
+
+/**
+ * Classify a write-closed window: the last validation before a file write
+ * with no subsequent re-validation. Outcomes are 'write_unverified' because
+ * we know the file changed on disk but cannot determine if diagnostics were
+ * resolved without re-running validation.
+ *
+ * @param {object} validateCall - The last validate_code tool_call event
+ * @param {object} writeEvent   - The fs_watcher_sync event that closed the window
+ * @returns {{ window, outcomes }}
+ */
+export function classifyWriteWindow(validateCall, writeEvent) {
+  const filePath = validateCall.input?.file_path ?? '';
+  const startSets = buildDiagnosticSets(validateCall);
+
+  const outcomes = startSets.diagnostics.map(diag => ({
+    fp: diag.fp,
+    outcome: 'write_unverified',
+    check: diag.check,
+  }));
+
+  const window = {
+    file: filePath,
+    session_id: validateCall.session_id,
+    ts_start: validateCall.ts,
+    ts_end: writeEvent.ts,
+    content_hash_start: extractContentHash(validateCall),
+    content_hash_end: null,
+    is_draft: false,
+    closed_by: 'write',
+  };
+
+  return { window, outcomes };
+}
+
+/**
  * Build windows and classify outcomes for an entire session.
+ *
+ * Two window kinds:
+ *  - validate-to-validate: consecutive validate_code calls for the same file.
+ *    Tagged is_draft=true when no fs_watcher_sync (file write) falls between them,
+ *    meaning the agent was comparing draft iterations without writing to disk.
+ *  - write-closed: last validate_code call followed by a file write with no
+ *    subsequent re-validation. Outcomes are 'write_unverified'.
  *
  * @param {Array} events       - All events for a session
  * @param {object} [emitIndex] - Map<fp, validator_emit[]> for fix adoption lookup
@@ -156,15 +220,39 @@ export function classifyFixAdoption(startContent, endContent, proposedFixes, blo
  */
 export function classifySession(events, emitIndex) {
   const byFile = extractValidateCodeCalls(events);
+  const writesByFile = extractWriteEvents(events);
   const results = [];
 
   for (const [file, calls] of byFile) {
-    if (calls.length < 2) continue;
+    const fileWrites = writesByFile.get(file) ?? [];
 
+    // ── Validate-to-validate windows ──────────────────────────────────
     for (let i = 0; i < calls.length - 1; i++) {
-      const { window, outcomes } = classifyWindow(calls[i], calls[i + 1]);
+      const startCall = calls[i];
+      const endCall = calls[i + 1];
+      const { window, outcomes } = classifyWindow(startCall, endCall);
       window.idx = i;
+      // A draft window is one where the agent iterated on content without
+      // writing to disk between the two validations. These measure thinking,
+      // not effectiveness — they should be excluded from rule scoring.
+      const hasMidWrite = fileWrites.some(w => w.ts > startCall.ts && w.ts <= endCall.ts);
+      window.is_draft = hasMidWrite ? 0 : 1;
+      window.closed_by = 'validate';
       results.push({ window, outcomes });
+    }
+
+    // ── Write-closed window ───────────────────────────────────────────
+    // If a write happened after the last validation, capture it as a window.
+    // The agent wrote the file without re-validating, so we can't determine
+    // outcomes precisely — use write_unverified for all active diagnostics.
+    if (calls.length > 0) {
+      const lastCall = calls[calls.length - 1];
+      const postWrite = fileWrites.find(w => w.ts > lastCall.ts);
+      if (postWrite) {
+        const { window, outcomes } = classifyWriteWindow(lastCall, postWrite);
+        window.idx = calls.length - 1;
+        results.push({ window, outcomes });
+      }
     }
   }
 

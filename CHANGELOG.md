@@ -1,5 +1,126 @@
 # Changelog
 
+## 0.6.0 — 2026-04-24
+
+Analytics pipeline overhaul + neuro-symbolic engine rounds out. Headline numbers on the DEMO project between 2026-04-23 and 2026-04-24: fix-proposal rate rose from effectively 0 (the emit loop was reading the wrong field) to 45 / 99 (45%); classified fix adoption rose from 0 to 31; confidence coverage from 0% to 89% of emits; rule performance table from 3 entries at baseline to 30+; health score from 91 to 95/100.
+
+### Fixed — three critical analytics bugs
+
+- **`outcomes.fix_applied` was always null.** The classifier (`classifyFixAdoption`) existed in `window-classifier.js` but no call site. Wired it into `analytics-store.classifyAndStoreWindows()` using `buildEmitIndex` + blobStore content lookup. Start-of-window emit picks the proposed-fix set the agent actually saw; `regressed` / `write_unverified` outcomes skipped (no semantic meaning). `openAnalyticsStore(dbPath, { blobStore })` now accepts the blob store; `server.js` and `scripts/rebuild-analytics.js` pass it through.
+- **`hint_md_hash` emitted but dropped on ingest.** No column existed on `diagnostics`. Schema bumped to v5 with `migrate_v4_to_v5` adding the column; ingestion persists the hash; `diagnosticJourney` + `ruleDrilldown` surface it; dashboard code-context panel renders the hint blob alongside the file window.
+- **Heuristic fix-generator fixes never reached analytics.** Emit loop read `d.fixes` (rule-engine channel) but the heuristic generator writes to `d.fix` (singular). Unioned both channels; every fix now persisted with its attribution.
+
+### Added — Phases A1–A4 (analytics integrity)
+
+- **A1 — outcome dedup.** `outcomes` table carries UNIQUE(session_id, file, fp); `INSERT OR REPLACE` stamps terminal state as `classifySession` walks windows. Migration `migrate_v1_to_v2` dedups existing rows by MAX(id), drops orphans, adds the index. Resolution > Emit mismatch eliminated.
+- **A2 — confidence defaults.** `DEFAULT_CONFIDENCE_BY_SEVERITY = { error: 0.9, warning: 0.7, info: 0.5 }` + `STRUCTURAL_DEFAULT_CONFIDENCE = 0.75`. New pipeline step `populateDefaultConfidence` (step 17) fills any missing confidence and stamps `${check}.unmatched` rule_id fallback. Exported as `stampDefaultsOn(result)` for validate-code to re-run after late structural-warning pushes.
+- **A3 — `_source: 'dashboard_live'` untracked gate.** Live Diagnostic Console calls no longer pollute analytics. `tools.js` sets `ctx.untracked = true` on a per-call context copy (restore-in-finally); `validate-code.js` gates `sessionBus.emit('validator_emit', ...)` on `!ctx.untracked`. One-off cleanup script for pre-A3 pollution in `scripts/cleanup-live-console-rows.js`.
+- **A4 — rule attribution.** `${check}.unmatched` fallback lands in rule_id when no rule fires. `rulePerformance(store, { minEmitted = 1 })` separate reporting-view query, groups on rule_id including `.unmatched`, exposes `source` and `unmatched` flag. `ruleScores()` stays at minEmitted=5 with `.unmatched` excluded for promotion gating.
+
+### Added — I1 heuristic + rule fix attribution
+
+- Schema v6 + `proposed_fixes.rule_id` column + `idx_fixes_rule` index + `migrate_v5_to_v6`.
+- Central stamp in `fix-generator.js`: every heuristic fix tagged `heuristic:<Check>.<fix_type>` in one place (no per-branch boilerplate).
+- Emit loop propagates fix-level rule_id with `f.rule_id ?? d.rule_id ?? null` fallback — rule-engine rules attach rule_id to the HintResult rather than each fix, so fixes inherit from the diagnostic.
+- New `fixRulePerformance(store, { minProposed = 1 })` query groups on `proposed_fixes.rule_id`, returns `{ rule_id, source, fix_kind, proposed, outcomes, adopted_verbatim, adopted_partial, adoption_rate, resolution_rate }`.
+- HTTP endpoint `GET /api/analytics/fix-rule-performance`.
+
+### Added — Part G adaptive-mode impact panel
+
+- `adaptiveModeImpact(store, { windowMs = 86400000 })` returns window-scoped emit counts, rule-matched counts, confidence stats, and an `emits_by_rule` map for counterfactual calculation.
+- HTTP `GET /api/engine/impact` merges the query with live engine state (`getDisabledRuleDetails`, force-enable/disable sets) and computes `suppressed_by_disabled` counterfactual.
+- Dashboard — new "Adaptive Mode Impact" section in the Engine Map tab: summary stat tiles, disabled-rules table with per-row action buttons, force-enabled / force-disabled chip lists.
+
+### Added — I4 manual rule overrides
+
+- `src/core/rule-overrides.js` module. Persists `.pos-supervisor/rule-overrides.json` (atomic write via temp + rename, tolerant read). API: `loadOverrides`, `saveOverrides`, `addForceEnable`, `addForceDisable`, `removeOverride`, `overrideSets`.
+- Engine — `_forceEnabled` and `_forceDisabled` sets. `ruleIsActive()` precedence: `force_disable > force_enable > _disabledRules`. New `isCheckForceDisabled(checkName)` also gates structural / LSP-only checks by name.
+- Validate-code filter step drops diagnostics whose `check` or `rule_id` is in the force-disable set — structural checks like `pos-supervisor:HtmlInPage` can be killed without waiting for the auto-disable threshold.
+- HTTP `GET` and `POST /api/engine/rule-overrides` with `{ action, rule_id, reason }` where action is `force_enable | force_disable | clear`. `onOverridesChanged` hook refreshes the engine without restart.
+- Dashboard — override-add form (input + reason + FE/FD buttons) with HTML5 `<datalist>` autocomplete populated from rule-performance data + derived check names.
+
+### Added — late-push attribution bridge
+
+- `bridgeRulesOntoUnattributed(result, ctx)` in `error-enricher.js`. Runs `runRules` on any diagnostic whose `rule_id` is still unset and whose `check` has a registered rule module. Copies `rule_id`, `hint_md`, `confidence`, `see_also`, `fixes`, `case_base_signal` onto the diagnostic. Idempotent. Rule failures non-fatal.
+- Called from `validate-code.js` after all late-push sources (structural warnings, schema/translation validators, diff-aware checks, new-partial caller check) and before `stampDefaultsOn`. Structural `pos-supervisor:*` rules now get their canonical rule_id instead of landing in `<Check>.unmatched`.
+
+### Added — engine-map write-closed windows + draft detection
+
+- `classifyWriteWindow(validateCall, writeEvent)` and `extractWriteEvents(events)` in `window-classifier.js`.
+- Schema v4 adds `windows.is_draft` and `windows.closed_by ∈ {'validate','write'}`. Validate-to-validate windows with no intervening disk write are tagged `is_draft = 1` (measures thinking, not effectiveness).
+- `fs-watcher.js` emits `rel_path` alongside `path` so the classifier can match writes to validated files.
+
+### Added — Tier 1 rule modules
+
+- `src/core/rules/ImgLazyLoading.js` (rule_id `ImgLazyLoading.recommended`).
+- `src/core/rules/ImgWidthAndHeight.js` (rule_id `ImgWidthAndHeight.recommended`).
+- `src/core/rules/ConvertIncludeToRender.js` (rule_id `ConvertIncludeToRender.default`).
+
+Each provides attribution + an action-oriented hint. Fix text stays with the heuristic generator (single source of truth on AST position math); the rules return `fixes: []` and rely on the `heuristic:<Check>.text_edit` channel. Registered via `src/core/rules/index.js`.
+
+### Added — new structural checks
+
+- **`pos-supervisor:NonGetRenderingPage`** — warns when a page has `method: post/put/delete/patch` AND renders HTML (layout, partials, `{{ }}` output, or HTML tags present). Catches the agent-confusion pattern of setting `method: post` on landing pages, which makes them 404 on browser GET. Suppressed when slug starts with `/api/`, `/_/`, `/internal/` OR the body has no UI signals (pure JSON/redirect endpoint). Rule module `NonGetRenderingPage.default` + hint file `src/data/hints/pos-supervisor:NonGetRenderingPage.md` with a landing-page vs API-endpoint decision tree.
+- **`verifyMissingPartialsOnDisk`** pipeline step — cross-check `MissingPartial` diagnostics against the real filesystem; suppress when the partial exists on disk but the LSP hasn't re-indexed yet (handles scaffold write → re-validate timing race).
+
+### Changed
+
+- **`pos-supervisor:HtmlInPage` guard** — suppress when the page renders at least one partial (composite landing-page pattern). Production showed 100% regression on this rule before the guard.
+- **`pos-supervisor:MissingDocBlock` scope** — dropped commands branch (production showed 40% regression on `commands/`; many internal helpers legitimately don't need doc blocks). Partials only now.
+- **Validate-code emit loop** — propagates `rule_id` on every fix; unions rule + heuristic fixes; re-runs `stampDefaultsOn` after all late-push sources so confidence / rule_id coverage is complete.
+
+### Added — dashboard features
+
+- **Code-context panel in rule drilldown**: fetches content blob (`GET /api/blob?hash=…`), fix blob, and hint blob in parallel; renders a 40-line window around `fix_range` with the error line highlighted; Proposed fix + Hint blocks below. New `/api/blob` endpoint with 64-hex SHA256 validation.
+- **Journey timeline clickable nodes**: click a session dot to open the same code-context panel inline.
+- **Confidence column** in the rule-drilldown samples table, color-coded (≥0.8 green, ≥0.5 yellow, else red; `n/a` muted).
+- **Live-console file picker** stays in sync with validation SSE activity (`addToLivePickerFiles` / `removeFromLivePickerFiles`) — no longer requires an Explorer tab refresh to see newly-validated files.
+
+### Added — scripts
+
+- **`scripts/rebuild-analytics.js`** — rebuild the analytics DB from session event logs. Injects the blob store so fix-adoption classification runs on replay.
+- **`scripts/cleanup-live-console-rows.js`** — one-off purge of pre-A3 `__pos_live_console__` rows from events/diagnostics/outcomes/windows/proposed_fixes.
+
+### Added — tests
+
+New unit test files:
+
+- `tests/unit/error-enricher-bridge.test.js` — 6 cases covering bridge idempotency, no-rule-module no-op, missing fact-graph no-op, errors/warnings/infos, rule-throws non-fatal.
+- `tests/unit/rule-overrides.test.js` — 7 cases: round-trip, malformed JSON, mutual exclusion.
+- `tests/unit/rule-engine-overrides.test.js` — 7 cases: force precedence, check-name gating, engine-state reset.
+- `tests/unit/rules/Tier1Rules.test.js` — 4 rule-module tests (ImgLazy, ImgW&H, ConvertInclude, NonGetRenderingPage).
+
+Extended unit files: `analytics-store.test.js`, `analytics-queries.test.js`, `analytics-queries-k.test.js`, `diagnostic-pipeline.test.js`, `structural-warnings.test.js`, `window-classifier.test.js`, `case-base.test.js`.
+
+New integration tests in `tests/integration/analytics/`:
+
+- `untracked.test.js` — A3 gate.
+- `fix-rule-attribution.test.js` — I1 follow-up rule-engine inheritance.
+- `force-disable-check.test.js` — I4 override semantics end-to-end (POST + clear).
+- `structural-rule-attribution.test.js` — bridge end-to-end (NonGetRenderingPage lands as `.default`, not `.unmatched`).
+
+**Suite totals: 1635 unit + 25 analytics/http/workflows integration, all green.**
+
+### Changed — plan doc
+
+- `docs/new-task/implementation-plan.md` — new "Addendum — 2026-04-23" section: I1 (heuristic rule attribution), I2 (see_also_followed outcome), I3 (soak fresh data), I4 (manual rule re-enable + dashboard visibility). Revised short-term order with Part G + I4 bumped up.
+
+### Migrations
+
+DB schema: **v1 → v6** via five numbered, idempotent steps. No backfills write data — only reshape tables. A `store.rebuild(sessionsDir)` against the existing event log repopulates the new columns.
+
+- **v1 → v2**: dedup outcomes + add UNIQUE(session, file, fp) index + add `session_id` / `file` columns + backfill from windows.
+- **v2 → v3**: dedup diagnostics + add UNIQUE(session, file, fp) index.
+- **v3 → v4**: add `windows.is_draft` + `windows.closed_by`.
+- **v4 → v5**: add `diagnostics.hint_md_hash`.
+- **v5 → v6**: add `proposed_fixes.rule_id` + `idx_fixes_rule`.
+
+### Upgrade notes
+
+1. `pkill -f bin/pos-supervisor.js && bun bin/pos-supervisor.js` — new schema migrations run on first open.
+2. Optional: `bun scripts/rebuild-analytics.js /path/to/project` — replays the event log into the new columns so historical sessions gain confidence / hint_md_hash / fix rule_id attribution.
+3. Optional: `bun scripts/cleanup-live-console-rows.js /path/to/project` — purge pre-A3 live-console pollution if the DB predates this release.
+
 ## 0.5.2
 
 ### Added

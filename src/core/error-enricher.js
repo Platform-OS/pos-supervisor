@@ -538,3 +538,62 @@ export async function enrichAll(diagnostics, ctx) {
 
   return Promise.all(diagnostics.map(d => enrichError(d, { ...ctx, _hoverCache: hoverCache })));
 }
+
+/**
+ * Bridge rule-engine attribution onto diagnostics that didn't pass through
+ * `enrichAll` — structural warnings, schema/translation/GraphQL validators,
+ * diff-aware RemovedRender/AddedParam, new-partial caller check. Those are
+ * pushed into `result.errors/warnings` AFTER `enrichAll` returns, so their
+ * rule modules never fire and they land in analytics as `<Check>.unmatched`.
+ *
+ * This helper runs `runRules` on any diagnostic whose `rule_id` is still
+ * unset and whose `check` has a registered rule module. On a match it copies
+ * the rule's `rule_id`, `hint_md`, `confidence`, `see_also`, `fixes`, and
+ * `case_base_signal` onto the diagnostic — same fields the main enrichAll
+ * path writes, so downstream (emit loop, fix generator, dashboard) treats
+ * the diagnostic identically to one that went through enrichAll.
+ *
+ * Idempotent: diagnostics already carrying a `rule_id` are skipped so this
+ * can safely run after enrichAll + structural-warnings push without double
+ * scoring.
+ */
+export function bridgeRulesOntoUnattributed(result, ctx) {
+  const { filePath, content, factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore } = ctx;
+  if (!factGraph) return;
+
+  const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore };
+
+  const apply = (d) => {
+    if (d.rule_id) return;                   // already attributed
+    if (!d.check) return;
+    if (!hasRules(d.check)) return;
+
+    const params = extractParams(d.check, d.message);
+    const tmplFp = templateOf(d.check, d.message);
+    const diag = {
+      check: d.check,
+      params,
+      message: d.message,
+      file: filePath,
+      line: d.line,
+      column: d.column ?? 0,
+      template_fp: tmplFp,
+    };
+    let ruleResult;
+    try { ruleResult = runRules(diag, facts); }
+    catch { return; }                         // runRules failure is non-fatal
+    if (!ruleResult) return;
+
+    d.rule_id = ruleResult.rule_id;
+    if (ruleResult.hint_md && !d.hint) d.hint = ruleResult.hint_md;
+    if (ruleResult.confidence != null && d.confidence == null) d.confidence = ruleResult.confidence;
+    if (ruleResult.see_also && !d.see_also) d.see_also = ruleResult.see_also;
+    if (ruleResult.case_base_signal && !d.case_base_signal) d.case_base_signal = ruleResult.case_base_signal;
+    if (ruleResult.fixes?.length > 0 && !d.fixes) d.fixes = ruleResult.fixes;
+    attachSeeAlso(d, content);
+  };
+
+  for (const d of result.errors)   apply(d);
+  for (const d of result.warnings) apply(d);
+  for (const d of result.infos)    apply(d);
+}

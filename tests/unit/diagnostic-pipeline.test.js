@@ -7,6 +7,7 @@ import {
   suppressByPending,
   buildPendingPartialNames,
   buildPendingPageKeys,
+  stampDefaultsOn,
 } from '../../src/core/diagnostic-pipeline.js';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -569,5 +570,118 @@ describe('verifyOrphanedPartialOnDisk via runDiagnosticPipeline', () => {
       projectDir: tmpDir,
     });
     expect(result.warnings).toHaveLength(1);
+  });
+});
+
+// ── populateDefaultConfidence (A2) ──────────────────────────────────────────
+
+describe('diagnostic-pipeline: populateDefaultConfidence', () => {
+  it('stamps severity-based defaults when the rule engine left confidence unset', () => {
+    const result = makeResult(
+      [{ check: 'UndefinedObject', severity: 'error', message: 'foo' }],
+      [{ check: 'UnusedAssign', severity: 'warning', message: 'bar' }],
+      [{ check: 'InfoOnly', severity: 'info', message: 'baz' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].confidence).toBe(0.9);
+    expect(result.warnings[0].confidence).toBe(0.7);
+    expect(result.infos[0].confidence).toBe(0.5);
+  });
+
+  it('does not overwrite a confidence value that the rule engine already set', () => {
+    const result = makeResult(
+      [{ check: 'UndefinedObject', severity: 'error', message: 'foo', confidence: 0.42 }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].confidence).toBe(0.42);
+  });
+
+  it('stamps structural default for pos-supervisor: prefixed checks', () => {
+    const result = makeResult(
+      [],
+      [{ check: 'pos-supervisor:RemovedRender', severity: 'warning', message: 'removed' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.warnings[0].confidence).toBe(0.75);
+  });
+
+  it('runs after suppression — items removed from result never gain a default', () => {
+    const result = makeResult(
+      [],
+      [{ check: 'MissingPartial', severity: 'warning', message: "Missing partial 'notes/show'" }],
+    );
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/pages/x.liquid',
+      content: '',
+      pendingFiles: ['app/views/partials/notes/show.liquid'],
+    });
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('falls back to warning-level confidence when severity is unset or unknown', () => {
+    const result = makeResult(
+      [],
+      [{ check: 'Weirdo', message: 'no severity' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.warnings[0].confidence).toBe(0.7);
+  });
+
+  // ── A4: rule_id fallback ───────────────────────────────────────────────
+  it('stamps rule_id as `${check}.unmatched` when no rule fired', () => {
+    const result = makeResult(
+      [{ check: 'UndefinedObject', severity: 'error', message: 'foo' }],
+      [{ check: 'UnusedAssign', severity: 'warning', message: 'bar' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].rule_id).toBe('UndefinedObject.unmatched');
+    expect(result.warnings[0].rule_id).toBe('UnusedAssign.unmatched');
+  });
+
+  it('preserves rule_id set by the rule engine', () => {
+    const result = makeResult(
+      [{ check: 'UndefinedObject', severity: 'error', message: 'foo', rule_id: 'UndefinedObject.context_user' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].rule_id).toBe('UndefinedObject.context_user');
+  });
+
+  it('falls back to `unknown.unmatched` when the diagnostic has no check name', () => {
+    const result = makeResult(
+      [],
+      [{ severity: 'warning', message: 'orphan' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.warnings[0].rule_id).toBe('unknown.unmatched');
+  });
+});
+
+// ── stampDefaultsOn: post-pipeline stamping (confidence-bug fix) ─────────────
+
+describe('stampDefaultsOn: late-push diagnostics get default confidence', () => {
+  it('stamps diagnostics added AFTER runDiagnosticPipeline has already run', () => {
+    const result = makeResult([{ check: 'UnknownFilter', severity: 'error', message: 'x' }]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].confidence).toBe(0.9);
+
+    // Simulate a late push — e.g. structural-warnings / schema validator.
+    result.warnings.push({
+      check: 'pos-supervisor:HtmlInPage',
+      severity: 'warning',
+      message: 'HTML in page',
+    });
+    // Without the fix the late row would stay at confidence: null.
+    stampDefaultsOn(result);
+    expect(result.warnings[0].confidence).toBe(0.75);           // structural default
+    expect(result.warnings[0].rule_id).toBe('pos-supervisor:HtmlInPage.unmatched');
+  });
+
+  it('is idempotent — re-stamping does not overwrite existing values', () => {
+    const result = makeResult([
+      { check: 'UnknownFilter', severity: 'error', message: 'x', confidence: 0.42, rule_id: 'UnknownFilter.typo' },
+    ]);
+    stampDefaultsOn(result);
+    expect(result.errors[0].confidence).toBe(0.42);
+    expect(result.errors[0].rule_id).toBe('UnknownFilter.typo');
   });
 });

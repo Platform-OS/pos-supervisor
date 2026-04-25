@@ -14,8 +14,9 @@ import { startFsWatcher } from './core/fs-watcher.js';
 import { invalidateProjectMap } from './tools/project-map.js';
 import { createToolRegistry } from './tools.js';
 import { initPromotedRules, reloadRules } from './core/rules/index.js';
-import { updateDisabledRules } from './core/rules/engine.js';
+import { updateDisabledRules, updateForceOverrides, setDisabledRuleDetails } from './core/rules/engine.js';
 import { ruleScores, resolveProbation } from './core/case-base.js';
+import { loadOverrides, overrideSets } from './core/rule-overrides.js';
 import { loadEngineMode, isAdaptive, setEngineMode, getEngineMode } from './core/engine-mode.js';
 import { startHttp } from './http-server.js';
 import { createLogger } from './core/logger.js';
@@ -70,7 +71,10 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   // ── Analytics store (Phase B — derived from NDJSON, disposable) ────────────
   let analyticsStore = null;
   try {
-    analyticsStore = openAnalyticsStore(join(projectDir, '.pos-supervisor', 'analytics.db'));
+    analyticsStore = openAnalyticsStore(
+      join(projectDir, '.pos-supervisor', 'analytics.db'),
+      { blobStore },
+    );
     log('analytics-store: opened');
   } catch (e) {
     log(`analytics-store: failed to open (${e.message}); analytics will not be available`);
@@ -114,10 +118,29 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     }
   }
 
-  // ── Disabled rule enforcement (Phase J4) ─────────────────────────────────────
+  // ── Disabled rule enforcement (Phase J4 + I4 operator overrides) ─────────────
+  // force-enable wins over case-base disable; force-disable applies always.
+  // Engine picks up the split via ruleIsActive; sync loads file → engine so
+  // edits made through the dashboard take effect without restart.
+  function syncRuleOverrides() {
+    try {
+      const state = loadOverrides(projectDir, { log });
+      const { force_enable, force_disable } = overrideSets(state);
+      updateForceOverrides({ force_enable, force_disable });
+      if (force_enable.size || force_disable.size) {
+        log(`rule-overrides: ${force_enable.size} force-enabled, ${force_disable.size} force-disabled`);
+      }
+      return state;
+    } catch (e) {
+      log(`rule-overrides: sync failed (${e.message})`);
+      return { force_enable: {}, force_disable: {} };
+    }
+  }
+
   function syncDisabledRules() {
     if (!isAdaptive()) {
       updateDisabledRules(null);
+      setDisabledRuleDetails([]);
       return;
     }
     if (!analyticsStore) return;
@@ -125,11 +148,16 @@ export async function createServer({ projectDir, httpPort = 0 }) {
       const scores = ruleScores(analyticsStore, { minEmitted: 5 });
       const disabled = scores.filter(s => s.disabled).map(s => s.rule_id);
       updateDisabledRules(disabled);
+      setDisabledRuleDetails(scores.filter(s => s.disabled));
       if (disabled.length > 0) log(`disabled-rules: ${disabled.length} rule(s) disabled by analytics`);
     } catch (e) {
       log(`disabled-rules: sync failed (${e.message})`);
     }
   }
+
+  // Order matters: overrides first so the disabled-rules sync below sees
+  // them in effect. Both are idempotent — safe to call repeatedly.
+  syncRuleOverrides();
   syncDisabledRules();
 
   // ── Engine mode transitions ──────────────────────────────────────────────────
@@ -699,7 +727,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
       };
     }
     const dataRoot = join(__dirname, 'data');
-    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, onAnalyticsRebuild: syncDisabledRules, switchEngineMode, getEngineMode });
+    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild: syncDisabledRules, onOverridesChanged: () => { syncRuleOverrides(); syncDisabledRules(); }, switchEngineMode, getEngineMode });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────

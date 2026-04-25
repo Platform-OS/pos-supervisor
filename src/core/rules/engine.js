@@ -29,6 +29,15 @@ import { isAdaptive } from '../engine-mode.js';
 
 const _registry = new Map();
 const _disabledRules = new Set();
+// Operator overrides (plan I4). force_enable beats _disabledRules; force_disable
+// wins over registration entirely. Both sets are the authoritative in-memory
+// view — persistence is owned by rule-overrides.js and loaded/synced via
+// server.js. Empty sets mean "no overrides in effect", which is the default.
+const _forceEnabled = new Set();
+const _forceDisabled = new Set();
+// Per-rule metadata for dashboard display: why a rule is in _disabledRules.
+// Populated by syncDisabledRules via setDisabledRuleDetails. Keyed by rule_id.
+let _disabledRuleDetails = new Map();
 
 export function registerRule(rule) {
   if (!rule?.id || !rule?.check || !rule?.when || !rule?.apply) {
@@ -50,6 +59,19 @@ export function registerRules(rules) {
   for (const rule of rules) registerRule(rule);
 }
 
+/**
+ * Decide whether a rule is active for a given call. Order:
+ *   1. force_disable  → skip always (operator kill-switch).
+ *   2. force_enable   → run even if case-base disabled it.
+ *   3. _disabledRules → skip.
+ *   4. otherwise      → run.
+ */
+function ruleIsActive(ruleId) {
+  if (_forceDisabled.has(ruleId)) return false;
+  if (_forceEnabled.has(ruleId))  return true;
+  return !_disabledRules.has(ruleId);
+}
+
 export function runRules(diag, facts, { multiMatch = false } = {}) {
   const rules = _registry.get(diag.check);
   if (!rules || rules.length === 0) return null;
@@ -57,7 +79,7 @@ export function runRules(diag, facts, { multiMatch = false } = {}) {
   if (multiMatch) {
     const results = [];
     for (const rule of rules) {
-      if (_disabledRules.has(rule.id)) continue;
+      if (!ruleIsActive(rule.id)) continue;
       try {
         if (rule.when(diag, facts)) {
           const result = rule.apply(diag, facts);
@@ -72,7 +94,7 @@ export function runRules(diag, facts, { multiMatch = false } = {}) {
   }
 
   for (const rule of rules) {
-    if (_disabledRules.has(rule.id)) continue;
+    if (!ruleIsActive(rule.id)) continue;
     try {
       if (rule.when(diag, facts)) {
         const result = rule.apply(diag, facts);
@@ -136,6 +158,66 @@ export function updateDisabledRules(ruleIds) {
   }
 }
 
+/**
+ * Replace metadata (score, outcome counts, reason) for the disabled set.
+ * Consumed by the dashboard. `details` is an array of `{ rule_id, score,
+ * ... }` produced by `ruleScores()`; the engine stores it as-is without
+ * re-interpreting the fields so the shape can evolve without a schema bump.
+ */
+export function setDisabledRuleDetails(details) {
+  _disabledRuleDetails = new Map();
+  if (!Array.isArray(details)) return;
+  for (const row of details) {
+    if (row?.rule_id) _disabledRuleDetails.set(row.rule_id, row);
+  }
+}
+
 export function getDisabledRules() {
   return new Set(_disabledRules);
+}
+
+/**
+ * Full per-rule disabled-state summary. Returns one entry per currently
+ * disabled rule_id with whatever metadata setDisabledRuleDetails was given.
+ * `force_enabled: true` means the operator has re-enabled it; it still
+ * appears here so the dashboard can show "disabled by analytics but running
+ * due to manual override".
+ */
+export function getDisabledRuleDetails() {
+  const out = [];
+  for (const ruleId of _disabledRules) {
+    const detail = _disabledRuleDetails.get(ruleId) ?? { rule_id: ruleId };
+    out.push({ ...detail, force_enabled: _forceEnabled.has(ruleId) });
+  }
+  return out;
+}
+
+export function updateForceOverrides({ force_enable, force_disable } = {}) {
+  _forceEnabled.clear();
+  if (force_enable) for (const id of force_enable) _forceEnabled.add(id);
+  _forceDisabled.clear();
+  if (force_disable) for (const id of force_disable) _forceDisabled.add(id);
+}
+
+export function getForceEnabledRules() {
+  return new Set(_forceEnabled);
+}
+
+export function getForceDisabledRules() {
+  return new Set(_forceDisabled);
+}
+
+/**
+ * True if a **check name** should be suppressed entirely (diagnostic never
+ * reaches the agent). Distinct from `ruleIsActive(ruleId)`, which only gates
+ * rule-engine registrations — this also covers structural checks
+ * (`pos-supervisor:*`) and LSP checks without registered rule modules.
+ *
+ * The force-disable set is a single flat namespace: it can contain either a
+ * rule_id (e.g. "UnknownFilter.suggest_nearest") or a bare check name
+ * (e.g. "pos-supervisor:HtmlInPage"). The filter in validate-code.js calls
+ * this with `d.check`; `runRules()` above calls the rule_id-aware path.
+ */
+export function isCheckForceDisabled(checkName) {
+  return !!checkName && _forceDisabled.has(checkName);
 }

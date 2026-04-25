@@ -27,10 +27,14 @@ function seedStore(store, diagnostics, outcomes) {
   }
 
   for (const o of (outcomes.outcomes || [])) {
+    const wid = o.window_id ?? 1;
+    const w = (outcomes.windows || []).find(w => w.id === wid);
+    const session_id = o.session_id ?? w?.session_id ?? 'sess-1';
+    const file = o.file ?? w?.file ?? 'test.liquid';
     store.db.prepare(`
-      INSERT INTO outcomes (fp, window_id, outcome, fix_applied, collateral_added)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(o.fp, o.window_id ?? 1, o.outcome, o.fix_applied ?? null, o.collateral_added ?? 0);
+      INSERT OR REPLACE INTO outcomes (fp, window_id, outcome, fix_applied, collateral_added, session_id, file)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(o.fp, wid, o.outcome, o.fix_applied ?? null, o.collateral_added ?? 0, session_id, file);
   }
 }
 
@@ -229,6 +233,30 @@ describe('Case base — F2: ruleScores', () => {
 
     const scores = ruleScores(store, { minEmitted: 5 });
     expect(scores.length).toBe(0);
+  });
+
+  test('excludes `${check}.unmatched` fallback rule_ids from promotion decisions (A4)', () => {
+    // Fallback rule_ids set by the diagnostic pipeline don't correspond to a
+    // registered rule — including them in ruleScores would feed noise into
+    // syncDisabledRules and probation. Promotion view must stay clean.
+    seedStore(store,
+      [
+        { fp: 'u1', template_fp: 'tpl1', check_name: 'OrphanCheck', hint_rule_id: 'OrphanCheck.unmatched' },
+        { fp: 'u2', template_fp: 'tpl1', check_name: 'OrphanCheck', hint_rule_id: 'OrphanCheck.unmatched' },
+        { fp: 'u3', template_fp: 'tpl1', check_name: 'OrphanCheck', hint_rule_id: 'OrphanCheck.unmatched' },
+        { fp: 'r1', template_fp: 'tpl1', check_name: 'RealCheck', hint_rule_id: 'RealCheck.real_rule' },
+      ],
+      {
+        windows: [{ id: 1 }],
+        outcomes: [
+          { fp: 'u1', outcome: 'resolved' },
+          { fp: 'r1', outcome: 'resolved' },
+        ],
+      }
+    );
+
+    const scores = ruleScores(store, { minEmitted: 1 });
+    expect(scores.map(s => s.rule_id)).toEqual(['RealCheck.real_rule']);
   });
 });
 
