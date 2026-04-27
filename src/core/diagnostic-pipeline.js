@@ -1008,6 +1008,55 @@ export function stampDefaultsOn(result) {
   populateDefaultConfidence(result);
 }
 
+/**
+ * Suppress upstream `ValidFrontmatter` diagnostics that overlap with our
+ * richer structural-check counterparts. pos-cli 6.0.7 added `ValidFrontmatter`
+ * which independently reports the same root causes as our existing
+ * `pos-supervisor:InvalidLayout` (missing layout file) and
+ * `pos-supervisor:InvalidFrontMatter` (unknown / misleading frontmatter keys).
+ *
+ * Our checks carry richer messages (named expected paths, deprecation
+ * guidance, fix templates) so we keep them and drop the upstream copy.
+ * Upstream `ValidFrontmatter` rows that don't share a line with one of our
+ * checks pass through untouched — they cover novel cases (deprecated
+ * `layout_name`, missing required fields per file type, invalid HTTP method
+ * enum, etc.) that our structural checks don't handle yet.
+ *
+ * Line-anchored: YAML frontmatter is one key per line, so a line collision
+ * between `ValidFrontmatter` and `pos-supervisor:InvalidLayout` /
+ * `pos-supervisor:InvalidFrontMatter` reliably indicates the same root cause.
+ *
+ * Idempotent. Pure. Safe to call after both diagnostic sources have pushed
+ * (i.e. after `generateStructuralWarnings`).
+ *
+ * @returns {number} count of suppressed diagnostics
+ */
+export function suppressUpstreamFrontmatterDup(result) {
+  const ourLines = new Set();
+  for (const d of [...result.errors, ...result.warnings]) {
+    if (d.check === 'pos-supervisor:InvalidLayout' ||
+        d.check === 'pos-supervisor:InvalidFrontMatter') {
+      ourLines.add(d.line);
+    }
+  }
+  if (ourLines.size === 0) return 0;
+
+  const isRedundant = (d) => d.check === 'ValidFrontmatter' && ourLines.has(d.line);
+  const eRemoved = result.errors.filter(isRedundant).length;
+  const wRemoved = result.warnings.filter(isRedundant).length;
+  const removed = eRemoved + wRemoved;
+  if (removed === 0) return 0;
+
+  result.errors = result.errors.filter(d => !isRedundant(d));
+  result.warnings = result.warnings.filter(d => !isRedundant(d));
+  result.infos.push({
+    check: 'pos-supervisor:DuplicateFrontmatterCheck',
+    severity: 'info',
+    message: `Suppressed ${removed} ValidFrontmatter diagnostic(s) already covered by pos-supervisor structural check(s) (InvalidLayout / InvalidFrontMatter).`,
+  });
+  return removed;
+}
+
 function hasRenderReferenceOnDisk(projectDir, partialName, selfPath) {
   const escaped = partialName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern = new RegExp(`['"]${escaped}['"]`);

@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@platformos/liquid-html-parser": "^0.0.11",
+    "@platformos/liquid-html-parser": "^0.0.17",
     "js-yaml": "^4.1.1",
     "zod": "^4.3.6"
   },

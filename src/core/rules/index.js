@@ -21,6 +21,9 @@ import { rules as ImgLazyLoadingRules } from './ImgLazyLoading.js';
 import { rules as ImgWidthAndHeightRules } from './ImgWidthAndHeight.js';
 import { rules as ConvertIncludeToRenderRules } from './ConvertIncludeToRender.js';
 import { rules as NonGetRenderingPageRules } from './NonGetRenderingPage.js';
+import { rules as ValidFrontmatterRules } from './ValidFrontmatter.js';
+import { rules as JsonLiteralQuoteStyleRules } from './JsonLiteralQuoteStyle.js';
+import { rules as DuplicateFunctionArgumentsRules } from './DuplicateFunctionArguments.js';
 
 const ALL_RULE_MODULES = [
   MissingPartialRules,
@@ -36,6 +39,9 @@ const ALL_RULE_MODULES = [
   ImgWidthAndHeightRules,
   ConvertIncludeToRenderRules,
   NonGetRenderingPageRules,
+  ValidFrontmatterRules,
+  JsonLiteralQuoteStyleRules,
+  DuplicateFunctionArgumentsRules,
 ];
 
 let _loaded = false;

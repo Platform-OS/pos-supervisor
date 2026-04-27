@@ -11,7 +11,7 @@ import { generateStructuralWarnings } from '../core/structural-warnings.js';
 import { validateSchema } from '../core/schema-validator.js';
 import { validateTranslationYaml } from '../core/translation-validator.js';
 import { checkSchemaProperties } from '../core/schema-property-checker.js';
-import { runDiagnosticPipeline, stampDefaultsOn } from '../core/diagnostic-pipeline.js';
+import { runDiagnosticPipeline, stampDefaultsOn, suppressUpstreamFrontmatterDup } from '../core/diagnostic-pipeline.js';
 import { isCheckForceDisabled } from '../core/rules/engine.js';
 import { partitionCallersByPending } from '../core/pending-callers.js';
 import { toUri, sanitizePath } from '../core/utils.js';
@@ -371,6 +371,15 @@ explicitly only if you are validating a file that is NOT part of the most recent
         }
       }
 
+      // 2c1. Drop upstream `ValidFrontmatter` rows that share a line with our
+      //      richer `pos-supervisor:InvalidLayout` / `pos-supervisor:InvalidFrontMatter`
+      //      diagnostics. pos-cli 6.0.7 ships `ValidFrontmatter` independently —
+      //      without this dedup the agent sees two warnings for the same root
+      //      cause (missing layout file, unknown frontmatter key). Upstream rows
+      //      covering cases our checks don't handle (deprecated `layout_name`,
+      //      missing required fields per file type) survive untouched.
+      suppressUpstreamFrontmatterDup(result);
+
       // 2d. Diff-aware comparison — detect removed functionality on update (full mode)
       if (isLiquid && fileExists && result.structural && mode === 'full') {
         try {
@@ -526,7 +535,43 @@ explicitly only if you are validating a file that is NOT part of the most recent
             ctx.directory,
           );
 
-          result.proposed_fixes = proposedFixes;
+          // Precedence rule (2026-04-25): the rule engine is the source of
+          // truth for diagnostic-specific advice; the heuristic generator is
+          // the source of truth for actionable text_edits derived from
+          // AST/line position. When BOTH produce output for the same
+          // diagnostic, we merge them per-channel:
+          //
+          //   - Heuristic `text_edit`  → ALWAYS keep (actionable; complements
+          //                              any rule guidance).
+          //   - Heuristic `guidance`   → DROP if the rule already emitted any
+          //                              fix for this diagnostic. Otherwise
+          //                              keep (rule was silent → heuristic is
+          //                              the only signal).
+          //   - Rule fixes             → ALWAYS keep (priority-ordered; first
+          //                              match wins inside the rule engine).
+          //
+          // Without this gate, the agent saw competing guidance for the same
+          // root cause (rule's stale Levenshtein vs heuristic's specific-case
+          // detection), which actively misled fixes. See the 2026-04-25
+          // TranslationKeyExists `[index]` regression report.
+          const rulesByDiag = new Map();
+          for (const d of allDiagnostics) {
+            if (d.fixes?.length > 0) {
+              rulesByDiag.set(d, d.fixes);
+            }
+          }
+          // Build a Set of heuristic fix references owned by diagnostics that
+          // ALSO have rule fixes — those are the ones we'll filter to keep
+          // only text_edit (drop guidance).
+          const heuristicByDiagIdx = new Map(diagnosticFixes); // copy
+          const dropHeuristicGuidance = new Set();
+          for (const [diagIdx, hFix] of heuristicByDiagIdx) {
+            const d = allDiagnostics[diagIdx];
+            if (rulesByDiag.has(d) && hFix?.type === 'guidance') {
+              dropHeuristicGuidance.add(hFix);
+            }
+          }
+          result.proposed_fixes = proposedFixes.filter(f => !dropHeuristicGuidance.has(f));
 
           // Merge rule-generated fixes into proposed_fixes
           for (const d of allDiagnostics) {
@@ -542,13 +587,19 @@ explicitly only if you are validating a file that is NOT part of the most recent
             }
           }
 
-          // Attach per-diagnostic fix field
-          for (const [diagIdx, fix] of diagnosticFixes) {
+          // Attach per-diagnostic fix field — but if the rule won precedence
+          // and the heuristic was guidance-only, attach the rule's first fix
+          // instead so error.fix matches what proposed_fixes carries.
+          for (const [diagIdx, fix] of heuristicByDiagIdx) {
             const d = allDiagnostics[diagIdx];
+            const ruleFixes = rulesByDiag.get(d);
+            const useFix = (ruleFixes && fix?.type === 'guidance')
+              ? { ...ruleFixes[0], source: 'rule', rule_id: d.rule_id ?? null }
+              : fix;
             if (d._origType === 'error') {
-              result.errors[d._origIdx].fix = fix;
+              result.errors[d._origIdx].fix = useFix;
             } else {
-              result.warnings[d._origIdx].fix = fix;
+              result.warnings[d._origIdx].fix = useFix;
             }
           }
         } catch (e) {

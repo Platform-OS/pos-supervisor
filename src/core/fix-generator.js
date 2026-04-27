@@ -1112,60 +1112,67 @@ function extractLayoutPath(message) {
   return `app/views/layouts/${match[1]}.html.liquid`;
 }
 
+/**
+ * Heuristic fix for TranslationKeyExists.
+ *
+ * Scope (intentionally narrow): produce an actionable text_edit when the
+ * upstream LSP message contains a "Did you mean 'X'" suggestion AND we
+ * can locate the offending quoted key on the diagnostic's line. This is
+ * a complement to the rule-engine `TranslationKeyExists.suggest_nearest`
+ * — the rule emits guidance, the heuristic emits the diff.
+ *
+ * Cases the rule engine OWNS (heuristic must NOT duplicate):
+ *   - `foo[0]` array-index misuse → `TranslationKeyExists.array_index_misuse`
+ *   - generic Levenshtein guidance text → `TranslationKeyExists.suggest_nearest`
+ *
+ * Returning null means "no heuristic fix available" — the rule fix (if any)
+ * stands alone. This is the correct behavior when we can't produce an
+ * actionable edit.
+ */
 function fixTranslationKeyExists(diagnostic, content) {
   const msg = diagnostic.message || '';
-  // v0.3.3+ includes Levenshtein suggestion: "Did you mean 'correct.key'?"
-  const suggestMatch = msg.match(/[Dd]id you mean\s+['"`]([^'"`]+)['"`]/);
-  if (!suggestMatch) {
-    return {
-      type: 'guidance',
-      description: 'Translation key not found. Add it to app/translations/en.yml, or check for typos in the key name.',
-    };
-  }
-
-  const suggestedKey = suggestMatch[1];
-  // Extract the wrong key from the message
   const wrongKeyMatch = msg.match(/['"`]([^'"`]+)['"`]/);
   const wrongKey = wrongKeyMatch ? wrongKeyMatch[1] : null;
 
-  if (!wrongKey || wrongKey === suggestedKey) {
-    return {
-      type: 'guidance',
-      description: `Did you mean \`${suggestedKey}\`? Fix the translation key.`,
-    };
-  }
+  // Array-index misuse is owned by the rule engine. Don't emit guidance
+  // here — it would duplicate (and risk diverging from) the rule's hint.
+  if (wrongKey && /\[\d+\]/.test(wrongKey)) return null;
 
-  // Find the wrong key string at the diagnostic position
-  const lines = content.split('\n');
-  const line = lines[diagnostic.line];
-  if (!line) {
-    return {
-      type: 'guidance',
-      description: `Replace translation key \`${wrongKey}\` with \`${suggestedKey}\`.`,
-    };
-  }
-
-  // Look for the wrong key as a quoted string in the line
-  const keyPatterns = [`'${wrongKey}'`, `"${wrongKey}"`];
-  for (const pattern of keyPatterns) {
-    const idx = line.indexOf(pattern);
-    if (idx >= 0) {
-      const quote = pattern[0];
-      return {
-        type: 'text_edit',
-        range: {
-          start: { line: diagnostic.line, character: idx },
-          end: { line: diagnostic.line, character: idx + pattern.length },
-        },
-        new_text: `${quote}${suggestedKey}${quote}`,
-        description: `Replace \`${wrongKey}\` with \`${suggestedKey}\``,
-      };
+  // When the LSP message carries a "did you mean 'X'" suggestion AND we can
+  // locate the quoted key on the line, produce a text_edit. This is the
+  // ONLY case where the heuristic outranks rule guidance, because text_edits
+  // are actionable diffs the rule layer cannot produce.
+  const suggestMatch = msg.match(/[Dd]id you mean\s+['"`]([^'"`]+)['"`]/);
+  if (suggestMatch && wrongKey && wrongKey !== suggestMatch[1]) {
+    const suggestedKey = suggestMatch[1];
+    const lines = content.split('\n');
+    const line = lines[diagnostic.line];
+    if (line) {
+      for (const pattern of [`'${wrongKey}'`, `"${wrongKey}"`]) {
+        const idx = line.indexOf(pattern);
+        if (idx >= 0) {
+          const quote = pattern[0];
+          return {
+            type: 'text_edit',
+            range: {
+              start: { line: diagnostic.line, character: idx },
+              end: { line: diagnostic.line, character: idx + pattern.length },
+            },
+            new_text: `${quote}${suggestedKey}${quote}`,
+            description: `Replace \`${wrongKey}\` with \`${suggestedKey}\``,
+          };
+        }
+      }
     }
   }
 
+  // Generic guidance is the safety net for the case where the rule engine
+  // is not registered / facts are missing. In normal operation the merge
+  // loop in validate-code.js DROPS this guidance because the rule engine
+  // produces an attributed equivalent. See the precedence comment there.
   return {
     type: 'guidance',
-    description: `Replace translation key \`${wrongKey}\` with \`${suggestedKey}\`.`,
+    description: 'Translation key not found. Add it to app/translations/en.yml, or check for typos in the key name.',
   };
 }
 

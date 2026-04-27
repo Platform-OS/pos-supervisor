@@ -16,6 +16,7 @@ export const projectMapTool = {
 Returns a structured JSON index of the platformOS project: schemas with property details,
 GraphQL operations with args, commands, queries, pages, partials with reverse-index,
 translations, and per-resource CRUD completeness.
+You MUST run project_map with force_refresh: true after creating new commands, otherwise the LSP may has stale/cached state.
 
 MANDATE (NON-NEGOTIABLE):
 Call this tool ONCE at the very start of every session before using scaffold, validate_intent,

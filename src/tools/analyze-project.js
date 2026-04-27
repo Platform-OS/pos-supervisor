@@ -510,19 +510,25 @@ function performIntegrityChecks(projectMap) {
   }
 
   // 3. Broken function calls (from pages, partials, commands, queries)
-  // In platformOS, {% function result = 'queries/X' %} resolves to app/lib/queries/X.liquid
-  // The lib/ prefix is implicit in function calls.
+  // In platformOS, both `{% function result = 'queries/X' %}` and
+  // `{% function result = 'lib/queries/X' %}` resolve to
+  // `app/lib/queries/X.liquid`. The `lib/` prefix is OPTIONAL, the `app/`
+  // prefix is implicit. Naively prepending `app/lib/` to a call that
+  // already carries `lib/` produces phantom `app/lib/lib/...` paths and
+  // false-positive missing_command/missing_query issues.
   const checkFunctionCalls = (sourcePath, functionCalls) => {
     for (const fc of functionCalls ?? []) {
       if (isModuleRef(fc.path)) continue;
-      // function call path → disk path: app/lib/{path}.liquid
-      const fullPath = `app/lib/${fc.path}.liquid`;
-      if (fc.path.includes('commands/') && !allCommands.has(fullPath)) {
+      // Strip optional leading `lib/` so `'lib/commands/X'` and `'commands/X'`
+      // both resolve to `app/lib/commands/X.liquid` consistently.
+      const stripped = fc.path.replace(/^lib\//, '');
+      const fullPath = `app/lib/${stripped}.liquid`;
+      if (stripped.includes('commands/') && !allCommands.has(fullPath)) {
         issues.push({
           type: 'missing_command', severity: 'error', source: sourcePath, target: fullPath,
           message: `'${sourcePath}' calls command '${fc.path}' (resolves to ${fullPath}) which does not exist`,
         });
-      } else if (fc.path.includes('queries/') && !allQueries.has(fullPath)) {
+      } else if (stripped.includes('queries/') && !allQueries.has(fullPath)) {
         issues.push({
           type: 'missing_query', severity: 'error', source: sourcePath, target: fullPath,
           message: `'${sourcePath}' calls query '${fc.path}' (resolves to ${fullPath}) which does not exist`,

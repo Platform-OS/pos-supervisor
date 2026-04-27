@@ -228,6 +228,55 @@ const EXTRACTORS = Object.freeze({
     return { is_function_call: /function call/i.test(message) ? 'true' : 'false' };
   },
 
+  ValidFrontmatter(message) {
+    // pos-cli 6.0.7 ships a single check that emits eight distinct shapes.
+    // We classify into a `category` so the rule engine can route to a
+    // category-specific hint without re-parsing the message itself.
+    //
+    // Categories:
+    //   home_deprecated, missing_required, unknown_field, deprecated_field,
+    //   invalid_enum, layout_false, layout_missing, association_missing,
+    //   unknown (fallback — surfaces as `.unmatched` if it ever fires).
+    if (/'home\.html\.liquid' is deprecated/i.test(message)) {
+      return { category: 'home_deprecated' };
+    }
+    let m = message.match(/^Missing required frontmatter field [`'"]([^`'"]+)[`'"] in (.+?) file$/);
+    if (m) return { category: 'missing_required', field: m[1], file_type: m[2] };
+    m = message.match(/^Unknown frontmatter field [`'"]([^`'"]+)[`'"] in (.+?) file$/);
+    if (m) return { category: 'unknown_field', field: m[1], file_type: m[2] };
+    if (/^`layout: false`/.test(message)) return { category: 'layout_false' };
+    m = message.match(/^Layout [`'"]([^`'"]+)[`'"] does not exist$/);
+    if (m) return { category: 'layout_missing', layout: m[1] };
+    m = message.match(/^Invalid value [`'"]([^`'"]+)[`'"] for [`'"]([^`'"]+)[`'"]\. Must be one of: (.+)$/);
+    if (m) return { category: 'invalid_enum', value: m[1], field: m[2], allowed: m[3] };
+    m = message.match(/^[`'"]([^`'"]+)[`'"] is deprecated/);
+    if (m) return { category: 'deprecated_field', field: m[1] };
+    if (/deprecated/i.test(message)) {
+      // Custom deprecation messages from per-field schemas — extract the first
+      // quoted token as a best-effort field hint.
+      const f = firstQuoted(message);
+      return f ? { category: 'deprecated_field', field: f } : { category: 'deprecated_field' };
+    }
+    m = message.match(/^(.+?) [`'"]([^`'"]+)[`'"] does not exist$/);
+    if (m) return { category: 'association_missing', label: m[1], name: m[2] };
+    return { category: 'unknown' };
+  },
+
+  JsonLiteralQuoteStyle(_message) {
+    // Single-shot message — no params extracted. The category is implicit
+    // (always "single quote inside JSON literal"). Returning {} keeps the
+    // bag JSON-safe and lets the rule engine fire on `check` alone.
+    return {};
+  },
+
+  DuplicateFunctionArguments(message) {
+    // "Duplicate argument 'x' in render tag for partial 'p'."
+    // "Duplicate argument 'x' in function tag for partial 'p'."
+    const m = message.match(/^Duplicate argument [`'"]([^`'"]+)[`'"] in (\w+) tag for partial [`'"]([^`'"]+)[`'"]\.?$/);
+    if (m) return { argument: m[1], tag_kind: m[2], partial: m[3] };
+    return {};
+  },
+
   GraphQLCheck(message) {
     const unused = message.match(/Variable\s+["']?\$(\w+)["']?\s+is never used/i);
     if (unused) return { category: 'unused_variable', variable: unused[1] };

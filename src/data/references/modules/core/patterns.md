@@ -1,26 +1,22 @@
-# pos-module-core -- Patterns & Best Practices
+# pos-module-core — Patterns
 
-Common workflows and real-world patterns for the core module.
+> Compatible with pos-cli 6.0.7+ (modernized canonical syntax). The
+> build/check phases live in your APP commands, not in
+> `modules/core/commands/`. Only `commands/execute` runs at the top level.
 
 ## Standard Create Command
 
-The most common pattern: validate input and create a record.
+Three files: the orchestrator, your build, your check. The orchestrator
+calls them in order, then `modules/core/commands/execute` for the
+mutation. Generated automatically by `pos-cli generators run crud
+--resource <name>`.
 
 ```liquid
 {% comment %} app/lib/commands/products/create.liquid {% endcomment %}
 {% liquid
-  function object = 'modules/core/commands/build', object: params
-
-  assign validators = [
-    { "name": "presence", "property": "title" },
-    { "name": "presence", "property": "price" },
-    { "name": "numericality", "property": "price", "options": { "greater_than": 0 } },
-    { "name": "length", "property": "title", "options": { "minimum": 3, "maximum": 255 } },
-    { "name": "uniqueness", "property": "slug", "options": { "table": "product" } }
-  ]
-  function object = 'modules/core/commands/check', object: object, validators: validators
-
-  if object.errors != blank
+  function object = 'commands/products/create/build',  object: params
+  function object = 'commands/products/create/check',  object: object
+  if object.valid == false
     return object
   endif
 
@@ -29,33 +25,66 @@ The most common pattern: validate input and create a record.
     selection: 'record_create',
     object: object
 
-  function _ = 'modules/core/commands/events/publish', type: 'product_created', object: object
+  function _ = 'modules/core/commands/events/publish',
+    type: 'product_created', object: object
 
+  return object
+%}
+```
+
+```liquid
+{% comment %} app/lib/commands/products/create/build.liquid {% endcomment %}
+{% doc %}
+  @param {object} object - raw input (typically context.params)
+{% enddoc %}
+{% liquid
+  assign object = object | hash_merge: valid: true, errors: empty
+  return object
+%}
+```
+
+```liquid
+{% comment %} app/lib/commands/products/create/check.liquid {% endcomment %}
+{% doc %}
+  @param {object} object - object to validate
+{% enddoc %}
+{% liquid
+  assign c = object.errors | default: empty
+
+  function c = 'modules/core/lib/validations/presence',
+    c: c, field_name: 'title', object: object
+
+  function c = 'modules/core/lib/validations/number',
+    c: c, field_name: 'price', object: object, gt: 0
+
+  function c = 'modules/core/lib/validations/length',
+    c: c, field_name: 'title', object: object, min: 3, max: 255
+
+  function c = 'modules/core/lib/validations/uniqueness',
+    c: c, field_name: 'slug', object: object, table: 'product'
+
+  assign object.errors = c
+  assign object.valid  = c == empty
   return object
 %}
 ```
 
 ## Standard Update Command
 
-Update differs from create: you load the existing record first, merge changes, then validate.
+Update loads the existing record first, merges, validates, executes.
 
 ```liquid
 {% comment %} app/lib/commands/products/update.liquid {% endcomment %}
 {% liquid
-  graphql result = 'products/find', id: id
-  assign existing = result.records.results.first
+  function existing = 'queries/products/find', id: id
   if existing == blank
-    assign error = { "errors": { "base": ["Record not found"] } }
-    return error
+    return { valid: false, errors: { base: ['Record not found'] } }
   endif
 
   assign params['id'] = id
-  function object = 'modules/core/commands/build', object: params
-
-  assign validators = [{ "name": "presence", "property": "title" }, { "name": "numericality", "property": "price", "options": { "greater_than": 0 } }]
-  function object = 'modules/core/commands/check', object: object, validators: validators
-
-  if object.errors != blank
+  function object = 'commands/products/update/build', object: params, existing: existing
+  function object = 'commands/products/update/check', object: object
+  if object.valid == false
     return object
   endif
 
@@ -70,27 +99,26 @@ Update differs from create: you load the existing record first, merge changes, t
 
 ## Standard Delete Command
 
-Delete is simpler -- typically no validation needed.
+Delete usually skips check (the page-level auth helper already gated it).
 
 ```liquid
 {% comment %} app/lib/commands/products/delete.liquid {% endcomment %}
 {% liquid
-  assign object = { "id": id }
+  assign object = { id: id }
 
   function object = 'modules/core/commands/execute',
     mutation_name: 'products/delete',
     selection: 'record_delete',
     object: object
 
-  function _ = 'modules/core/commands/events/publish', type: 'product_deleted', object: object
+  function _ = 'modules/core/commands/events/publish',
+    type: 'product_deleted', object: object
 
   return object
 %}
 ```
 
 ## Calling Commands from Pages
-
-Pages call commands and handle the result:
 
 ```liquid
 {% comment %} app/views/pages/products/create.liquid {% endcomment %}
@@ -99,36 +127,41 @@ slug: products
 method: post
 ---
 {% liquid
-  function profile = 'modules/user/queries/user/current'
-  include 'modules/user/helpers/can_do_or_unauthorized', requester: profile, do: 'products.create'
+  graphql current_user = 'modules/user/queries/user/current'
+  function _ = 'modules/user/helpers/can_do_or_unauthorized',
+    requester: current_user, do: 'products.create'
 
-  function result = 'lib/commands/products/create', params: context.params
+  function result = 'commands/products/create', params: context.params
 
-  if result.errors != blank
+  if result.valid == false
     render 'products/new', errors: result.errors, params: context.params
     break
   endif
 
-  function _ = 'modules/core/commands/session/set', key: 'sflash', value: 'Product created', from: context.location.pathname
+  function _ = 'modules/core/commands/session/set',
+    key: 'sflash', value: 'Product created',
+    from: context.location.pathname
   redirect_to '/products'
 %}
 ```
 
+Note: helpers use `{% function %}` and `do:` (modernized canonical) — never
+`{% include %}` or `with_action:`.
+
 ## Flash Message Pattern
 
-Set a flash message before redirect, then display it on the target page via the layout:
-
 ```liquid
-{% comment %} In a page: set flash then redirect {% endcomment %}
+{% comment %} Set flash before redirect {% endcomment %}
 {% liquid
   function _ = 'modules/core/commands/session/set',
-    key: 'sflash', value: 'Item saved successfully', from: context.location.pathname
+    key: 'sflash', value: 'Item saved.',
+    from: context.location.pathname
   redirect_to '/items'
 %}
 ```
 
 ```liquid
-{% comment %} In layout or partial: read and display flash {% endcomment %}
+{% comment %} Layout or shared partial: read + clear {% endcomment %}
 {% liquid
   function flash = 'modules/core/commands/session/get', key: 'sflash'
   if flash != blank
@@ -138,63 +171,56 @@ Set a flash message before redirect, then display it on the target page via the 
 %}
 ```
 
-## Event Publishing Pattern
-
-Publish events after successful mutations for decoupled side effects:
+## Event Publishing
 
 ```liquid
-{% comment %} After creating an order {% endcomment %}
 {% function _ = 'modules/core/commands/events/publish',
-  type: 'order_created',
-  object: order
-%}
+   type: 'order_created', object: order %}
 ```
 
-Event consumers are defined in `app/lib/consumers/` and registered in schema. They run asynchronously.
+Subscribers (defined in `app/lib/events/`) consume the event asynchronously.
+Use `events/broadcast` for fan-out to multiple type-prefixed consumers.
 
-## Redirect with Notice Pattern
-
-Use the `redirect_to` helper for a one-liner:
+## Redirect with Notice (one-liner)
 
 ```liquid
-{% include 'modules/core/helpers/redirect_to',
-  url: '/products', notice: 'app.product_created'
-%}
+{% function _ = 'modules/core/helpers/redirect_to',
+   url: '/products', notice: 'app.product_created' %}
 ```
 
-This sets the flash notice using the translation key and redirects in a single call.
+Sets the `sflash` session value via the translation key, then redirects.
 
-## Validation Error Display Pattern
-
-Pass errors to the form partial and render them:
+## Validation Error Display
 
 ```liquid
 {% comment %} In the form partial {% endcomment %}
 {% if errors != blank %}
-  <div class="pos-alert pos-alert--danger">
+  <div class="pos-toast pos-toast-error">
     {% for error in errors %}
-      <p>{{ error[0] }}: {{ error[1] | join: ", " }}</p>
+      <p>{{ error[0] }}: {{ error[1] | join: ', ' }}</p>
     {% endfor %}
   </div>
 {% endif %}
 ```
 
+(`pos-toast-*` is the canonical notification style; see common-styling.)
+
 ## Best Practices
 
-1. **Always use the command pattern** -- never call GraphQL mutations directly from pages
-2. **Validate before executing** -- always call `check` before `execute`
-3. **Return early on errors** -- check `object.errors` immediately after `check`
-4. **Publish events for side effects** -- do not send emails or notifications inside commands; use events
-5. **Use translation keys for flash** -- pass `'app.some_key'` not raw strings in production
-6. **Keep validators in the command** -- do not scatter validation logic across pages
-7. **One command per operation** -- separate create, update, delete into individual partials
+1. Use the command pattern — never call mutations directly from pages.
+2. Validate before executing — `check` runs before `execute`.
+3. Return early on `object.valid == false`.
+4. Publish events for side effects (emails, notifications, audit logs).
+5. Use translation keys for flash messages, not raw strings.
+6. Keep validators inside the `check` partial; pages stay thin.
+7. One command per operation (create / update / delete are separate files).
+8. Use `pos-cli generators run crud --resource <name>` to scaffold the
+   build/check/execute trio with the canonical wiring.
 
 ## See Also
 
-- [Core Overview](README.md) -- introduction and key concepts
-- [Core API](api.md) -- all available functions
-- [Core Configuration](configuration.md) -- installation and setup
-- [Core Gotchas](gotchas.md) -- common errors and limits
-- [Core Advanced](advanced.md) -- custom validators and overrides
-- [Pages Patterns](../../pages/patterns.md) -- how pages call commands
-- [Events & Consumers](../../events-consumers/README.md) -- event consumer setup
+- [Core Overview](README.md)
+- [Core API](api.md) — validator family + option names
+- [Core Configuration](configuration.md)
+- [Core Gotchas](gotchas.md) — esp. "core/commands/build doesn't exist"
+- [Core Advanced](advanced.md) — custom validators, event chaining

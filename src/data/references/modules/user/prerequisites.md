@@ -1,93 +1,111 @@
 # modules/user - Required Setup
 
-## CRITICAL: Custom Permission Actions Require permissions.liquid
+> Compatible with pos-cli 6.0.7+ (modernized canonical syntax). All helper
+> calls below use `{% function %}` and the `do:` parameter. The legacy
+> `{% include %}` and `with_action:` forms are rejected by the LSP
+> (`DeprecatedTag`) and must NOT be used.
 
-If you use `can_do_or_redirect`, `can_do`, or `can_do_or_unauthorized` with **any custom action**
-(i.e., anything other than built-in role names like `authenticated` or `admin`), you MUST create
-this file first:
+## CRITICAL: Custom Permission Actions Require an Override
+
+If you use `can_do_or_redirect`, `can_do`, or `can_do_or_unauthorized` with
+ANY custom action string (anything beyond what the module's own pages need),
+you MUST override the role-permissions query at:
 
 ```
-app/views/partials/permissions.liquid
+app/modules/user/public/lib/queries/role_permissions/permissions.liquid
 ```
 
-**Without this file, all custom permission checks silently return false.**
-This means `can_do_or_redirect` will redirect every user — including logged-in ones — back to the
-home page, with no error message. This is the most common auth setup mistake.
+**Without this override, every custom action denies every user — silently.**
+There is no error: `can_do_or_redirect` simply sends the user away,
+`can_do_or_unauthorized` returns 403, `can_do` returns false. This is the
+single most common auth-setup mistake.
 
-### Minimal permissions.liquid
+### Minimal override
 
-The file must handle the actions you define. Use `{% case action %}` to map actions to conditions:
+The override must return a hash mapping role-name → list of action strings:
 
 ```liquid
-{% case action %}
-  {% when 'blog_post.create' %}
-    {% if context.current_user %}
-      {% assign result = true %}
-    {% endif %}
+{% parse_json data %}
+{
+  "anonymous":     ["sessions.create", "users.register"],
+  "authenticated": ["sessions.destroy", "oauth.manage"],
+  "member":        ["profile.manage"],
+  "editor":        ["posts.create", "posts.update"],
+  "admin":         ["admin_pages.view", "admin.users.manage", "users.impersonate", "posts.create", "posts.update", "posts.delete"],
+  "superadmin":    ["users.impersonate_superadmin"]
+}
+{% endparse_json %}
 
-  {% when 'blog_post.update' %}
-    {% if context.current_user.id == object.user_id %}
-      {% assign result = true %}
-    {% endif %}
-
-  {% when 'blog_post.delete' %}
-    {% if context.current_user.id == object.user_id %}
-      {% assign result = true %}
-    {% endif %}
-{% endcase %}
+{% return data %}
 ```
 
-The module checks `result`. If `result` is not `true`, the user is denied.
+Every role you assign via `commands/profiles/roles/append` must appear as a
+key. Every action you check via `can_do(do: '...')` must appear in at least
+one role's list.
 
 ### "Any authenticated user" pattern
 
-For actions that any logged-in user can perform:
-
 ```liquid
-{% case action %}
-  {% when 'blog_post.create' %}
-    {% if context.current_user %}
-      {% assign result = true %}
-    {% endif %}
-{% endcase %}
+{% parse_json data %}
+{
+  "authenticated": ["sessions.destroy", "posts.read", "comments.create"]
+}
+{% endparse_json %}
+{% return data %}
 ```
 
-### Built-in role actions (no permissions.liquid needed)
+Then:
 
-These work without a custom permissions file because the module handles them internally:
+```liquid
+{% function _ = 'modules/user/helpers/can_do_or_redirect',
+   requester: current_user,
+   do: 'comments.create' %}
+```
 
-- Checking `roles contains 'admin'`
-- Using `with_action: 'authenticated'` (any logged-in user)
+### Per-entity authorization (ownership, tenancy)
 
-Only custom string actions like `'blog_post.create'` require the file.
+Hash-only authorization can't express "user owns this row." Use an
+`access_callback` (see advanced.md) — it receives `requester`, `entity`,
+and `do`, and returns a boolean. The callback wins over the hash.
 
 ---
 
-## IMPORTANT: include vs render for Auth Helpers
+## CRITICAL: Use `{% function %}`, NOT `{% include %}`
 
-Auth helpers (`can_do`, `can_do_or_redirect`, `can_do_or_unauthorized`) **must use `include`**,
-not `render`. They need access to the caller's variable scope to set `can_do` and similar
-variables that your template reads after the call.
+The modernized canonical form for every helper call is `{% function %}`:
 
 ```liquid
-<!-- CORRECT — use include for auth helpers -->
-{% include 'modules/user/helpers/can_do' with_action: 'edit_post' %}
-{% if can_do %}
-  <!-- accessible because include shares scope -->
-{% endif %}
-
-<!-- WRONG — render does not share scope -->
-{% render 'modules/user/helpers/can_do' with_action: 'edit_post' %}
-{% if can_do %} <!-- always nil here -->
+<!-- CORRECT - LSP-compliant -->
+{% graphql current_user = 'modules/user/queries/user/current' %}
+{% function can = 'modules/user/helpers/can_do',
+   requester: current_user, do: 'posts.edit' %}
+{% if can %}
+  <!-- ... -->
 {% endif %}
 ```
 
-The linter flags `include` as deprecated. **This warning is expected and unavoidable for auth helpers.**
-The module API explicitly requires `include` for scope sharing. Use `include` and accept the warning.
+```liquid
+<!-- WRONG - LSP rejects (DeprecatedTag) -->
+{% include 'modules/user/helpers/can_do' with_action: 'posts.edit' %}
+```
 
-Scaffold-generated auth checks use `{% function %}` (which calls commands/queries), so they do not
-trigger this warning. The `include` requirement applies only when calling auth helpers directly from
-your own partials or pages.
+`{% function %}` returns the helper's value into the named variable
+(`can` above). `{% function _ = '...' %}` discards it when the helper is
+side-effecting (redirect, 403).
+
+---
+
+## CRITICAL: Always Pull `current_user` via the Module Query
+
+Helpers expect a profile-shaped `requester:` (with `id`, `roles`, etc.).
+`context.current_user` is the runtime context object — different shape, not
+interchangeable. ALWAYS:
+
+```liquid
+{% graphql current_user = 'modules/user/queries/user/current' %}
+{% function _ = 'modules/user/helpers/can_do',
+   requester: current_user, do: '...' %}
+```
 
 ---
 
@@ -95,6 +113,22 @@ your own partials or pages.
 
 Before adding any auth checks to your pages or partials:
 
-- [ ] `app/views/partials/permissions.liquid` exists and handles all custom actions you will use
-- [ ] You know which actions require `include` (helpers) vs `{% function %}` (commands/queries)
-- [ ] Pages that mutate data call the auth check **before** any command is executed
+- [ ] `app/modules/user/public/lib/queries/role_permissions/permissions.liquid` exists and lists
+      EVERY role you assign + EVERY action you check
+- [ ] All helper calls use `{% function %}` syntax (never `{% include %}`)
+- [ ] All helper calls pass `requester:` from the module query, not from
+      `context.current_user`
+- [ ] All helper calls use the `do:` parameter (never `with_action:`)
+- [ ] Pages that mutate data call the auth helper BEFORE any
+      `commands/...` execution
+
+## Module Dependencies
+
+Per `modules/user/pos-module.json` (version 5.2.8):
+
+- `core` ≥ 2.1.8 (required)
+- `common-styling` ≥ 1.11.0 (required)
+- `oauth_github` ≥ 0.0.12 (optional — only if your app uses GitHub OAuth)
+
+Run `pos-cli modules version user` if `template-values.json` and
+`pos-module.json` drift; the dashboard surfaces this via `manifest_warnings`.

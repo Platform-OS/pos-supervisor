@@ -1,72 +1,148 @@
-# pos-module-core -- Gotchas & Troubleshooting
+# pos-module-core — Gotchas & Troubleshooting
 
-Common errors, limits, and debugging guidance for the core module.
+> Compatible with pos-cli 6.0.7+ (modernized canonical syntax).
+
+## TOP GOTCHA: `modules/core/commands/build` and `…/check` DO NOT EXIST
+
+There is no `modules/core/commands/build.liquid` and no
+`modules/core/commands/check.liquid`. The build/check phases are
+APP-LEVEL — your own command directory contains them as nested partials,
+e.g. `app/lib/commands/products/create/build.liquid` and `…/check.liquid`.
+
+```liquid
+{% comment %} ✗ FAILS — no such file in core 2.1.8 {% endcomment %}
+{% function object = 'modules/core/commands/build', object: params %}
+
+{% comment %} ✓ Correct — your own build partial {% endcomment %}
+{% function object = 'commands/products/create/build', object: params %}
+```
+
+The only top-level command runner the core module ships is
+`modules/core/commands/execute`. Generate the build/check/execute trio
+with `pos-cli generators run crud --resource <name>`.
+
+---
+
+## Validator Renames (legacy → modern)
+
+If you copied validator config from older docs, these will fail at
+function-resolve time:
+
+| Legacy name      | Modern replacement               | Notes |
+|------------------|----------------------------------|-------|
+| `numericality`   | `number`                         | options renamed `greater_than`/`less_than` → `gt`/`gte`/`lt`/`lte`/`eq`/`ne` |
+| `format`         | `matches`                        | option renamed `pattern` → `regexp` |
+| `confirmation`   | `equal` with `to: '<other_field>'`| explicit pair-comparison |
+| `inclusion`      | `included` with `in: [...]`      | option renamed `values` → `in` |
+
+The validator files at `modules/core/lib/validations/` are the canonical
+source. Calling `'modules/core/lib/validations/format'` (with no file
+behind it) is the same kind of failure as calling phantom build/check.
+
+---
+
+## Validators Take Direct Args, Not a JSON Hash
+
+Modern validators are CALLED INDIVIDUALLY with named parameters, not
+config-driven through a single `validators` array passed to a checker:
+
+```liquid
+{% comment %} ✓ Modern shape — chain validators in your check partial {% endcomment %}
+{% function c = 'modules/core/lib/validations/presence',
+   c: c, field_name: 'title', object: object %}
+{% function c = 'modules/core/lib/validations/number',
+   c: c, field_name: 'price', object: object, gt: 0 %}
+```
+
+```liquid
+{% comment %} ✗ Legacy shape — no longer supported {% endcomment %}
+{% assign validators = [
+  { "name": "presence", "property": "title" },
+  { "name": "numericality", "property": "price", "options": { "greater_than": 0 } }
+] %}
+{% function object = 'modules/core/commands/check',
+   object: object, validators: validators %}
+```
+
+---
 
 ## Common Errors
 
-### "Liquid error: modules/core/commands/build not found"
-
-**Cause:** The core module is not installed, or the deployment did not include the module files.
-
-**Solution:** Run `pos-cli modules install core` and redeploy with `pos-cli deploy`.
-
 ### "object.errors is always blank even with invalid data"
 
-**Cause:** The validators array is malformed, empty, or the property names do not match the object keys.
+**Cause:** Your `check` partial is not threading the contract `c` through
+each validator call.
 
-**Solution:** Verify the JSON validators array is valid. Ensure each `"property"` value exactly matches a key in the object passed to `build`. Use `{% log validators, type: 'debug' %}` to inspect.
+**Solution:** Each validator returns a contract; pass the result back as
+the `c:` argument of the next call. At the end, set `object.errors = c`
+and `object.valid = c == empty`. See patterns.md for the canonical shape.
 
 ### "Uniqueness validator fails with 'table not found'"
 
-**Cause:** The `table` option references a schema table name that does not exist or has a typo.
+**Cause:** The `table` option does not match a schema name.
 
-**Solution:** Check your `app/schema/` directory for the correct table name. The table value must match the filename without the `.yml` extension.
+**Solution:** Check `app/schema/<name>.yml`. The table value must equal
+the filename without `.yml`. The `scope` option, if used, is a list of
+field names that further narrow uniqueness (e.g. unique-per-tenant).
 
 ### "Execute command returns nil instead of the created record"
 
-**Cause:** The `selection` parameter does not match the GraphQL mutation's return field name.
+**Cause:** The `selection:` parameter doesn't match the mutation's
+top-level result field. The default is `'record'`; record CRUD ops
+typically use `'record_create'`, `'record_update'`, `'record_delete'`.
 
-**Solution:** If your mutation uses `record_create`, set `selection: 'record_create'`. For updates use `record_update`. For deletes use `record_delete`. Check the mutation file to confirm the exact field name.
+**Solution:** Inspect the mutation file (`app/graphql/<...>.graphql`) and
+match the top-level alias literally.
 
 ### "Events are published but consumers never fire"
 
-**Cause:** The event consumer is not registered correctly, or the event type string does not match between publisher and consumer.
+**Cause:** Consumer file path or `type` string mismatch.
 
-**Solution:** Verify the consumer file exists in the correct path. Ensure the event `type` string is identical in both the `publish` call and the consumer registration. Check logs for consumer errors.
+**Solution:** Verify the consumer file exists under `app/lib/events/<type>/...`.
+The `type` argument to `events/publish` must match exactly. Tail the
+instance log for consumer errors.
 
 ### "Flash message appears on wrong page or not at all"
 
-**Cause:** The `from` parameter in `session/set` does not match the current page path, or the flash is cleared before being displayed.
+**Cause:** `from:` does not match the current page path, or the flash is
+cleared before display.
 
-**Solution:** Pass `from: context.location.pathname` when setting the flash. Read and display the flash in your layout before any partials clear it. Ensure `session/clear` is called after rendering, not before.
+**Solution:** Pass `from: context.location.pathname` when setting. Read +
+clear the flash in your layout once per request. The `from` value lets
+the flash auto-clear on subsequent unrelated navigation.
 
 ### "Validation error messages are not translated"
 
-**Cause:** Validators return default English error messages. Translation must be handled in the display layer.
+**Cause:** Validators emit translation KEYS (e.g.
+`'modules/core/validation.matches'`); translation happens in your display
+layer.
 
-**Solution:** Map error keys to translation keys in your form partial. The errors hash uses field names as keys and arrays of error messages as values.
+**Solution:** In the form partial, run each error message through `| t`,
+or look up custom translations in your locale files.
 
 ### "Cannot override a core module file"
 
-**Cause:** The override file is placed in the wrong path. Overrides must mirror the exact path structure.
+**Cause:** Override placed at the wrong path.
 
-**Solution:** Copy from `modules/core/public/lib/...` to `app/modules/core/public/lib/...`. The relative path after `public/` must be identical.
+**Solution:** Override path mirrors the module tree under
+`app/modules/core/public/...`. The path after `public/` must be identical.
+
+---
 
 ## Limits
 
-| Resource                        | Limit              | Notes                                          |
-|---------------------------------|--------------------|-------------------------------------------------|
-| Validators per check call       | No hard limit      | Performance degrades beyond ~20 validators      |
-| Session value size              | 4 KB               | Per key; use database for larger data           |
-| Event payload size              | 1 MB               | Keep payloads lean; pass IDs not full objects   |
-| Events published per request    | No hard limit      | Each event adds latency; batch where possible   |
-| Nested command depth            | 3 levels           | Commands calling commands calling commands       |
-| GraphQL mutation file path      | 255 characters     | Relative to `app/graphql/`                      |
+| Resource                  | Limit            | Notes                                  |
+|---------------------------|------------------|----------------------------------------|
+| Validators per check      | No hard limit    | Performance degrades beyond ~20        |
+| Session value size        | 4 KB             | Per key; use a record for larger data  |
+| Event payload size        | 1 MB             | Pass IDs not full objects when possible|
+| Nested command depth      | ~3 levels        | Commands calling commands calling …    |
+| GraphQL mutation path     | 255 characters   | Relative to `app/graphql/`             |
 
 ## See Also
 
-- [Core Overview](README.md) -- introduction and key concepts
-- [Core Configuration](configuration.md) -- installation and setup
-- [Core API](api.md) -- all available functions
-- [Core Patterns](patterns.md) -- real-world usage examples
-- [Core Advanced](advanced.md) -- custom validators and edge cases
+- [Core Overview](README.md)
+- [Core API](api.md)
+- [Core Configuration](configuration.md)
+- [Core Patterns](patterns.md)
+- [Core Advanced](advanced.md)

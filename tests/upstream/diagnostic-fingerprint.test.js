@@ -119,6 +119,111 @@ const FIXTURES = [
     expected_template_fp: '89868bdc426b9a6b4cb483e67bac42b10ab3ed86',
     expected_params: { category: 'unknown_field_record', field: 'name', type: 'Record' },
   },
+
+  // ── ValidFrontmatter ─ pos-cli 6.0.7 multi-shape check ──────────────────────
+  // The check emits 8 distinct shapes. We pin one representative per shape so a
+  // template change in any shape is loud. The file-type label (Page/Form/etc.)
+  // is intentionally NOT masked — each (category, file_type) pair is a distinct
+  // analytics axis. The rule_id (set by the rule engine in core/rules/
+  // ValidFrontmatter.js) groups across file types when needed.
+  {
+    check: 'ValidFrontmatter',
+    samples: [
+      "Missing required frontmatter field 'name' in Form file",
+      "Missing required frontmatter field 'resource' in Form file",
+    ],
+    expected_template: 'Missing required frontmatter field <id> in Form file',
+    expected_template_fp: '91177b77c72d510aedb42cd4d4e4dd275e2843c9',
+    expected_params: { category: 'missing_required', field: 'name', file_type: 'Form' },
+  },
+  {
+    check: 'ValidFrontmatter',
+    samples: [
+      "Unknown frontmatter field 'cache' in Page file",
+      "Unknown frontmatter field 'title' in Page file",
+    ],
+    expected_template: 'Unknown frontmatter field <id> in Page file',
+    expected_template_fp: '2461ba62fdf60c6335e84cf44e8f154134df30b5',
+    expected_params: { category: 'unknown_field', field: 'cache', file_type: 'Page' },
+  },
+  {
+    check: 'ValidFrontmatter',
+    samples: [
+      "Layout 'application' does not exist",
+      "Layout 'modules/core/admin' does not exist",
+    ],
+    expected_template: 'Layout <id> does not exist',
+    expected_template_fp: '20eb602a8f963006b5123f6e53975a17fdcbdd68',
+    expected_params: { category: 'layout_missing', layout: 'application' },
+  },
+  {
+    check: 'ValidFrontmatter',
+    samples: [
+      "Invalid value 'POST' for 'method'. Must be one of: get, post, put, delete, patch",
+      "Invalid value 'PUT' for 'method'. Must be one of: get, post, put, delete, patch",
+    ],
+    expected_template: 'Invalid value <id> for <id>. Must be one of: get, post, put, delete, patch',
+    expected_template_fp: '055be883904858626da77da6c2a3436cabba3dfa',
+    expected_params: {
+      category: 'invalid_enum',
+      value: 'POST',
+      field: 'method',
+      allowed: 'get, post, put, delete, patch',
+    },
+  },
+  {
+    check: 'ValidFrontmatter',
+    samples: [
+      "'layout_name' is deprecated",
+      "'layout_path' is deprecated",
+    ],
+    expected_template: '<id> is deprecated',
+    expected_template_fp: 'f34f5eb90a978fc0c05eccf2846ab86decedda7a',
+    expected_params: { category: 'deprecated_field', field: 'layout_name' },
+  },
+  {
+    check: 'ValidFrontmatter',
+    samples: [
+      "Authorization policy 'guest_only' does not exist",
+      "Authorization policy 'admin_only' does not exist",
+    ],
+    expected_template: 'Authorization policy <id> does not exist',
+    expected_template_fp: '21a6e70cef5fe5a0ac1c991425efd284504e7ecb',
+    expected_params: { category: 'association_missing', label: 'Authorization policy', name: 'guest_only' },
+  },
+
+  // ── JsonLiteralQuoteStyle ─ single-shot constant message ────────────────────
+  {
+    check: 'JsonLiteralQuoteStyle',
+    samples: [
+      'Use double quotes for string literals inside object/array literals (e.g. \'{"key": "value"}\', not "{\'key\': \'value\'}").',
+    ],
+    expected_template: 'Use double quotes for string literals inside object/array literals (e.g. <id>, not <id>).',
+    expected_template_fp: '6330c359bab9fa907940ee6b41fc4f4ebef8dace',
+    expected_params: {},
+  },
+
+  // ── DuplicateFunctionArguments ─ render and function variants ──────────────
+  {
+    check: 'DuplicateFunctionArguments',
+    samples: [
+      "Duplicate argument 'foo' in function tag for partial 'helpers/can_do'.",
+      "Duplicate argument 'bar' in function tag for partial 'helpers/format'.",
+    ],
+    expected_template: 'Duplicate argument <id> in function tag for partial <id>.',
+    expected_template_fp: '02a96cb3b3010a94fac5eba0d545690f948184bb',
+    expected_params: { argument: 'foo', tag_kind: 'function', partial: 'helpers/can_do' },
+  },
+  {
+    check: 'DuplicateFunctionArguments',
+    samples: [
+      "Duplicate argument 'name' in render tag for partial 'forms/login'.",
+      "Duplicate argument 'email' in render tag for partial 'forms/signup'.",
+    ],
+    expected_template: 'Duplicate argument <id> in render tag for partial <id>.',
+    expected_template_fp: '49a0e3b1f5cfdc41996898948d303ecc8fc9d710',
+    expected_params: { argument: 'name', tag_kind: 'render', partial: 'forms/login' },
+  },
 ];
 
 // Structural (pos-supervisor:*) checks intentionally have NO mask (the tag

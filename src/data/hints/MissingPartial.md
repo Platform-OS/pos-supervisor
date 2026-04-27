@@ -8,6 +8,12 @@ STEP 1 — Determine the right fix.
     → GOTO STEP 2 to create the missing file.
   Output came from scaffold:
     → Check scaffold output for exact path, do NOT rename scaffold files.
+  For a simple form submission consider using the core module's execute helper directly:
+    ```liquid
+    function object = 'modules/core/commands/execute', mutation_name: 'contact_submissions/create', selection: 'record_create', object: object
+    ```
+    Use this when: single mutation, simple create/update/delete.
+    Create custom command at app/lib/commands/ when: complex logic, multiple steps, reusable across pages.
 
 STEP 2 — Create '{{name}}'.
   Path: {{create_path}}
