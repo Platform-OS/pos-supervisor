@@ -8,12 +8,28 @@ STEP 1 — Determine the right fix.
     → GOTO STEP 2 to create the missing file.
   Output came from scaffold:
     → Check scaffold output for exact path, do NOT rename scaffold files.
-  For a simple form submission consider using the core module's execute helper directly:
+
+  COMMAND PHASE STRUCTURE — build / check / execute are inline phases of YOUR command.
+    Each command lives at app/lib/commands/<feature>/<action>.liquid and orchestrates three
+    sibling files in the same directory:
+      app/lib/commands/contact_messages/create.liquid          ← orchestrator (calls build/check/execute below)
+      app/lib/commands/contact_messages/create/build.liquid    ← inline phase (you write this)
+      app/lib/commands/contact_messages/create/check.liquid    ← inline phase (you write this)
+      app/lib/commands/contact_messages/create/execute.liquid  ← inline phase (you write this)
+    Module helpers DO NOT supply build / check — there is no `modules/core/commands/build`
+    or `modules/core/commands/check`. Write your own phase files; reference them as
+    `commands/<feature>/<action>/build` etc. from the orchestrator.
+
+  CORE MODULE EXECUTE SHORTCUT — only `modules/core/commands/execute` is exported.
+    For a simple create/update/delete with no custom logic you can skip writing your own
+    execute.liquid and call the core helper directly from the orchestrator:
     ```liquid
     function object = 'modules/core/commands/execute', mutation_name: 'contact_submissions/create', selection: 'record_create', object: object
     ```
-    Use this when: single mutation, simple create/update/delete.
-    Create custom command at app/lib/commands/ when: complex logic, multiple steps, reusable across pages.
+    Use this when: single mutation, no extra steps. For everything else write your own
+    execute.liquid in the same directory as build.liquid / check.liquid.
+    Run `module_info(core, api)` for the full list of helpers core actually exports —
+    `build` and `check` are NOT among them.
 
 STEP 2 — Create '{{name}}'.
   Path: {{create_path}}

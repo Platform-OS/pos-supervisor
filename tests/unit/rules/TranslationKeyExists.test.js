@@ -118,3 +118,161 @@ describe('TranslationKeyExists — edge cases', () => {
     expect(runRules(diag, facts)).toBeNull();
   });
 });
+
+// Realistic translations shape — what `flattenYaml` actually emits when the
+// YAML root is `en:` (the platformOS-required wrapper). Every key carries
+// the locale prefix.
+const realisticGraph = buildFactGraph({
+  pages: {}, partials: {}, commands: {}, queries: {}, graphql: {}, schema: {}, layouts: {},
+  translations: {
+    en: {
+      'en.landing.problem.items': ['a', 'b'],
+      'en.landing.problem.title': 'Problem',
+      'en.landing.proof.title': 'Proof',
+      'en.app.user.title': 'User',
+      'en.app.user.name': 'Name',
+    },
+  },
+  assets: [],
+});
+const realisticFacts = { graph: realisticGraph };
+
+describe('TranslationKeyExists.suggest_nearest — locale-prefix correctness', () => {
+  test('hint emits bare keys (no `en.` prefix) for graph keys built from realistic YAML', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'app.usr.title' },
+      message: "'app.usr.title' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.rule_id).toBe('TranslationKeyExists.suggest_nearest');
+    // Suggested key must NOT carry the `en.` prefix — Liquid's `| t` filter
+    // re-prepends the locale, so suggesting `en.app.user.title` makes the
+    // agent's call resolve to `en.en.app.user.title` and fail again.
+    expect(result.hint_md).toContain('app.user.title');
+    expect(result.hint_md).not.toMatch(/`en\.app\.user\.title`/);
+    expect(result.fixes[0].description).not.toMatch(/`en\.app\.user\.title`/);
+  });
+
+  test('hint warns explicitly against including the locale prefix', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'app.usr.title' },
+      message: "'app.usr.title' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.hint_md).toMatch(/do NOT include `en\.`/i);
+  });
+
+  test('agent supplied an `en.`-prefixed key — rule strips it before matching', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'en.app.usr.title' },
+      message: "'en.app.usr.title' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.rule_id).toBe('TranslationKeyExists.suggest_nearest');
+    expect(result.hint_md).toContain('app.user.title');
+  });
+
+  test('brand-new key with no close match falls through to create_key (stricter threshold)', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'app.brand_new_feature.label' },
+      message: "'app.brand_new_feature.label' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.rule_id).toBe('TranslationKeyExists.create_key');
+  });
+
+  test('one-character typo on a real key still suggests', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'app.user.namee' },
+      message: "'app.user.namee' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.rule_id).toBe('TranslationKeyExists.suggest_nearest');
+    expect(result.hint_md).toContain('app.user.name');
+  });
+});
+
+describe('TranslationKeyExists.create_key — locale-prefix correctness', () => {
+  test('agent-supplied `en.` prefix is stripped before YAML emission', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'en.products.heading' },
+      message: "'en.products.heading' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.rule_id).toBe('TranslationKeyExists.create_key');
+    // The YAML snippet nests under `products:` (NOT `en: products:`) because
+    // the file already has the `en:` root and prepending again would create
+    // `en.en.products.heading` at lookup time.
+    expect(result.hint_md).toMatch(/^products:/m);
+    expect(result.hint_md).not.toMatch(/^en:\s*\n\s*products:/m);
+  });
+
+  test('clarifies the YAML must nest under the existing `en:` root', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'app.greeting' },
+      message: "'app.greeting' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.fixes[0].description).toMatch(/nested under the existing `en:` root/);
+  });
+});
+
+describe('TranslationKeyExists.array_index_misuse — defensive gate', () => {
+  test('hint suggests bare arrayKey even when agent prefixed with `en.`', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'en.landing.problem.items[2]' },
+      message: "'en.landing.problem.items[2]' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.rule_id).toBe('TranslationKeyExists.array_index_misuse');
+    // The `assign items = '...'` snippet must NOT include `en.` — the agent
+    // would otherwise write `'en.landing.problem.items' | t` and re-trigger
+    // the prefix double-up.
+    expect(result.hint_md).toMatch(/assign items = 'landing\.problem\.items'/);
+    expect(result.hint_md).not.toMatch(/assign items = 'en\.landing\.problem\.items'/);
+  });
+
+  test('raw-message gate: catches `[N]` even when params.key extraction loses it', () => {
+    // Belt-and-suspenders: if the extractor ever drops the bracket from
+    // params.key (LSP shape change, encoding bug), the raw-message regex
+    // still routes to array_index_misuse instead of letting suggest_nearest
+    // emit a misleading parent-key suggestion.
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'landing.problem.items' },               // no [N] in params
+      message: "'landing.problem.items[3]' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.rule_id).toBe('TranslationKeyExists.array_index_misuse');
+  });
+
+  test('suggest_nearest is gated by raw-message regex too', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'landing.problem.items' },
+      message: "'landing.problem.items[3]' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    // Even though params.key has no [N] and is Levenshtein-close to a real key,
+    // the rule must defer to array_index_misuse via the raw-message gate.
+    expect(result.rule_id).not.toBe('TranslationKeyExists.suggest_nearest');
+  });
+
+  test('create_key is gated by raw-message regex too', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'something_unrelated' },
+      message: "'something_unrelated[0]' does not have a matching translation entry",
+    };
+    const result = runRules(diag, realisticFacts);
+    expect(result.rule_id).toBe('TranslationKeyExists.array_index_misuse');
+  });
+});

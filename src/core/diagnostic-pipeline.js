@@ -1032,16 +1032,35 @@ export function stampDefaultsOn(result) {
  * @returns {number} count of suppressed diagnostics
  */
 export function suppressUpstreamFrontmatterDup(result) {
+  // Two matching axes — line (the default) AND layout name (parsed from the
+  // message). The line-match alone misses cases where upstream and our
+  // structural emitter disagree by ±1 line (frontmatter edge cases, leading
+  // whitespace, line-zero anchoring), which is exactly what the DEMO data
+  // showed: both `pos-supervisor:InvalidLayout` and
+  // `ValidFrontmatter.layout_missing` fired with diverging line values, so
+  // the agent saw two contradictory hints for the same root cause.
   const ourLines = new Set();
+  const ourInvalidLayoutNames = new Set();
   for (const d of [...result.errors, ...result.warnings]) {
-    if (d.check === 'pos-supervisor:InvalidLayout' ||
-        d.check === 'pos-supervisor:InvalidFrontMatter') {
+    if (d.check === 'pos-supervisor:InvalidLayout' || d.check === 'pos-supervisor:InvalidFrontMatter') {
       ourLines.add(d.line);
     }
+    if (d.check === 'pos-supervisor:InvalidLayout') {
+      const layoutName = d.message?.match(/^Layout `([^`]+)` not found/)?.[1];
+      if (layoutName) ourInvalidLayoutNames.add(layoutName);
+    }
   }
-  if (ourLines.size === 0) return 0;
+  if (ourLines.size === 0 && ourInvalidLayoutNames.size === 0) return 0;
 
-  const isRedundant = (d) => d.check === 'ValidFrontmatter' && ourLines.has(d.line);
+  const isRedundant = (d) => {
+    if (d.check !== 'ValidFrontmatter') return false;
+    if (ourLines.has(d.line)) return true;
+    // Layout-name match: the upstream `Layout 'X' does not exist` shape
+    // names the same layout `X` that pos-supervisor:InvalidLayout already
+    // flagged. The two diagnostics describe identical root cause.
+    const layoutName = d.message?.match(/^Layout ['"`]([^'"`]+)['"`] does not exist$/)?.[1];
+    return !!layoutName && ourInvalidLayoutNames.has(layoutName);
+  };
   const eRemoved = result.errors.filter(isRedundant).length;
   const wRemoved = result.warnings.filter(isRedundant).length;
   const removed = eRemoved + wRemoved;

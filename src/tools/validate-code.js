@@ -241,6 +241,7 @@ explicitly only if you are validating a file that is NOT part of the most recent
           content,
           factGraph,
           filePath: file_path,
+          projectDir: ctx.directory,
         };
 
         // Enrich all diagnostics in both quick and full modes.
@@ -755,6 +756,7 @@ explicitly only if you are validating a file that is NOT part of the most recent
           tagsIndex: ctx.tagsIndex,
           schemaIndex: ctx.schemaIndex,
           analyticsStore: ctx.analyticsStore,
+          projectDir: ctx.directory,
         });
       } catch { /* bridge is best-effort — fall through to default stamping */ }
 

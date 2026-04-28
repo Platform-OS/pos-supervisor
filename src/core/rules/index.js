@@ -24,6 +24,22 @@ import { rules as NonGetRenderingPageRules } from './NonGetRenderingPage.js';
 import { rules as ValidFrontmatterRules } from './ValidFrontmatter.js';
 import { rules as JsonLiteralQuoteStyleRules } from './JsonLiteralQuoteStyle.js';
 import { rules as DuplicateFunctionArgumentsRules } from './DuplicateFunctionArguments.js';
+import { rules as DeprecatedTagRules } from './DeprecatedTag.js';
+import { rules as UnrecognizedRenderPartialArgumentsRules } from './UnrecognizedRenderPartialArguments.js';
+import { rules as SchemaPropertyRules } from './SchemaProperty.js';
+import { rules as SchemaYAMLRules } from './SchemaYAML.js';
+import { rules as MissingSlugRules } from './MissingSlug.js';
+import { rules as MissingContentForLayoutRules } from './MissingContentForLayout.js';
+import { rules as ParserBlockingScriptRules } from './ParserBlockingScript.js';
+import { rules as TranslationMissingLocaleKeyRules } from './TranslationMissingLocaleKey.js';
+import { rules as MissingAssetRules } from './MissingAsset.js';
+import { rules as OrphanedPartialRules } from './OrphanedPartial.js';
+import { rules as MissingPageRules } from './MissingPage.js';
+import { rules as LiquidHTMLSyntaxErrorRules } from './LiquidHTMLSyntaxError.js';
+import { rules as InvalidLayoutRules } from './InvalidLayout.js';
+import { rules as PartialCallArgumentsRules } from './PartialCallArguments.js';
+import { rules as GraphQLVariablesCheckRules } from './GraphQLVariablesCheck.js';
+import { rules as UnusedDocParamRules } from './UnusedDocParam.js';
 
 const ALL_RULE_MODULES = [
   MissingPartialRules,
@@ -42,6 +58,22 @@ const ALL_RULE_MODULES = [
   ValidFrontmatterRules,
   JsonLiteralQuoteStyleRules,
   DuplicateFunctionArgumentsRules,
+  DeprecatedTagRules,
+  UnrecognizedRenderPartialArgumentsRules,
+  SchemaPropertyRules,
+  SchemaYAMLRules,
+  MissingSlugRules,
+  MissingContentForLayoutRules,
+  ParserBlockingScriptRules,
+  TranslationMissingLocaleKeyRules,
+  MissingAssetRules,
+  OrphanedPartialRules,
+  MissingPageRules,
+  LiquidHTMLSyntaxErrorRules,
+  InvalidLayoutRules,
+  PartialCallArgumentsRules,
+  GraphQLVariablesCheckRules,
+  UnusedDocParamRules,
 ];
 
 let _loaded = false;

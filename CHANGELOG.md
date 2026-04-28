@@ -1,5 +1,300 @@
 # Changelog
 
+## 0.7.1 — 2026-04-28
+
+Fix for the `GraphQLVariablesCheck.required` regression spiral
+reported on 2026-04-27 (4 emits / 100 % regression on
+`app/lib/commands/contacts/create.liquid` in DEMO) and the dashboard
+404 on rule-driven check drilldowns.
+
+### Fixed — `GraphQLVariablesCheck.required` parser blind spot
+
+Root cause: a `{% graphql %}` call written inside a `{% liquid %}`
+block with multi-line `,` continuation. Both `liquid-html-parser` and
+pos-cli's LSP truncate the call at the first newline-comma —
+`markup.args` ends up empty and LSP fires
+`GraphQLVariablesCheck.required` for every named arg past it. The
+agent sees the args in source, our `.required` hint says "add the
+variable", agent rewrites cosmetically, LSP fires the same errors.
+Loop.
+
+Three coordinated changes resolve the spiral:
+
+- **`liquid-parser.js` — graphql call extraction enriched.** Each
+  `extracted.graphql` entry now carries `args: [name, …]` (from
+  `markup.args`) and `source_kind: 'tag' | 'liquid_inline' |
+  'liquid_multiline_truncated'`. Truncation is detected when the
+  call's source range starts without `{%` (we are inside `{% liquid
+  %}`), ends on `,`, and the file text immediately past the call has
+  another `name:` clause on a subsequent line. New
+  `classifyGraphqlSourceKind` exported for reuse. Dedup-by-queryName
+  preserved; if any duplicate call is truncated, the existing entry's
+  `source_kind` upgrades to the most-pessimistic value so downstream
+  rules can detect the symptom regardless of which call won the dedup.
+- **`rules/GraphQLVariablesCheck.js` — new `parser_blind_spot`
+  sub-rule (priority 3, before `.required` at 5, confidence 0.95).**
+  Fires when `direction === 'required'` AND the project graph reports
+  any graphql call in the file with `source_kind ===
+  'liquid_multiline_truncated'`. Hint redirects the agent at the
+  syntactic root cause: convert to single-line `{% graphql … %}` tag
+  form, or keep it inside `{% liquid %}` but place every named arg on
+  the same line as `graphql`. Falls through to `.required` when the
+  call is fine — purely additive, no risk of misfire on legitimate
+  missing-variable diagnostics.
+- **`structural-warnings.js` — new
+  `pos-supervisor:GraphqlMultilineInLiquidBlock` (severity: error).**
+  Surfaces the syntactic cause once per truncated call, before LSP
+  enrichment runs. Reuses `classifyGraphqlSourceKind`. Fires for all
+  domains; partials still get the existing `GraphqlInPartial` error
+  on top.
+
+### Fixed — Dashboard hint endpoint 404 on rule-driven checks
+
+The dashboard's rule drilldown panel `GET
+/api/hints?name=<Check>` 404'd for the 12+ rule-driven checks that
+have no `src/data/hints/<X>.md` file (`GraphQLVariablesCheck`,
+`PartialCallArguments`, `MissingRenderPartialArguments`,
+`UnusedDocParam`, `LiquidHTMLSyntaxError`,
+`pos-supervisor:InvalidLayout`, `pos-supervisor:MissingSlug`,
+`pos-supervisor:MissingContentForLayout`,
+`pos-supervisor:SchemaProperty`, `pos-supervisor:SchemaYAML`,
+`pos-supervisor:DeprecatedTag`,
+`pos-supervisor:TranslationMissingLocaleKey`). These checks are
+served by `src/core/rules/<X>.js` modules, not static markdown — but
+the endpoint was hardwired to `readFileSync('<X>.md')`.
+
+- **`http-server.js` — `handleGetHints` now branches.** md file
+  present → returns `{ source: 'static', content }`. md missing but
+  rule registry has the check → returns `{ source: 'rule', content,
+  rule_ids }` with a synthesized markdown reference (per sub-rule:
+  `id`, priority, truncated `when()` source, footer pointing at
+  `src/core/rules/<X>.js`). Both miss → 404. List endpoint unions md
+  filenames with `getAllChecksWithRules()` and adds a `checks: [{
+  name, sources: ['static'|'rule', …] }]` companion field. Backward
+  compat preserved on the `hints` array.
+- **`dashboard.js` — drilldown is source-aware.** The hint panel
+  title surfaces `src/core/rules/<X>.js` for rule-driven checks
+  instead of the misleading `(src/data/hints/<X>.md)` it always
+  showed. Action recommendations ("edit X to rewrite the hint")
+  point at whichever file actually owns the hint.
+  Knowledge-browser `loadHint` renders a `[RULE-DRIVEN]` /
+  `[STATIC]` source badge above the body and a readable `404`
+  message instead of an empty `<pre>`. Strips `pos-supervisor:`
+  prefix from the rule module path — the rule files are not
+  namespaced.
+
+### Tests
+
+- `tests/unit/liquid-parser.test.js` — 7 new cases covering `args` +
+  `source_kind` for tag, `liquid_inline`,
+  `liquid_multiline_truncated` forms; the
+  comma-ending-without-trailing guard; and the dedup-upgrade path.
+- `tests/unit/rules/Tier3RulesPhase3.test.js` — 5 new cases covering
+  `parser_blind_spot` priority, fall-through to `.required` when not
+  truncated, fall-through when file is unindexed, and fall-through
+  when no graph is available.
+- `tests/unit/structural-warnings.test.js` — 5 new cases covering
+  the `GraphqlMultilineInLiquidBlock` detector against truncated,
+  tag-form, single-line liquid-block, multi-line tag-form, and
+  multiple-occurrence inputs.
+- `tests/unit/http-server.test.js` — 6 new cases covering list
+  union, static md retrieval, rule synthesis, unknown-check 404,
+  prefixed (`pos-supervisor:…`) rule round-trip, and the
+  static-wins-over-rule precedence.
+
+23 new tests, all green. Browser-side dashboard JS verified via
+inline `Function()`-constructor parse.
+
+## 0.7.0 — 2026-04-27
+
+Rule-engine and hint quality overhaul driven by the
+2026-04-27 DEMO performance report (`docs/rule-performance-plan.md`):
+123 diagnostics across 17 sessions, fix-proposal rate 24 %, six rules
+flagged AT RISK or HARMFUL. The headline shift after this release: every
+high-volume bucket-B `.unmatched` check now lands with a stable rule_id
++ structured guidance fix; AT RISK rules ship locale-aware /
+intent-aware hints that converge on the canonical platformOS shape
+instead of producing contradictory advice.
+
+### Fixed — AT RISK rules (Bucket A)
+
+- **`MissingPartial.module_path` (was 0 % resolve / 100 % regress).** Hint
+  diagnosed the symptom but never named a target. Rule now enumerates
+  available module call paths from the filesystem at apply time, runs
+  Levenshtein over them, and ships the top-5 candidates inline. Special
+  case for `modules/<m>/commands/build` and `…/check` — the hint
+  explicitly explains build / check are inline phases of the agent's
+  own command and only `execute` is exported by core. Rewrote
+  `MissingPartial.md` STEP 1 to remove the misleading "use core's
+  execute helper" example that drove the over-generalisation. New
+  `src/core/rules/module-paths.js` helper (sync filesystem walk
+  mirroring `module-scanner.scanPublicApi`); `projectDir` plumbed
+  through `enrichCtx` → facts in `validate-code.js` and
+  `error-enricher.js` (both `enrichError` and
+  `bridgeRulesOntoUnattributed`).
+- **`TranslationKeyExists.suggest_nearest` (was 0 % resolve, 6 / 6 ignored).**
+  Three distinct failure modes uncovered, all fixed:
+  - **Locale-prefix double-up.** `flattenYaml` over a properly-rooted
+    `en.yml` produces keys like `en.app.user.title` (the YAML root IS
+    the locale). The rule was suggesting `en.app.user.title` for an
+    agent's `app.usr.title` typo; agents wrote `'en.app.user.title' | t`
+    which Liquid resolved to `en.en.app.user.title` — adopting the fix
+    re-broke the lookup. `translationKeysForLocale` now strips leading
+    `<locale>.`; `array_index_misuse` and `create_key` strip from the
+    agent's key before computing `arrayKey` / YAML snippets;
+    `suggest_nearest` matches against bare AND prefixed forms, picks
+    closer. New `stripLocalePrefix(key, locale)` exported from
+    `queries.js`. Hint and fix descriptions now explicitly warn against
+    including the `en.` prefix.
+  - **Levenshtein threshold too loose for dotted keys.** Shared helper's
+    `length * 0.6` admitted distance-10 matches on 20-char keys. Local
+    bound `min(5, length / 3)` per call site — brand-new keys fall
+    through to `create_key` instead of attracting bogus "did you mean"s.
+  - **Defensive `[N]` gate.** Every subrule (`array_index_misuse`,
+    `suggest_nearest`, `create_key`) now gates on raw `diag.message` in
+    addition to `params.key`. Belt-and-suspenders against extractor drift.
+- **`pos-supervisor:NonGetRenderingPage` (was 20 % resolve / 20 %
+  regress, 25 outcomes).** Per the
+  `docs/rule-performance-plan.md` gist analysis: split into three
+  intent-aware subrules + defensive default. `validatePageMethodAndForms`
+  in `structural-warnings.js` (renamed from
+  `validateNonGetRenderingPage`) emits discriminator-prefixed messages;
+  the rule layer routes by regex.
+  - `api_renders_html` — slug under `/api/`, `/_/`, `/internal/` + non-GET
+    method + (HTML present OR `format: json` missing). Hint ships the
+    canonical `format: json` + GraphQL JSON body shape.
+  - `html_on_post` — non-API slug + non-GET method + HTML rendering. Hint
+    disambiguates "landing page" vs "API handler" intents with
+    copy-pasteable Liquid for both.
+  - `get_form_target` — GET page hosts `<form method="post" action="X">`
+    where X isn't under API prefixes and isn't the page's own slug. Hint
+    routes the agent to `/api/<X>` + auto-creates the API page path.
+  - Form parsing: attribute-order-independent regex; supports single,
+    double, and unquoted attribute values; self-post detection
+    (`action == own slug`) prevents false positives for sanctioned
+    self-post pages. API page emit policy: only layout / partials /
+    HTML tags count as HTML rendering — bare `{{ … }}` in `format: json`
+    pages is the intended JSON serialization, NOT flagged.
+- **`pos-supervisor:InvalidLayout` and `ValidFrontmatter.layout_missing`
+  duplicate-emit + wrong path.** Two checks fired on the same root
+  cause with diverging line numbers (line-only dedup let both through),
+  and the structural emitter hardcoded `.html.liquid` for the create_file
+  proposal — DEMO uses `.liquid`, so agents accepted the fix and the
+  file landed at the wrong path.
+  - `validateLayout` in `structural-warnings.js` now calls
+    `detectLayoutExtension(projectDir, moduleName)` to sample existing
+    layouts and pick `.liquid` vs `.html.liquid` (defaults to `.liquid`
+    when the layouts dir is empty — modern convention).
+  - `extractLayoutPath` in `fix-generator.js` lifts the path verbatim
+    from the message's `Expected file: \`...\`` clause — single source
+    of truth, no per-file re-derivation.
+  - `suppressUpstreamFrontmatterDup` now matches by **layout name** in
+    addition to line — same root cause regardless of line drift.
+  - New `src/core/rules/InvalidLayout.js` rule attaches stable rule_id
+    + matching create_file fix at the corrected path.
+
+### Added — Bucket B `.unmatched` promotions (rule modules)
+
+13 new rule modules covering every bucket-B `.unmatched` check from the
+performance report. Each ships stable rule_id + structured guidance;
+where a heuristic text_edit already exists in `fix-generator.js`, the
+rule emits `guidance` only and the heuristic stays as the actionable
+diff. End-to-end attribution verified via `bridgeRulesOntoUnattributed`.
+
+- **`DeprecatedTag` (covers both upstream LSP and `pos-supervisor:DeprecatedTag`).**
+  Subrules `include` (route to `{% render %}` w/ isolated-scope
+  caveat), `hash_assign` (`{% assign x["k"] = v %}`), `parse_json`
+  (`| parse_json` filter form), default. Defensive when-gates check
+  both `params.tag` and raw message regex (the structural variant has
+  no extractor).
+- **`UnrecognizedRenderPartialArguments`.** Extracts argument + partial
+  from message; emits 3-option decision tree (drop / declare / rename).
+  Disables option B for module partials (read-only).
+- **`SchemaProperty` (8 sub-IDs)** — routes `pos-supervisor:SchemaProperty`
+  emits by regex into `builtin_conflict` / `duplicate_name` /
+  `invalid_identifier` / `snake_case` / `upload_options` /
+  `missing_field` / `misleading_key` / `default`.
+- **`SchemaYAML`, `MissingSlug`, `MissingContentForLayout`** —
+  promotions of existing fix-generator heuristics; rule emits guidance,
+  heuristic still owns the text_edit.
+- **`ParserBlockingScript`** — defer / async / end-of-body decision tree.
+- **`TranslationMissingLocaleKey`** — extracts locale from message,
+  emits before/after YAML wrap recipe.
+- **`MissingAsset` (3 subrules)** —
+  `missing_subdir_prefix` (high confidence: bare `logo.png` matches
+  existing `images/logo.png`) → `suggest_nearest` (Levenshtein) →
+  `create_file`. Replaces the heuristic's blind-create proposal.
+- **`OrphanedPartial`** — emits `delete_file` fix when graph has 0
+  callers; softer guidance for layouts; cites `pending_files`
+  workflow for in-progress refactors.
+- **`MissingPage` (2 subrules)** — `typo` (Levenshtein vs graph page
+  slugs) → `default` (3-option decision tree + create_file at inferred
+  path). Handles root route correctly (omit `slug:`).
+- **`LiquidHTMLSyntaxError` (5 subrules)** — `unknown_tag` (Levenshtein
+  vs `tagsIndex.platformOSTags()`) → `for_loop_args` →
+  `missing_assign` → `inline_literal` → `default`.
+- **`PartialCallArguments` (4 subrules)** — highest-volume bucket-B
+  check (28 emits in DEMO). New extractor parses both
+  `Required parameter X must be passed to (render|function) call` and
+  `Unknown parameter X passed to ...` shapes. Subrules
+  `required_render`, `required_function`, `unknown_render`,
+  `unknown_function` ship copy-pasteable forwarding patterns + the
+  canonical drop / declare / rename resolution. Cross-references the
+  sibling `MissingRenderPartialArguments` /
+  `UnrecognizedRenderPartialArguments` checks (which carry the partial
+  path when they co-fire).
+- **`GraphQLVariablesCheck` (2 subrules + default)** — new extractor
+  for `Required parameter X must be passed to GraphQL call` /
+  `Unknown parameter X passed to GraphQL call`. Hint surfaces a
+  per-call **signature block** when the file's `graphql_calls` are
+  indexed — lists every operation invoked + its declared
+  `$var: Type` list parsed from the .graphql operation header.
+- **`UnusedDocParam`** — caller-aware confidence: 0.8 when graph shows
+  zero callers (option B = remove `@param` is safe); 0.65 when callers
+  exist (removing the declaration becomes a contract change). Hint
+  references the pipeline's `suppressUnusedDocParams` so agents
+  understand surviving emits aren't the named-arg false positive.
+  No text_edit — contract change with cross-file blast radius is not
+  safe for the rule layer to automate.
+
+### Added — query helpers
+
+- `assetNames(graph)` — list every indexed asset path
+  (`MissingAsset.suggest_nearest`).
+- `stripLocalePrefix(key, locale)` — translation-key normalisation.
+- `parseModulePath(name)` exported from `MissingPartial.js` —
+  splits `modules/<name>/<category>/<rest>` for analytics callers.
+
+### Changed — graph plumbing
+
+- `project-scanner.js` and `project-fact-graph.js` now propagate
+  `graphql_calls` to **pages, partials, AND layouts** (previously
+  commands/queries only). Without this, `GraphQLVariablesCheck`'s
+  signature block was empty for the most common caller — API pages
+  emitting JSON.
+
+### Changed — extractors
+
+- New `extractParams` entries for `PartialCallArguments`,
+  `GraphQLVariablesCheck`, `UnusedDocParam` in `diagnostic-record.js`.
+
+### Tests
+
+130 new unit tests across 7 new rule-test files
+(`module-paths.test.js`, extended `MissingPartial.test.js`,
+`TranslationKeyExists.test.js`, `Tier3Rules.test.js`,
+`Tier3RulesPhase2.test.js`, `Tier3RulesPhase3.test.js`,
+`DeprecatedTag.test.js`, `NonGetRenderingPage.test.js`,
+`InvalidLayout.test.js`). Existing
+`error-enricher-bridge.test.js`, `Tier1Rules.test.js`, and
+`structural-rule-attribution.test.js` updated to match the
+three-subrule shape.
+
+Total rule entries: **86 (vs 47 at 0.6.0)**. Full suite at release:
+1802 / 1803 unit pass (the lone failure is a pre-existing
+`load_development_guide` drift unrelated to this release); 88 / 88
+targeted integration pass.
+
 ## 0.6.0 — 2026-04-24
 
 Analytics pipeline overhaul + neuro-symbolic engine rounds out. Headline numbers on the DEMO project between 2026-04-23 and 2026-04-24: fix-proposal rate rose from effectively 0 (the emit loop was reading the wrong field) to 45 / 99 (45%); classified fix adoption rose from 0 to 31; confidence coverage from 0% to 89% of emits; rule performance table from 3 entries at baseline to 30+; health score from 91 to 95/100.

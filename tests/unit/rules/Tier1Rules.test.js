@@ -62,18 +62,27 @@ describe('ConvertIncludeToRender.default', () => {
   });
 });
 
-describe('NonGetRenderingPage.default', () => {
+describe('NonGetRenderingPage.default — fallback for non-discriminated messages', () => {
   beforeEach(() => { clearRules(); registerRules(NonGetRenderingPageRules); });
 
-  test('fires with canonical rule_id + action-oriented hint', () => {
+  // After the task-4 split into three subrules (html_on_post / api_renders_html
+  // / get_form_target) the default rule only fires when none of the
+  // discriminator regexes match. Subrule routing is exercised in
+  // tests/unit/rules/NonGetRenderingPage.test.js — this case is the
+  // safety net for upstream message-shape drift.
+  test('fires with canonical rule_id + names the three valid platformOS shapes', () => {
     const result = runRules(
-      { check: 'pos-supervisor:NonGetRenderingPage', message: 'page method: post + renders HTML' },
+      { check: 'pos-supervisor:NonGetRenderingPage', message: 'a brand-new diagnostic shape this rule has not seen before' },
       { graph: null },
     );
     expect(result.rule_id).toBe('NonGetRenderingPage.default');
-    expect(result.confidence).toBe(0.9);
-    expect(result.hint_md).toMatch(/method: post/i);
-    expect(result.hint_md).toMatch(/api/i);
-    expect(result.fixes).toEqual([]);
+    expect(result.confidence).toBeLessThanOrEqual(0.6);   // fallback confidence is intentionally lower
+    expect(result.hint_md).toMatch(/UI page/);
+    expect(result.hint_md).toMatch(/API endpoint/);
+    expect(result.hint_md).toMatch(/Forms on GET pages/);
+    // The fallback now ships a single guidance fix (the old empty-fixes
+    // behaviour drove the DEMO loop-on-unchanged regression).
+    expect(result.fixes).toHaveLength(1);
+    expect(result.fixes[0].type).toBe('guidance');
   });
 });

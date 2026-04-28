@@ -39,6 +39,10 @@ const ctx = {
 };
 
 describe('bridgeRulesOntoUnattributed', () => {
+  // Task-4 split NonGetRenderingPage into three subrules
+  // (html_on_post / api_renders_html / get_form_target). The bridge must
+  // pick the subrule whose discriminator regex matches the structural
+  // emit's message — not the catch-all default.
   test('applies registered rule to a structural diagnostic with no prior rule_id', () => {
     registerRules(NonGetRenderingPageRules);
     const result = {
@@ -46,14 +50,14 @@ describe('bridgeRulesOntoUnattributed', () => {
       warnings: [{
         check: 'pos-supervisor:NonGetRenderingPage',
         severity: 'warning',
-        message: 'method: post + renders HTML',
+        message: 'Page has `method: post` but renders HTML (layout, partials, or `{{ ... }}` output).',
         line: 1,
       }],
       infos: [],
     };
     bridgeRulesOntoUnattributed(result, ctx);
     const w = result.warnings[0];
-    expect(w.rule_id).toBe('NonGetRenderingPage.default');
+    expect(w.rule_id).toBe('NonGetRenderingPage.html_on_post');
     expect(w.confidence).toBe(0.9);
     expect(w.hint).toMatch(/method: post/i);
   });

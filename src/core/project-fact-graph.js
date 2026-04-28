@@ -42,6 +42,7 @@ class ProjectFactGraph {
         slug: page.slug, method: page.method, layout: page.layout,
         renders: page.renders, render_calls: page.render_calls,
         function_calls: page.function_calls,
+        graphql_calls: page.graphql_calls,
       });
     }
 
@@ -50,6 +51,7 @@ class ProjectFactGraph {
         params: partial.params, renders: partial.renders,
         render_calls: partial.render_calls,
         function_calls: partial.function_calls, rendered_by: partial.rendered_by,
+        graphql_calls: partial.graphql_calls,
       });
     }
 
@@ -82,6 +84,7 @@ class ProjectFactGraph {
         renders: layout.renders,
         render_calls: layout.render_calls,
         function_calls: layout.function_calls,
+        graphql_calls: layout.graphql_calls,
       });
     }
 

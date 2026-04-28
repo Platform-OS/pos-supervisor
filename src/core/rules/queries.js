@@ -49,9 +49,34 @@ export function dependentsOf(graph, filePath) {
 }
 
 export function translationKeysForLocale(graph, locale = 'en') {
+  // The graph stores translation node keys exactly as they appear after
+  // `flattenYaml`. When the YAML file is shaped correctly (root locale key
+  // wraps everything — required by platformOS) the flattener emits keys
+  // prefixed with `<locale>.` (e.g. `en.app.title`). When the file is
+  // mis-shaped (no locale wrapper), keys come through bare (`app.title`).
+  // Liquid's `'foo' | t` lookup never expects the prefix — it auto-prepends
+  // the active locale. Surfacing prefixed keys to the rule engine led
+  // `suggest_nearest` to emit "Did you mean `en.app.title`?" hints that,
+  // when followed verbatim, resolved to `en.en.app.title` and failed again.
+  // Strip the prefix here so every consumer sees the keys the agent should
+  // actually write into a `| t` filter.
+  const prefix = `${locale}.`;
   return graph.nodesByType('translation')
     .filter(n => n.locale === locale)
-    .map(n => n.key);
+    .map(n => (n.key && n.key.startsWith(prefix)) ? n.key.slice(prefix.length) : n.key);
+}
+
+/**
+ * Strip a leading `<locale>.` from a translation key. Returns the key
+ * unchanged when no prefix is present. Useful in extractor-side rules that
+ * need to compare an agent-supplied key (which may or may not include the
+ * prefix, depending on how the agent formed the `| t` call) against the
+ * canonical bare-key shape used in YAML.
+ */
+export function stripLocalePrefix(key, locale = 'en') {
+  if (!key) return key;
+  const prefix = `${locale}.`;
+  return key.startsWith(prefix) ? key.slice(prefix.length) : key;
 }
 
 export function schemaNames(graph) {
@@ -64,6 +89,15 @@ export function graphqlOperations(graph) {
 
 export function fileExists(graph, path) {
   return graph.hasNode(path);
+}
+
+/**
+ * List every asset path the project scanner indexed (relative to
+ * `app/assets/`, no leading slash). Empty when the project has no assets
+ * directory or the scan failed.
+ */
+export function assetNames(graph) {
+  return graph.nodesByType('asset').map(n => n.key);
 }
 
 export function classifyPath(partialName) {

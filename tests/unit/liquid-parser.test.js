@@ -51,6 +51,66 @@ describe('extractAllFromAST', () => {
     expect(result.graphql[0].queryName).toBe('products/search');
   });
 
+  it('captures named-argument names and source_kind=tag for the canonical tag form', () => {
+    const ast = parseLiquidFile(
+      "{% graphql result = 'op', name: shaped.name, email: shaped.email %}"
+    );
+    const result = extractAllFromAST(ast);
+    expect(result.graphql).toHaveLength(1);
+    expect(result.graphql[0].args).toEqual(['name', 'email']);
+    expect(result.graphql[0].source_kind).toBe('tag');
+  });
+
+  it('classifies single-line graphql inside {% liquid %} block as liquid_inline', () => {
+    const ast = parseLiquidFile(
+      "{% liquid\ngraphql result = 'op', name: shaped.name, email: shaped.email\n%}"
+    );
+    const result = extractAllFromAST(ast);
+    expect(result.graphql).toHaveLength(1);
+    expect(result.graphql[0].args).toEqual(['name', 'email']);
+    expect(result.graphql[0].source_kind).toBe('liquid_inline');
+  });
+
+  // Repro for the DEMO regression spiral (2026-04-27): multi-line comma
+  // continuation inside `{% liquid %}` block. The liquid-html-parser truncates
+  // the call at the first newline — markup.args is empty, the args are
+  // silently dropped, and pos-cli's LSP fires "Required parameter X missing"
+  // for each. The classifier flags this so the rule layer can route to a
+  // syntax-fix hint instead of the misleading "add the arg" hint.
+  it('flags multi-line graphql in {% liquid %} block as liquid_multiline_truncated', () => {
+    const ast = parseLiquidFile(
+      "{% liquid\ngraphql result = 'op',\n  name: shaped.name,\n  email: shaped.email\n%}"
+    );
+    const result = extractAllFromAST(ast);
+    expect(result.graphql).toHaveLength(1);
+    expect(result.graphql[0].source_kind).toBe('liquid_multiline_truncated');
+    // Args extracted by markup.args are empty here (parser truncation) — the
+    // detector must not depend on args.length to distinguish the kind.
+    expect(result.graphql[0].args).toEqual([]);
+  });
+
+  it('does not flag a comma-ending inline call without trailing named-arg lines', () => {
+    // No `name:` continuation after — just a stray comma inside whatever
+    // followed in the liquid block. Should NOT be classified as truncated.
+    const ast = parseLiquidFile(
+      "{% liquid\ngraphql result = 'op', name: shaped.name,\nassign other = 1\n%}"
+    );
+    const result = extractAllFromAST(ast);
+    expect(result.graphql).toHaveLength(1);
+    expect(result.graphql[0].source_kind).toBe('liquid_inline');
+  });
+
+  it('upgrades source_kind to truncated when any duplicate call is truncated', () => {
+    const ast = parseLiquidFile(
+      "{% graphql a = 'op', name: x %}\n" +
+      "{% liquid\ngraphql b = 'op',\n  name: y,\n  email: z\n%}"
+    );
+    const result = extractAllFromAST(ast);
+    // Dedup keeps a single entry but the surface kind reflects the worst case.
+    expect(result.graphql).toHaveLength(1);
+    expect(result.graphql[0].source_kind).toBe('liquid_multiline_truncated');
+  });
+
   it('extracts filter names', () => {
     const ast = parseLiquidFile("{{ 'hello' | t }}\n{{ price | pricify | json }}");
     const result = extractAllFromAST(ast);

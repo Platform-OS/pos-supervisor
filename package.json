@@ -1,6 +1,6 @@
 {
   "name": "@platformos/pos-supervisor",
-  "version": "0.6.0",
+  "version": "0.7.1",
   "description": "platformOS domain-specific MCP server for LLM agents",
   "type": "module",
   "bin": {

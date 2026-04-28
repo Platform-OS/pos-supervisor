@@ -28,7 +28,7 @@ function extractHoverText(result) {
  * @param {object} ctx.schemaIndex
  * @returns {Promise<object>} Enriched diagnostic
  */
-export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, content, _hoverCache, factGraph, filePath }) {
+export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, content, _hoverCache, factGraph, filePath, projectDir }) {
   const result = { ...diagnostic };
 
   // 1. Hint set per-check below with template vars; fallback for unhandled checks at end
@@ -58,7 +58,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
     const params = extractParams(diagnostic.check, diagnostic.message);
     const tmplFp = templateOf(diagnostic.check, diagnostic.message);
     const diag = { check: diagnostic.check, params, message: diagnostic.message, file: filePath, line: diagnostic.line, column: diagnostic.column ?? 0, template_fp: tmplFp };
-    const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore };
+    const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, projectDir };
     const ruleResult = runRules(diag, facts);
     if (ruleResult) {
       result.hint = ruleResult.hint_md;
@@ -558,10 +558,10 @@ export async function enrichAll(diagnostics, ctx) {
  * scoring.
  */
 export function bridgeRulesOntoUnattributed(result, ctx) {
-  const { filePath, content, factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore } = ctx;
+  const { filePath, content, factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, projectDir } = ctx;
   if (!factGraph) return;
 
-  const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore };
+  const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, projectDir };
 
   const apply = (d) => {
     if (d.rule_id) return;                   // already attributed

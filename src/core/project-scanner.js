@@ -55,6 +55,11 @@ export async function scanProject(projectDir) {
           renders: file.structural.renders,
           render_calls: file.structural.renderCalls,
           function_calls: file.functionCalls,
+          // API pages (`method: post`, `format: json`) commonly carry a
+          // `{% graphql %}` body directly. Indexing graphql_calls here
+          // lets rule-engine consumers resolve the operation from any
+          // caller — same shape as commands/queries.
+          graphql_calls: file.structural.graphql,
         };
         break;
       }
@@ -66,6 +71,9 @@ export async function scanProject(projectDir) {
           renders: file.structural.renders,
           render_calls: file.structural.renderCalls,
           function_calls: file.functionCalls,
+          // Partials may host `{% graphql %}` calls (data-fetching helpers).
+          // Index for the same reason as pages above.
+          graphql_calls: file.structural.graphql,
           rendered_by: [],
         };
         break;
@@ -95,6 +103,9 @@ export async function scanProject(projectDir) {
           renders: file.structural.renders,
           render_calls: file.structural.renderCalls,
           function_calls: file.functionCalls,
+          // Same rationale as pages/partials — layouts may invoke graphql
+          // for nav data, etc.
+          graphql_calls: file.structural.graphql,
         };
         break;
       }

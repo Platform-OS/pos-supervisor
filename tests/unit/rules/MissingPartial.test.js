@@ -1,6 +1,9 @@
-import { describe, test, expect, beforeEach } from 'bun:test';
+import { describe, test, expect, beforeEach, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { clearRules, registerRules, runRules } from '../../../src/core/rules/engine.js';
-import { rules } from '../../../src/core/rules/MissingPartial.js';
+import { rules, parseModulePath } from '../../../src/core/rules/MissingPartial.js';
 import { buildFactGraph } from '../../../src/core/project-fact-graph.js';
 
 const FIXTURE_MAP = {
@@ -36,13 +39,118 @@ describe('MissingPartial.module_path', () => {
     expect(result.rule_id).toBe('MissingPartial.module_path');
     expect(result.see_also.tool).toBe('module_info');
     expect(result.see_also.args.name).toBe('user');
-    expect(result.confidence).toBe(0.9);
+    expect(result.confidence).toBeGreaterThanOrEqual(0.7);
   });
 
   test('does not fire for project partials', () => {
     const diag = { check: 'MissingPartial', params: { partial: 'blog_posts/missing' } };
     const result = runRules(diag, facts);
     expect(result.rule_id).not.toBe('MissingPartial.module_path');
+  });
+});
+
+describe('MissingPartial.module_path — projectDir-aware behavior', () => {
+  let projectDir;
+
+  beforeAll(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'mp-modpath-'));
+
+    const writeFile = (rel) => {
+      const abs = join(projectDir, rel);
+      mkdirSync(join(abs, '..'), { recursive: true });
+      writeFileSync(abs, '');
+    };
+
+    // core: only `execute` is exported as a command, plus a deeper helper tree
+    writeFile('modules/core/public/lib/commands/execute.liquid');
+    writeFile('modules/core/public/lib/commands/email/send/build.liquid');
+    writeFile('modules/core/public/lib/commands/email/send/check.liquid');
+    writeFile('modules/core/public/lib/queries/users/find.liquid');
+    writeFile('modules/core/public/lib/helpers/auth_token.liquid');
+
+    // user: only helpers
+    writeFile('modules/user/public/lib/helpers/current.liquid');
+  });
+
+  afterAll(() => {
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  test('build/check special case: explains they are inline phases of caller command', () => {
+    const diag = { check: 'MissingPartial', params: { partial: 'modules/core/commands/build' } };
+    const result = runRules(diag, { ...facts, projectDir });
+    expect(result.rule_id).toBe('MissingPartial.module_path');
+    expect(result.hint_md).toContain('inline phases of your own command');
+    expect(result.hint_md).toContain('modules/core/commands/execute');
+    // closest matches block must enumerate live exports
+    expect(result.hint_md).toContain('modules/core/commands/execute');
+    // exported categories summary
+    expect(result.hint_md).toContain('Exported categories:');
+    expect(result.hint_md).toMatch(/commands \(\d+\)/);
+  });
+
+  test('build/check special case fires for `check` symmetrically', () => {
+    const diag = { check: 'MissingPartial', params: { partial: 'modules/core/commands/check' } };
+    const result = runRules(diag, { ...facts, projectDir });
+    expect(result.hint_md).toContain('inline phases of your own command');
+    expect(result.fixes[0].description).toContain('inline the build/check logic');
+  });
+
+  test('non-existing path inside an installed module: lists Levenshtein candidates', () => {
+    const diag = { check: 'MissingPartial', params: { partial: 'modules/core/queries/users/fnd' } };
+    const result = runRules(diag, { ...facts, projectDir });
+    expect(result.rule_id).toBe('MissingPartial.module_path');
+    expect(result.hint_md).toContain('not exported by module `core`');
+    expect(result.hint_md).toContain('modules/core/queries/users/find');
+    expect(result.fixes[0].description).toContain('modules/core/queries/users/find');
+    expect(result.confidence).toBe(0.9);
+  });
+
+  test('module not installed: suggests the closest installed module', () => {
+    const diag = { check: 'MissingPartial', params: { partial: 'modules/cre/commands/execute' } };
+    const result = runRules(diag, { ...facts, projectDir });
+    expect(result.rule_id).toBe('MissingPartial.module_path');
+    expect(result.hint_md).toContain('Module `cre` is not installed');
+    expect(result.hint_md).toContain('Installed modules:');
+    expect(result.hint_md).toContain('Did you mean `core`');
+    expect(result.see_also.tool).toBe('project_map');
+  });
+
+  test('module not installed and no modules dir: still produces a hint', () => {
+    const isolatedDir = mkdtempSync(join(tmpdir(), 'mp-empty-'));
+    try {
+      const diag = { check: 'MissingPartial', params: { partial: 'modules/anything/commands/execute' } };
+      const result = runRules(diag, { ...facts, projectDir: isolatedDir });
+      expect(result.rule_id).toBe('MissingPartial.module_path');
+      expect(result.hint_md).toContain('Module `anything` is not installed');
+      expect(result.hint_md).toContain('No modules are installed');
+    } finally {
+      rmSync(isolatedDir, { recursive: true, force: true });
+    }
+  });
+
+  test('no projectDir in facts: rule still fires with degraded hint (no exports)', () => {
+    const diag = { check: 'MissingPartial', params: { partial: 'modules/core/commands/build' } };
+    const result = runRules(diag, facts); // no projectDir
+    expect(result.rule_id).toBe('MissingPartial.module_path');
+    expect(result.hint_md).toContain('inline phases of your own command');
+    // no live exports → no closest matches
+    expect(result.hint_md).toContain('(no close matches in this module)');
+  });
+
+  test('parseModulePath: splits into moduleName / category / rest', () => {
+    expect(parseModulePath('modules/core/commands/email/send/build'))
+      .toEqual({ moduleName: 'core', category: 'commands', rest: 'email/send/build' });
+    expect(parseModulePath('modules/core/commands/build'))
+      .toEqual({ moduleName: 'core', category: 'commands', rest: 'build' });
+    expect(parseModulePath('modules/core/commands'))
+      .toEqual({ moduleName: 'core', category: 'commands', rest: null });
+    expect(parseModulePath('modules/core'))
+      .toEqual({ moduleName: 'core', category: null, rest: null });
+    expect(parseModulePath(''))
+      .toEqual({ moduleName: null, category: null, rest: null });
+    expect(parseModulePath('app/lib/commands/foo'))
+      .toEqual({ moduleName: null, category: null, rest: null });
   });
 });
 

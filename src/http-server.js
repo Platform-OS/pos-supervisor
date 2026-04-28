@@ -390,19 +390,127 @@ function handleGetKnowledge(dataRoot, res) {
   }
 }
 
+/**
+ * Two coexisting hint subsystems are joined here:
+ *   • static  — `src/data/hints/<Check>.md` rendered into the diagnostic by
+ *               error-enricher.js. Legacy LSP checks; one fixed blob each.
+ *   • rule    — `src/core/rules/<Check>.js` builds the hint dynamically per
+ *               diagnostic. No md file exists; the registry is the source.
+ *
+ * Pre-fix the endpoint only knew about (1) and 404'd on every (2). The
+ * dashboard drilldown silently broke for the 12+ rule-driven checks
+ * (GraphQLVariablesCheck, PartialCallArguments, NonGetRenderingPage, …).
+ *
+ * Response shape:
+ *   GET /api/hints
+ *     { hints: [name, …],            // backward-compat: union of both kinds
+ *       checks: [{ name, sources: ['static'|'rule', …] }, …] }
+ *   GET /api/hints?name=<X>
+ *     { name, content, source: 'static' }                              // md found
+ *     { name, content, source: 'rule', rule_ids: [...] }               // synthesized from registry
+ *     404 only when both lookups miss.
+ */
 function handleGetHints(dataRoot, url, res) {
   if (!dataRoot) return sendJson(res, 503, { error: 'Data dir not available' });
   const hintsDir = join(dataRoot, 'hints');
   const name = url.searchParams.get('name');
-  try {
-    if (name) {
-      const content = readFileSync(join(hintsDir, `${name}.md`), 'utf-8');
-      return sendJson(res, 200, { name, content });
+
+  // Populate the rule registry once. Idempotent — guarded by `_loaded`.
+  loadAllRules();
+
+  if (name) {
+    const file = join(hintsDir, `${name}.md`);
+    if (existsSync(file)) {
+      try {
+        const content = readFileSync(file, 'utf-8');
+        return sendJson(res, 200, { name, content, source: 'static' });
+      } catch (e) {
+        // Fall through — let the rule registry resolve it if possible.
+      }
     }
-    const files = readdirSync(hintsDir).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''));
-    sendJson(res, 200, { hints: files });
-  } catch (e) {
-    sendJson(res, 404, { error: e.message });
+    const rules = getRulesForCheck(name);
+    if (rules.length > 0) {
+      return sendJson(res, 200, {
+        name,
+        content: synthesizeRuleHintDoc(name, rules),
+        source: 'rule',
+        rule_ids: rules.map(r => r.id),
+      });
+    }
+    return sendJson(res, 404, { error: `No hint or rule for ${name}` });
+  }
+
+  let staticNames = [];
+  try {
+    staticNames = readdirSync(hintsDir).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''));
+  } catch {
+    // hints dir may be missing on a fresh checkout — still return rule names.
+  }
+  const ruleNames = getAllChecksWithRules();
+  const staticSet = new Set(staticNames);
+  const ruleSet = new Set(ruleNames);
+  const all = Array.from(new Set([...staticNames, ...ruleNames])).sort();
+  const checks = all.map(n => {
+    const sources = [];
+    if (staticSet.has(n)) sources.push('static');
+    if (ruleSet.has(n)) sources.push('rule');
+    return { name: n, sources };
+  });
+  sendJson(res, 200, { hints: all, checks });
+}
+
+/**
+ * Render a markdown reference doc for a rule-driven check by introspecting
+ * the registry. Lists each sub-rule with its priority and the source of its
+ * `when()` predicate (truncated). Surfaces the file path the developer must
+ * edit to change the hint at runtime.
+ */
+function synthesizeRuleHintDoc(name, rules) {
+  const sorted = [...rules].sort((a, b) => a.priority - b.priority);
+  const moduleBase = name.replace(/^pos-supervisor:/, '');
+  const lines = [];
+  lines.push(`# ${name}`);
+  lines.push('');
+  lines.push(
+    `*Rule-driven check.* Hints are generated dynamically by ` +
+    `\`src/core/rules/${moduleBase}.js\` at validation time. There is no static ` +
+    `\`.md\` for this check — agents see whatever \`apply()\` returns from the ` +
+    `first matching sub-rule below.`
+  );
+  lines.push('');
+  lines.push(`## Sub-rules (${sorted.length})`);
+  lines.push('');
+  lines.push('Engine returns the first match in priority order (lower = higher priority).');
+  lines.push('');
+  for (const r of sorted) {
+    lines.push(`### \`${r.id}\` — priority ${r.priority}`);
+    lines.push('');
+    const whenSrc = stringifyRulePredicate(r.when);
+    if (whenSrc) {
+      lines.push('```js');
+      lines.push(`when: ${whenSrc}`);
+      lines.push('```');
+      lines.push('');
+    }
+  }
+  lines.push('---');
+  lines.push('');
+  lines.push(
+    `To change the hint shown to agents, edit the relevant \`apply()\` in ` +
+    `\`src/core/rules/${moduleBase}.js\`. Each \`apply()\` returns ` +
+    `\`{ rule_id, hint_md, fixes, confidence, see_also? }\` which the validator ` +
+    `embeds into the diagnostic.`
+  );
+  return lines.join('\n');
+}
+
+function stringifyRulePredicate(fn) {
+  if (typeof fn !== 'function') return null;
+  try {
+    const src = fn.toString();
+    return src.length > 240 ? `${src.slice(0, 237)}...` : src;
+  } catch {
+    return null;
   }
 }
 

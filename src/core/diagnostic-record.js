@@ -228,6 +228,48 @@ const EXTRACTORS = Object.freeze({
     return { is_function_call: /function call/i.test(message) ? 'true' : 'false' };
   },
 
+  PartialCallArguments(message) {
+    // Two distinct LSP message shapes:
+    //   "Required parameter <X> must be passed to (render|function|GraphQL) call"
+    //   "Unknown parameter <X> passed to (render|function|GraphQL) call"
+    // Both carry the param name and the call kind; neither carries the
+    // partial / function path (the sibling MissingRenderPartialArguments
+    // does, when the agent is rendering a partial).
+    const requiredMatch = message.match(/^Required parameter\s+([A-Za-z_][\w]*)\s+must be passed to (\w+)\s+call/i);
+    const unknownMatch  = message.match(/^Unknown parameter\s+([A-Za-z_][\w]*)\s+passed to (\w+)\s+call/i);
+    const m = requiredMatch || unknownMatch;
+    if (!m) return {};
+    const callKind = m[2].toLowerCase();
+    return {
+      param_name: m[1],
+      direction: requiredMatch ? 'required' : 'unknown',
+      call_kind: callKind,                                      // 'render' | 'function' | 'graphql'
+      is_function_call: callKind === 'function' ? 'true' : 'false',
+    };
+  },
+
+  GraphQLVariablesCheck(message) {
+    // LSP shape mirrors PartialCallArguments but always carries the
+    // GraphQL call kind. We surface the same params so a generic param-
+    // mismatch handler (rule layer) can route on `direction` + the
+    // operation name once we plumb it.
+    const requiredMatch = message.match(/^Required parameter\s+([A-Za-z_][\w]*)\s+must be passed to GraphQL call/i);
+    const unknownMatch  = message.match(/^Unknown parameter\s+([A-Za-z_][\w]*)\s+passed to GraphQL call/i);
+    const m = requiredMatch || unknownMatch;
+    if (!m) return {};
+    return {
+      param_name: m[1],
+      direction: requiredMatch ? 'required' : 'unknown',
+      call_kind: 'graphql',
+    };
+  },
+
+  UnusedDocParam(message) {
+    // LSP shape: "The parameter 'name' is defined but not used in this file."
+    const m = message.match(/^The parameter\s+['"`]([A-Za-z_][\w]*)['"`]\s+is defined but not used/i);
+    return m ? { param_name: m[1] } : {};
+  },
+
   ValidFrontmatter(message) {
     // pos-cli 6.0.7 ships a single check that emits eight distinct shapes.
     // We classify into a `category` so the rule engine can route to a

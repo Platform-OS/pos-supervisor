@@ -53,8 +53,10 @@ function readValidatorEmits(projectDir) {
 describe('structural rule attribution via bridge', () => {
   // A page with method: post + HTML body — exactly the NonGetRenderingPage
   // trigger. No slug under /api/, renders inline HTML and interpolates a
-  // variable so the UI-signal heuristics match.
-  it('NonGetRenderingPage lands as "NonGetRenderingPage.default", not ".unmatched"', async () => {
+  // variable so the UI-signal heuristics match. After task-4's three-subrule
+  // split (html_on_post / api_renders_html / get_form_target) this case
+  // routes to `html_on_post` rather than the catch-all `.default`.
+  it('NonGetRenderingPage lands as a specific subrule via the bridge, not ".unmatched"', async () => {
     const FILE = 'app/views/pages/ngrp-bridge-test.liquid';
     const CONTENT = '---\nslug: ngrp-bridge-test\nmethod: post\nlayout: application\n---\n<h1>form</h1>\n<form>{{ x }}</form>\n';
 
@@ -69,7 +71,8 @@ describe('structural rule attribution via bridge', () => {
     const emits = readValidatorEmits(proj.dir);
     const ngrp = emits.find(e => e.file === FILE && e.check === 'pos-supervisor:NonGetRenderingPage');
     expect(ngrp).toBeDefined();
-    expect(ngrp.hint_rule_id).toBe('NonGetRenderingPage.default');
+    // Non-API slug + HTML body + non-GET method → html_on_post subrule.
+    expect(ngrp.hint_rule_id).toBe('NonGetRenderingPage.html_on_post');
     // Confidence also propagates through the bridge.
     expect(ngrp.confidence).toBe(0.9);
   });

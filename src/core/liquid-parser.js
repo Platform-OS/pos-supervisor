@@ -83,9 +83,28 @@ export function extractAllFromAST(ast) {
           const markup = node.markup;
           if (markup?.type === NodeTypes.GraphQLMarkup) {
             const gqlPath = markup.graphql;
-            if (gqlPath?.type === NodeTypes.String && !seenGQL.has(gqlPath.value)) {
-              seenGQL.add(gqlPath.value);
-              graphql.push({ variable: markup.name, queryName: gqlPath.value });
+            if (gqlPath?.type === NodeTypes.String) {
+              const queryName = gqlPath.value;
+              const sourceKind = classifyGraphqlSourceKind(node);
+              const args = extractArgsFromMarkup(markup);
+              if (seenGQL.has(queryName)) {
+                // Same op called twice. Keep the first entry but upgrade
+                // source_kind to the most pessimistic value across calls so
+                // downstream rules can detect truncation regardless of which
+                // call won the dedup.
+                if (sourceKind === 'liquid_multiline_truncated') {
+                  const existing = graphql.find(g => g.queryName === queryName);
+                  if (existing) existing.source_kind = 'liquid_multiline_truncated';
+                }
+              } else {
+                seenGQL.add(queryName);
+                graphql.push({
+                  variable: markup.name,
+                  queryName,
+                  args,
+                  source_kind: sourceKind,
+                });
+              }
             }
           }
         }
@@ -132,6 +151,42 @@ function extractArgsFromMarkup(markup) {
   return markup.args
     .filter(a => a.type === NodeTypes.NamedArgument && typeof a.name === 'string')
     .map(a => a.name);
+}
+
+/**
+ * Classify the surface form of a `{% graphql %}` call.
+ *
+ *   'tag'                         — `{% graphql ... %}` (with delimiters).
+ *   'liquid_inline'               — inside a `{% liquid %}` block, single-line.
+ *   'liquid_multiline_truncated'  — inside a `{% liquid %}` block, written
+ *                                   with a comma + newline continuation. The
+ *                                   liquid-html-parser truncates the call at
+ *                                   the first newline-comma, so `markup.args`
+ *                                   silently drops every argument past it —
+ *                                   and pos-cli's LSP diagnostic check has
+ *                                   the same blind spot. The agent sees the
+ *                                   args in source; both parsers don't.
+ *
+ * Detection criterion for the truncated form: source range starts without
+ * `{%` (we are inside a `{% liquid %}` block), the visible source text ends
+ * on a comma, AND the immediately trailing characters in the file contain
+ * another `name:` clause on a subsequent line. The trailing-text check is
+ * the load-bearing signal — without it a legitimate inline call that just
+ * happens to end on a comma (rare, but possible) would be misclassified.
+ */
+export function classifyGraphqlSourceKind(node) {
+  const src = typeof node?.source === 'string' ? node.source : '';
+  const start = node?.position?.start ?? 0;
+  const end = node?.position?.end ?? 0;
+  const text = src.slice(start, end);
+  if (text.startsWith('{%')) return 'tag';
+  if (text.trimEnd().endsWith(',')) {
+    const trail = src.slice(end, end + 200);
+    if (/\n\s*[A-Za-z_]\w*\s*:/.test(trail)) {
+      return 'liquid_multiline_truncated';
+    }
+  }
+  return 'liquid_inline';
 }
 
 function extractArgsFromMarkupString(markupStr) {

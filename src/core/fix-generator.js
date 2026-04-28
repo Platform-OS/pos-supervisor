@@ -1107,9 +1107,19 @@ function fixInvalidFrontMatter(diagnostic, content) {
 }
 
 function extractLayoutPath(message) {
-  const match = message?.match(/`([^`]+)`.*not found/);
-  if (!match) return 'app/views/layouts/application.html.liquid';
-  return `app/views/layouts/${match[1]}.html.liquid`;
+  // The structural emitter (`validateLayout` in structural-warnings.js) has
+  // access to projectDir and detects whether the project standardised on
+  // `.liquid` or `.html.liquid` for layouts. It bakes the full expected
+  // file path into the message ("Expected file: `app/views/layouts/X.liquid`"),
+  // so the right thing here is to lift that path verbatim — never re-derive.
+  const expected = message?.match(/Expected file:\s*`([^`]+)`/);
+  if (expected) return expected[1];
+
+  // Defensive fallback: only used when the message shape changes upstream.
+  // We bias toward `.liquid` (the modern shape) and ignore module layouts —
+  // an agent shouldn't be creating files inside an installed module anyway.
+  const layoutName = message?.match(/`([^`]+)`.*not found/)?.[1];
+  return layoutName ? `app/views/layouts/${layoutName}.liquid` : 'app/views/layouts/application.liquid';
 }
 
 /**

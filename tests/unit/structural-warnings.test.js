@@ -121,6 +121,71 @@ describe('structural-warnings: GraphQL in partials', () => {
   });
 });
 
+// ── Multi-line graphql in {% liquid %} block ──────────────────────────────
+
+describe('structural-warnings: GraphqlMultilineInLiquidBlock', () => {
+  // Repro for the DEMO 2026-04-27 regression spiral. Multi-line `,`
+  // continuation inside `{% liquid %}` truncates the call; LSP fires
+  // GraphQLVariablesCheck.required for every dropped arg. The structural
+  // warning surfaces the syntactic root cause loudly, before the rule layer
+  // has to disambiguate.
+  it('errors on multi-line graphql with comma continuation inside {% liquid %} block', () => {
+    const content =
+      "{% liquid\n" +
+      "graphql result = 'contacts/create',\n" +
+      "  name: shaped.name,\n" +
+      "  email: shaped.email\n" +
+      "%}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/contacts/create.liquid');
+    const w = warnings.find(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock');
+    expect(w).toBeDefined();
+    expect(w.severity).toBe('error');
+    expect(w.message).toContain('truncates');
+    expect(w.message).toContain('single-line tag form');
+  });
+
+  it('does NOT fire for the canonical {% graphql %} tag form', () => {
+    const content = "{% graphql result = 'op', name: shaped.name, email: shaped.email %}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/x.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock')).toBe(false);
+  });
+
+  it('does NOT fire for single-line graphql inside {% liquid %} block', () => {
+    const content =
+      "{% liquid\n" +
+      "graphql result = 'op', name: shaped.name, email: shaped.email\n" +
+      "%}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/x.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock')).toBe(false);
+  });
+
+  it('does NOT fire for multi-line graphql inside {% graphql %} tag delimiters', () => {
+    // `{%` … `%}` form parses multi-line correctly — only the {% liquid %}
+    // block continuation is truncated.
+    const content =
+      "{% graphql result = 'op',\n" +
+      "  name: shaped.name,\n" +
+      "  email: shaped.email %}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/x.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock')).toBe(false);
+  });
+
+  it('reports each truncated call once per occurrence', () => {
+    const content =
+      "{% liquid\n" +
+      "graphql a = 'op_a',\n" +
+      "  x: 1\n" +
+      "%}\n" +
+      "{% liquid\n" +
+      "graphql b = 'op_b',\n" +
+      "  y: 2\n" +
+      "%}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/x.liquid');
+    const found = warnings.filter(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock');
+    expect(found).toHaveLength(2);
+  });
+});
+
 // ── Shopify objects ────────────────────────────────────────────────────────
 
 describe('structural-warnings: Shopify objects', () => {

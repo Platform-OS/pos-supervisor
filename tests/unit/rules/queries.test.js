@@ -2,7 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import {
   nearestByLevenshtein, partialNames, commandPaths, queryPaths,
   partialsReachableFrom, dependentsOf, translationKeysForLocale,
-  schemaNames, fileExists, classifyPath,
+  schemaNames, fileExists, classifyPath, stripLocalePrefix,
 } from '../../../src/core/rules/queries.js';
 import { buildFactGraph } from '../../../src/core/project-fact-graph.js';
 
@@ -82,6 +82,55 @@ describe('node queries', () => {
 
   test('translationKeysForLocale returns keys', () => {
     expect(translationKeysForLocale(graph, 'en')).toContain('app.title');
+  });
+
+  test('translationKeysForLocale strips the leading `<locale>.` prefix', () => {
+    // Realistic shape: `flattenYaml` over a properly-rooted en.yml emits
+    // keys prefixed with `en.` because the YAML root is the locale name.
+    const realistic = buildFactGraph({
+      pages: {}, partials: {}, commands: {}, queries: {}, graphql: {}, schema: {}, layouts: {},
+      translations: { en: { 'en.app.user.title': 'X', 'en.app.user.name': 'Y' } },
+      assets: [],
+    });
+    const keys = translationKeysForLocale(realistic, 'en');
+    expect(keys).toContain('app.user.title');
+    expect(keys).toContain('app.user.name');
+    expect(keys.every(k => !k.startsWith('en.'))).toBe(true);
+  });
+
+  test('translationKeysForLocale leaves bare keys untouched', () => {
+    // Mis-shaped YAML (no locale wrapper) flattens to bare `app.title`.
+    // The helper should NOT invent a prefix to strip.
+    const bare = buildFactGraph({
+      pages: {}, partials: {}, commands: {}, queries: {}, graphql: {}, schema: {}, layouts: {},
+      translations: { en: { 'app.title': 'X' } },
+      assets: [],
+    });
+    expect(translationKeysForLocale(bare, 'en')).toEqual(['app.title']);
+  });
+});
+
+describe('stripLocalePrefix', () => {
+  test('strips matching `<locale>.` prefix', () => {
+    expect(stripLocalePrefix('en.app.foo', 'en')).toBe('app.foo');
+  });
+
+  test('leaves a bare key unchanged', () => {
+    expect(stripLocalePrefix('app.foo', 'en')).toBe('app.foo');
+  });
+
+  test('does not strip a different locale', () => {
+    expect(stripLocalePrefix('pl.app.foo', 'en')).toBe('pl.app.foo');
+  });
+
+  test('handles edge inputs without throwing', () => {
+    expect(stripLocalePrefix('', 'en')).toBe('');
+    expect(stripLocalePrefix(null, 'en')).toBe(null);
+    expect(stripLocalePrefix(undefined, 'en')).toBe(undefined);
+  });
+
+  test('default locale is `en`', () => {
+    expect(stripLocalePrefix('en.app.foo')).toBe('app.foo');
   });
 });
 

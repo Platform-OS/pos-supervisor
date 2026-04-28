@@ -3096,8 +3096,27 @@ async function loadHint(name) {
   body.innerHTML = '<pre style="color:var(--muted)">LOADING…</pre>';
   try {
     const r = await fetch(BASE + '/api/hints?name=' + encodeURIComponent(name));
+    if (!r.ok) {
+      const errText = r.status === 404 ? 'NO HINT OR RULE FOR ' + name : 'HTTP ' + r.status;
+      body.innerHTML = '<pre style="color:var(--red)">' + escHtml(errText) + '</pre>';
+      return;
+    }
     const d = await r.json();
-    body.innerHTML = '<pre>' + escHtml(d.content || '') + '</pre>';
+    // Source-aware header — rule-driven checks have no md file, so the
+    // content is synthesized doc; show the rules/<X>.js file path so the
+    // operator edits the right thing. Static checks keep the legacy header.
+    let header = '';
+    if (d.source === 'rule') {
+      const moduleBase = name.replace(/^pos-supervisor:/, '');
+      header = '<div style="color:var(--blue);font-size:11px;margin-bottom:6px">'
+        + '[RULE-DRIVEN] hint generated from <code>src/core/rules/' + escHtml(moduleBase) + '.js</code>'
+        + '</div>';
+    } else if (d.source === 'static') {
+      header = '<div style="color:var(--muted);font-size:11px;margin-bottom:6px">'
+        + '[STATIC] <code>src/data/hints/' + escHtml(name) + '.md</code>'
+        + '</div>';
+    }
+    body.innerHTML = header + '<pre>' + escHtml(d.content || '') + '</pre>';
   } catch (e) {
     body.innerHTML = '<pre style="color:var(--red)">' + escHtml(e.message) + '</pre>';
   }
@@ -4374,10 +4393,17 @@ function renderDrilldownPanel(panel, ruleId, check, drill, hint, ruleScore) {
   html += '<div class="rd-stat"><div class="label">Pending</div><div class="value" style="color:var(--yellow)">' + outcomes.pending + '</div></div>';
   html += '</div>';
 
-  // Hint preview
+  // Hint preview. Source-aware label: legacy md hints come from data/hints,
+  // rule-driven hints are synthesized from the rule registry (no md file).
   if (hint && hint.content) {
+    const ruleSrc = 'src/core/rules/' + baseCheck.replace(/^pos-supervisor:/, '') + '.js';
+    const mdSrc = 'src/data/hints/' + baseCheck + '.md';
+    const hintSrc = hint.source === 'rule' ? ruleSrc : mdSrc;
+    const titleNote = hint.source === 'rule'
+      ? 'Hint reference (rule-driven — generated dynamically by '
+      : 'Hint shown to agents (';
     html += '<div class="rd-hint">'
-      + '<div class="rd-hint-title">Hint shown to agents (src/data/hints/' + escHtml(baseCheck) + '.md)</div>'
+      + '<div class="rd-hint-title">' + escHtml(titleNote) + escHtml(hintSrc) + ')</div>'
       + '<div class="rd-hint-body">' + escHtml(hint.content) + '</div>'
       + '</div>';
   }
@@ -4458,24 +4484,34 @@ function renderDrilldownPanel(panel, ruleId, check, drill, hint, ruleScore) {
     html += '</tbody></table></div>';
   }
 
-  // Action recommendation
+  // Action recommendation. Point at whichever file actually owns the hint
+  // for this check — md for legacy static hints, rules/<X>.js for rule-driven.
+  const ruleModule = baseCheck.replace(/^pos-supervisor:/, '');
+  const isRuleDriven = hint && hint.source === 'rule';
+  const hintFileCode = isRuleDriven
+    ? '<code>src/core/rules/' + escHtml(ruleModule) + '.js</code>'
+    : '<code>src/data/hints/' + escHtml(baseCheck) + '.md</code>';
   html += '<div class="rd-action">';
   if (ruleScore && ruleScore.disabled) {
     html += '<b>This rule is DISABLED</b> by the case base (effectiveness below 15% over 10+ outcomes). ';
     html += 'Review the hint text above and the sample outcomes. ';
     html += 'The hint may be misleading agents or the fix pattern may be wrong. ';
-    html += 'Edit <code>src/data/hints/' + escHtml(baseCheck) + '.md</code> to rewrite the hint, ';
-    html += 'or edit <code>src/core/rules/' + escHtml(baseCheck) + '.js</code> to adjust when() guards or apply() logic.';
+    if (isRuleDriven) {
+      html += 'Edit ' + hintFileCode + ' to adjust the apply() body, when() guards, or sub-rule priorities.';
+    } else {
+      html += 'Edit ' + hintFileCode + ' to rewrite the hint, ';
+      html += 'or edit <code>src/core/rules/' + escHtml(ruleModule) + '.js</code> to adjust when() guards or apply() logic.';
+    }
   } else if (outcomes.regressed > outcomes.resolved) {
     html += '<b>High regression rate</b> — agents follow this hint and introduce new errors. ';
     html += 'Check the hint text: does it suggest removing or changing something that other templates depend on? ';
     html += 'Consider adding guard conditions or making the fix more conservative. ';
-    html += 'Edit <code>src/data/hints/' + escHtml(baseCheck) + '.md</code>.';
+    html += 'Edit ' + hintFileCode + '.';
   } else if (outcomes.resolved === 0 && total > 5) {
     html += '<b>Zero resolution</b> on ' + total + ' samples. The hint is not helping agents fix this issue. ';
     html += 'Rewrite the hint to include the exact fix pattern (not just an explanation). ';
     html += 'Add <code>proposed_fixes</code> in the rule apply() to give agents a drop-in text edit. ';
-    html += 'Edit <code>src/data/hints/' + escHtml(baseCheck) + '.md</code>.';
+    html += 'Edit ' + hintFileCode + '.';
   } else if (outcomes.pending > total * 0.5) {
     html += '<b>Most outcomes are pending</b> — not enough data to judge this rule yet. ';
     html += 'Run more validate_code sessions, then rebuild analytics to see outcomes.';

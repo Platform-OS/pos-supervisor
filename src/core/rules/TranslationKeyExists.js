@@ -10,19 +10,38 @@
  *        "did you mean en.key.items" suggestion.
  *   10 — suggest_nearest: key is close to an existing translation key
  *   20 — create_key:      suggest adding the key to translation file
+ *
+ * Defensive design: every `[N]`-aware gate looks at BOTH `params.key` and
+ * `diag.message`. If the extractor ever drifts (LSP message shape change,
+ * encoding glitch), the raw-message regex still owns the array-index case
+ * — `suggest_nearest` won't slip through and emit a misleading parent-key
+ * suggestion. See the 2026-04-25 DEMO regression: 6 emits, 6 ignored fixes.
  */
-import { translationKeysForLocale } from './queries.js';
-import { nearestByLevenshtein } from './queries.js';
+import { nearestByLevenshtein, stripLocalePrefix, translationKeysForLocale } from './queries.js';
+
+const ARRAY_INDEX_RE = /\[\d+\]/;
+const DEFAULT_LOCALE = 'en';
+
+function hasArrayIndex(diag) {
+  return ARRAY_INDEX_RE.test(diag.params?.key ?? '') || ARRAY_INDEX_RE.test(diag.message ?? '');
+}
 
 export const rules = [
   {
     id: 'TranslationKeyExists.array_index_misuse',
     check: 'TranslationKeyExists',
     priority: 5,
-    when: (diag) => /\[\d+\]/.test(diag.params?.key ?? ''),
+    when: hasArrayIndex,
     apply: (diag) => {
-      const key = diag.params.key;
-      const arrayKey = key.replace(/\[\d+\]/g, '');
+      const key = diag.params?.key ?? '';
+      // The agent's key may include a locale prefix (`en.foo[0]`). Strip
+      // before computing the array root so the suggested `| t` call works
+      // — Liquid auto-prepends the locale and `'en.foo' | t` resolves to
+      // `en.en.foo`.
+      const bareKey = stripLocalePrefix(key, DEFAULT_LOCALE);
+      const arrayKey = bareKey.replace(/\[\d+\]/g, '');
+      const indexMatch = key.match(/\[(\d+)\]/);
+      const indexLabel = indexMatch ? `[${indexMatch[1]}]` : '[N]';
       const guidance =
         `Translation arrays don't support [index] syntax in Liquid. ` +
         `Pass the full array, then iterate, for example: ` +
@@ -31,7 +50,7 @@ export const rules = [
       return {
         rule_id: 'TranslationKeyExists.array_index_misuse',
         hint_md:
-          `Translation key \`${key}\` uses \`[${key.match(/\[(\d+)\]/)[1]}]\` indexing — not supported. ` +
+          `Translation key \`${key}\` uses \`${indexLabel}\` indexing — not supported. ` +
           `Load the array with \`{% assign items = '${arrayKey}' | t %}\` and iterate with \`{% for %}\`.`,
         fixes: [{ type: 'guidance', description: guidance }],
         confidence: 0.9,
@@ -48,24 +67,50 @@ export const rules = [
       if (!key) return false;
       // Array-index misuse owns its own rule above; don't double-fire here
       // (Levenshtein on `foo[0]` reliably finds a misleading parent key).
-      if (/\[\d+\]/.test(key)) return false;
-      const keys = translationKeysForLocale(facts.graph, 'en');
+      // Defense in depth: gate on BOTH params.key and the raw message.
+      if (hasArrayIndex(diag)) return false;
+      const keys = translationKeysForLocale(facts.graph, DEFAULT_LOCALE);
       return keys.length > 0;
     },
     apply: (diag, facts) => {
       const key = diag.params.key;
-      const keys = translationKeysForLocale(facts.graph, 'en');
-      const nearest = nearestByLevenshtein(key, keys, 3);
+      // Compare against both the agent's literal key AND the locale-stripped
+      // form. Agents do both — `'en.foo' | t` (with prefix) and `'foo' | t`
+      // (without). Whichever is closer to a real key wins.
+      const bareKey = stripLocalePrefix(key, DEFAULT_LOCALE);
+      const candidates = translationKeysForLocale(facts.graph, DEFAULT_LOCALE);
+      const nearestBare = nearestByLevenshtein(bareKey, candidates, 3);
+      const nearestRaw = nearestByLevenshtein(key, candidates, 3);
+      const pickBest = (a, b) => {
+        if (a.length === 0) return b;
+        if (b.length === 0) return a;
+        return a[0].distance <= b[0].distance ? a : b;
+      };
+      // The shared Levenshtein helper uses a length-relative threshold
+      // (`length * 0.6`) which is fine for 5-15 char identifiers but lets
+      // unrelated 20+ char dotted keys through (e.g. `app.brand_new.label`
+      // matches `app.user.name` at distance 10/19). Re-filter at a stricter
+      // bound so brand-new keys fall through to `create_key` instead of
+      // attracting a bogus "did you mean".
+      const SUGGEST_MAX_DISTANCE = Math.min(5, Math.floor(bareKey.length / 3));
+      const nearest = pickBest(nearestBare, nearestRaw)
+        .filter(n => n.distance <= SUGGEST_MAX_DISTANCE);
       if (nearest.length === 0) return null;
 
       const bestMatch = nearest[0].name;
       const suggestions = nearest.map(n => `\`${n.name}\``).join(', ');
       return {
         rule_id: 'TranslationKeyExists.suggest_nearest',
-        hint_md: `Translation key \`${key}\` not found. Did you mean: ${suggestions}? Or add it to \`app/translations/en.yml\`.`,
+        hint_md:
+          `Translation key \`${key}\` not found. Did you mean: ${suggestions}? ` +
+          `Use the suggested key directly in \`'<key>' | t\` — Liquid auto-prepends the locale, so do NOT include \`${DEFAULT_LOCALE}.\` yourself. ` +
+          `Or add the key to \`app/translations/${DEFAULT_LOCALE}.yml\`.`,
         fixes: [{
           type: 'guidance',
-          description: `Replace \`${key}\` with \`${bestMatch}\` in the \`{{ '${key}' | t }}\` filter, or add the missing key to \`app/translations/en.yml\`.`,
+          description:
+            `Replace \`${key}\` with \`${bestMatch}\` everywhere this key is referenced in the file ` +
+            `(\`{{ '...' | t }}\`, \`{% assign x = '...' | t %}\`, etc). Do not include the \`${DEFAULT_LOCALE}.\` prefix — ` +
+            `\`| t\` resolves the active locale automatically.`,
         }],
         confidence: 0.7,
       };
@@ -80,12 +125,16 @@ export const rules = [
       const key = diag.params?.key;
       if (!key) return false;
       // Don't propose creating `foo[0]: TODO` — array_index_misuse owns this.
-      if (/\[\d+\]/.test(key)) return false;
+      // Defense in depth: gate on both params.key and the raw message.
+      if (hasArrayIndex(diag)) return false;
       return true;
     },
     apply: (diag) => {
       const key = diag.params.key;
-      const parts = key.split('.');
+      // Build the YAML snippet from the bare (locale-stripped) key so the
+      // generated YAML nests under the correct root (en:) without doubling.
+      const bareKey = stripLocalePrefix(key, DEFAULT_LOCALE);
+      const parts = bareKey.split('.');
       const yamlLines = [];
       parts.forEach((part, i) => {
         if (i < parts.length - 1) {
@@ -98,10 +147,10 @@ export const rules = [
 
       return {
         rule_id: 'TranslationKeyExists.create_key',
-        hint_md: `Add translation key \`${key}\` to \`app/translations/en.yml\`:\n\`\`\`yaml\n${snippet}\n\`\`\``,
+        hint_md: `Add translation key \`${bareKey}\` to \`app/translations/${DEFAULT_LOCALE}.yml\` (under the \`${DEFAULT_LOCALE}:\` root):\n\`\`\`yaml\n${snippet}\n\`\`\``,
         fixes: [{
           type: 'guidance',
-          description: `Add the following YAML to \`app/translations/en.yml\`:\n${snippet}`,
+          description: `Add the following YAML to \`app/translations/${DEFAULT_LOCALE}.yml\` (nested under the existing \`${DEFAULT_LOCALE}:\` root):\n${snippet}`,
         }],
         confidence: 0.8,
       };
