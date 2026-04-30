@@ -134,6 +134,32 @@ const LogPayload = z.object({
   message: z.string(),
 });
 
+// CAC predictor decision (one row per diagnostic considered by `applyCac`).
+// Persisted so the dashboard's "Recent CAC Decisions" panel survives restart
+// and so we can mine post-hoc whether a chosen threshold matched outcomes.
+//
+// Field shape mirrors the in-memory ring entry built by
+// `cac-predictor.js::recordDecision`, MINUS the envelope-reserved `ts` (the
+// session-bus envelope already carries the timestamp; the rehydrator copies
+// envelope.ts back onto the ring entry on read). Probability fields are
+// nullable to match the `feature: 'prior'` no-signal case where the scorer
+// returns no credible-interval bounds.
+const CacDecisionPayload = z.object({
+  file: z.string().nullable().optional(),
+  rule_id: z.string().nullable(),
+  check: z.string().nullable().optional(),
+  severity: z.enum(['info', 'warning', 'error']),
+  file_domain: z.string().nullable().optional(),
+  p_adopted: z.number().nullable(),
+  p_lower: z.number().nullable(),
+  p_upper: z.number().nullable(),
+  n_samples: z.number().int().nonnegative(),
+  feature: z.enum(['rule_id+domain', 'rule_id', 'severity', 'prior']),
+  decision: z.enum(['allow', 'downgrade', 'suppress']),
+  reason: z.string(),
+  mode: z.enum(['shadow', 'active']),
+});
+
 // Registry: kind → payload schema. Used for validation + introspection.
 export const KIND_SCHEMAS = Object.freeze({
   server_start: ServerStartPayload,
@@ -145,6 +171,7 @@ export const KIND_SCHEMAS = Object.freeze({
   tool_call: ToolCallPayload,
   validator_emit: ValidatorEmitPayload,
   log: LogPayload,
+  cac_decision: CacDecisionPayload,
 });
 
 export const KNOWN_KINDS = Object.freeze(Object.keys(KIND_SCHEMAS));

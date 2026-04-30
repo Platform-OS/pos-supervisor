@@ -19,12 +19,12 @@ is outdated and does not work in pos-cli v6.0.0+.
 {% endgraphql %}
 
 {# RIGHT — file-reference syntax only: #}
-{% graphql get_user = 'lib/queries/users/find', id: context.params.id %}
+{% graphql get_user = 'users/find', id: context.params.id %}
 {{ get_user.user.email }}
 ```
 
 The path is relative to `app/graphql/`. The file must exist at
-`app/graphql/lib/queries/users/find.graphql`.
+`app/graphql/users/find.graphql`.
 
 ---
 
@@ -36,14 +36,14 @@ pure rendering components — they receive data and display it.
 ```liquid
 {# WRONG — graphql inside a partial: #}
 {% comment %}@prompt: Shows the latest products{% endcomment %}
-{% graphql g = 'lib/queries/products/list' %}
+{% graphql g = 'products/list' %}
 {% for p in g.records.results %}
   {{ p.properties_object.title }}
 {% endfor %}
 
 {# RIGHT — page fetches, partial renders: #}
 {# In the page file: #}
-{% graphql g = 'lib/queries/products/list' %}
+{% graphql g = 'products/list' %}
 {% render 'products/list', products: g.records.results %}
 ```
 
@@ -71,7 +71,7 @@ inline syntax.
 {% endfunction %}
 
 {# RIGHT — function calls a partial file: #}
-{% function total = 'lib/helpers/calculate_total', price: product.price, qty: qty %}
+{% function total = 'helpers/calculate_total', price: product.price, qty: qty %}
 {{ total }}
 ```
 

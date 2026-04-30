@@ -17,6 +17,8 @@ import { initPromotedRules, reloadRules } from './core/rules/index.js';
 import { updateDisabledRules, updateForceOverrides, setDisabledRuleDetails } from './core/rules/engine.js';
 import { ruleScores, resolveProbation } from './core/case-base.js';
 import { loadOverrides, overrideSets } from './core/rule-overrides.js';
+import { loadCacConfig } from './core/cac-config.js';
+import { rehydrateRecentCacDecisions } from './core/cac-predictor.js';
 import { loadEngineMode, isAdaptive, setEngineMode, getEngineMode } from './core/engine-mode.js';
 import { startHttp } from './http-server.js';
 import { createLogger } from './core/logger.js';
@@ -159,6 +161,36 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   // them in effect. Both are idempotent — safe to call repeatedly.
   syncRuleOverrides();
   syncDisabledRules();
+
+  // ── CAC predictor config (opt-in 4th gating axis) ──────────────────────────
+  // Shared mutable ref: validate-code reads `current` on each call, the HTTP
+  // POST handler mutates it after persisting to disk. Disabled by default —
+  // when `enabled: false`, validate-code skips the predictor entirely.
+  const cacConfigState = { current: loadCacConfig(projectDir, { log }) };
+  function syncCacConfig() {
+    try {
+      cacConfigState.current = loadCacConfig(projectDir, { log });
+      const c = cacConfigState.current;
+      if (c.enabled) {
+        log(`cac-predictor: ${c.mode} mode, threshold=${c.threshold}, action=${c.action}, min_samples=${c.min_samples}`);
+      }
+    } catch (e) {
+      log(`cac-predictor: sync failed (${e.message})`);
+    }
+  }
+  syncCacConfig();
+
+  // Rehydrate the CAC decision ring from prior sessions' NDJSON logs so the
+  // dashboard's "Recent CAC Decisions" panel survives server restarts. Pure
+  // disk read — runs even when the predictor is disabled, since flipping it
+  // on later in the session shouldn't show an empty audit trail. Best
+  // effort: any I/O error returns 0 and is logged at info level.
+  try {
+    const n = rehydrateRecentCacDecisions(sessionsDir);
+    if (n > 0) log(`cac-predictor: rehydrated ${n} decision(s) from prior sessions`);
+  } catch (e) {
+    log(`cac-predictor: rehydration failed (${e.message})`);
+  }
 
   // ── Engine mode transitions ──────────────────────────────────────────────────
   function handleModeTransition(prev, mode) {
@@ -625,6 +657,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     sessionBus,
     blobStore,
     analyticsStore,
+    cacConfigState,
     log,
     emit,
     switchEngineMode,
@@ -727,7 +760,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
       };
     }
     const dataRoot = join(__dirname, 'data');
-    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild: syncDisabledRules, onOverridesChanged: () => { syncRuleOverrides(); syncDisabledRules(); }, switchEngineMode, getEngineMode });
+    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild: syncDisabledRules, onOverridesChanged: () => { syncRuleOverrides(); syncDisabledRules(); }, onCacConfigChanged: syncCacConfig, switchEngineMode, getEngineMode });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────

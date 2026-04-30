@@ -121,7 +121,7 @@ query GetProducts {
 Access in Liquid:
 
 ```liquid
-{% graphql g = 'lib/queries/products/list' %}
+{% graphql g = 'products/list' %}
 {% for product in g.records.results %}
   {{ product.properties_object.title }}
   {{ product.properties_object.price | property_float }}
@@ -137,7 +137,7 @@ Use `property_float` / `property_int` / `property_boolean` accessors when you ne
 the GraphQL query exactly — the top-level key is the query field name, not `results` or `data`.
 
 ```liquid
-{% graphql g = 'lib/queries/records/list' %}
+{% graphql g = 'records/list' %}
 
 {# WRONG — data is not at the root: #}
 {% for item in g.results %}

@@ -926,6 +926,34 @@ export function buildDashboardHtml() {
   .ami-input-reason { min-width: 200px; }
   .ami-input:focus { outline: none; border-color: var(--blue); }
 
+  /* ── CAC Predictor (opt-in 4th gating axis) ────────────────────────── */
+  .cac-badge { display: inline-block; padding: 2px 8px; font-size: 10px; font-weight: bold; letter-spacing: 0.5px; margin-left: 8px; vertical-align: middle; }
+  .cac-badge-off    { background: var(--surface2); color: var(--muted); }
+  .cac-badge-shadow { background: rgba(79, 195, 247, 0.18); color: var(--blue); }
+  .cac-badge-active { background: rgba(129, 199, 132, 0.20); color: var(--green); }
+  .cac-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 10px 0 16px; }
+  .cac-control { display: flex; flex-direction: column; gap: 4px; }
+  .cac-control > label { color: var(--muted); font-size: 9px; letter-spacing: 0.5px; }
+  .cac-toggle-row { display: flex; gap: 0; }
+  .cac-toggle-btn { flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 8px; font-size: 11px; font-family: var(--mono); cursor: pointer; }
+  .cac-toggle-btn:hover:not(.active) { background: var(--surface); }
+  .cac-toggle-btn.active { background: var(--surface2); border-color: var(--blue); color: var(--blue); }
+  .cac-toggle-btn + .cac-toggle-btn { border-left: none; }
+  .cac-select, .cac-input-num { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 4px 6px; font-size: 10px; font-family: var(--mono); }
+  .cac-select:focus, .cac-input-num:focus { outline: none; border-color: var(--blue); }
+  .cac-legend-tiny { color: var(--muted); font-size: 9px; font-style: italic; }
+  .cac-section-title { color: var(--text); font-size: 11px; font-weight: bold; letter-spacing: 0.5px; margin: 14px 0 6px; text-transform: uppercase; }
+  .cac-summary { display: flex; gap: 14px; flex-wrap: wrap; margin: 4px 0 10px; }
+  .cac-summary-stat { background: var(--surface); border: 1px solid var(--border); padding: 6px 10px; font-size: 10px; }
+  .cac-summary-stat .n { font-size: 14px; font-weight: bold; color: var(--text); }
+  .cac-summary-stat .l { font-size: 9px; color: var(--muted); }
+  .cac-table { width: 100%; border-collapse: collapse; font-size: 10px; font-family: var(--mono); }
+  .cac-table th { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); color: var(--muted); font-weight: normal; }
+  .cac-table td { padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  .cac-decision-allow     { color: var(--green); }
+  .cac-decision-downgrade { color: var(--orange); }
+  .cac-decision-suppress  { color: var(--red); }
+
   /* ── Engine Map ────────────────────────────────────────────────────── */
   .em-header { margin-bottom: 16px; }
   .em-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
@@ -1564,6 +1592,57 @@ export function buildDashboardHtml() {
     </div>
   </div>
 
+  <!-- ── CAC Predictor (Cohen's Agentic Conjecture) ─────────────────── -->
+  <div class="em-panels">
+    <div class="em-panel">
+      <div class="em-section-title">
+        CAC Predictor
+        <span class="cac-badge cac-badge-off" id="cac-status-badge">OFF</span>
+        <button id="cac-refresh-btn" class="primary" style="margin-left:10px;font-size:10px">Refresh</button>
+      </div>
+      <div class="an-legend">
+        Opt-in 4th gating axis. Predicts P(adopted | rule_id, file_domain) from
+        the analytics store and either downgrades or suppresses below-threshold
+        emits. <strong>Off</strong> by default; flip to <strong>Shadow</strong>
+        first to record decisions without modifying diagnostics, then
+        <strong>Active</strong> to apply them. Failures degrade open — a broken
+        predictor never breaks validate_code.
+      </div>
+
+      <div class="cac-controls">
+        <div class="cac-control">
+          <label>STATE</label>
+          <div class="cac-toggle-row">
+            <button class="cac-toggle-btn" id="cac-toggle-off">Off</button>
+            <button class="cac-toggle-btn" id="cac-toggle-shadow">Shadow</button>
+            <button class="cac-toggle-btn" id="cac-toggle-active">Active</button>
+          </div>
+        </div>
+        <div class="cac-control">
+          <label>THRESHOLD <span class="muted" id="cac-threshold-val">0.30</span></label>
+          <input type="range" id="cac-threshold" min="0" max="1" step="0.05" value="0.30" />
+          <div class="cac-legend-tiny">P(adopted) below this triggers the action.</div>
+        </div>
+        <div class="cac-control">
+          <label>ACTION ON LOW-P</label>
+          <select id="cac-action" class="cac-select">
+            <option value="downgrade">Downgrade severity</option>
+            <option value="suppress">Suppress (drop)</option>
+          </select>
+        </div>
+        <div class="cac-control">
+          <label>MIN SAMPLES <span class="muted" id="cac-min-samples-val">5</span></label>
+          <input type="number" id="cac-min-samples" min="0" max="100" step="1" value="5" class="cac-input-num" />
+          <div class="cac-legend-tiny">Skip gating until a feature has this many outcomes.</div>
+        </div>
+      </div>
+
+      <div class="cac-section-title">Recent decisions <span class="muted" id="cac-decisions-count"></span></div>
+      <div id="cac-decisions-summary" class="cac-summary"></div>
+      <div id="cac-decisions-table"></div>
+    </div>
+  </div>
+
   <div class="em-layout">
     <div class="em-graph-container">
       <div class="em-section-title">Rule Topology</div>
@@ -1666,7 +1745,7 @@ const TAB_LOADERS = {
   insights: () => { fetchInsightsData(); if (!hintsLoaded) fetchHints(); },
   analytics: () => { fetchAnalytics(); },
   toollab:  () => { if (!toolsLoaded) fetchTools(); fetchToolLab(); loadRuleChecks(); if (!suppressionsLoaded) fetchSuppressions(); },
-  engine:   () => { if (!engineMapLoaded) fetchEngineMap(); fetchAdaptiveImpact(); },
+  engine:   () => { if (!engineMapLoaded) fetchEngineMap(); fetchAdaptiveImpact(); fetchCacConfig(); fetchCacDecisions(); },
   'pos-cli': () => { if (!cliEnvsLoaded) fetchCliEnvs(); },
   // overview, activity, lsp: eagerly loaded via boot sequence / SSE
 };
@@ -6720,6 +6799,160 @@ function amiSubmitOverride(action) {
 }
 document.getElementById('ami-add-fe-btn')?.addEventListener('click', function() { amiSubmitOverride('force_enable'); });
 document.getElementById('ami-add-fd-btn')?.addEventListener('click', function() { amiSubmitOverride('force_disable'); });
+
+// ── CAC Predictor (opt-in 4th gating axis) ─────────────────────────────────
+// Endpoints:
+//   GET  /api/cac/config       → { config, defaults, valid_modes, valid_actions }
+//   POST /api/cac/config       → patch (any subset of config fields)
+//   GET  /api/cac/decisions    → { count, decisions, summary }
+// State below mirrors the loaded config; UI re-renders on every fetch.
+let cacConfig = null;
+
+async function fetchCacConfig() {
+  try {
+    const r = await fetch(BASE + '/api/cac/config');
+    if (!r.ok) return;
+    const body = await r.json();
+    cacConfig = body.config;
+    renderCacConfig();
+  } catch (e) {
+    console.warn('CAC: fetchCacConfig failed', e);
+  }
+}
+
+async function fetchCacDecisions() {
+  try {
+    const r = await fetch(BASE + '/api/cac/decisions?limit=50');
+    if (!r.ok) return;
+    const body = await r.json();
+    renderCacDecisions(body);
+  } catch (e) {
+    console.warn('CAC: fetchCacDecisions failed', e);
+  }
+}
+
+async function mutateCacConfig(patch) {
+  try {
+    const r = await fetch(BASE + '/api/cac/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(function() { return { error: 'HTTP ' + r.status }; });
+      alert('CAC config update failed: ' + (err.error || r.status));
+      return;
+    }
+    const body = await r.json();
+    cacConfig = body.config;
+    renderCacConfig();
+  } catch (e) {
+    alert('CAC config update failed: ' + e.message);
+  }
+}
+
+function renderCacConfig() {
+  if (!cacConfig) return;
+  const state = cacConfig.enabled ? cacConfig.mode : 'off';
+  const badge = document.getElementById('cac-status-badge');
+  if (badge) {
+    badge.className = 'cac-badge cac-badge-' + state;
+    badge.textContent = state.toUpperCase();
+  }
+  const offBtn = document.getElementById('cac-toggle-off');
+  const shadowBtn = document.getElementById('cac-toggle-shadow');
+  const activeBtn = document.getElementById('cac-toggle-active');
+  if (offBtn)    offBtn.classList.toggle('active', state === 'off');
+  if (shadowBtn) shadowBtn.classList.toggle('active', state === 'shadow');
+  if (activeBtn) activeBtn.classList.toggle('active', state === 'active');
+
+  const tEl = document.getElementById('cac-threshold');
+  const tLbl = document.getElementById('cac-threshold-val');
+  if (tEl)  tEl.value  = String(cacConfig.threshold);
+  if (tLbl) tLbl.textContent = Number(cacConfig.threshold).toFixed(2);
+
+  const aEl = document.getElementById('cac-action');
+  if (aEl) aEl.value = cacConfig.action;
+
+  const mEl = document.getElementById('cac-min-samples');
+  const mLbl = document.getElementById('cac-min-samples-val');
+  if (mEl)  mEl.value  = String(cacConfig.min_samples);
+  if (mLbl) mLbl.textContent = String(cacConfig.min_samples);
+}
+
+function renderCacDecisions(body) {
+  const countEl = document.getElementById('cac-decisions-count');
+  if (countEl) countEl.textContent = body.count ? '(' + body.count + ')' : '(0)';
+
+  const sumEl = document.getElementById('cac-decisions-summary');
+  if (sumEl) {
+    const s = body.summary || {};
+    sumEl.innerHTML = [
+      '<div class="cac-summary-stat"><div class="n cac-decision-allow">' + (s.allow ?? 0) + '</div><div class="l">Allowed</div></div>',
+      '<div class="cac-summary-stat"><div class="n cac-decision-downgrade">' + (s.downgrade ?? 0) + '</div><div class="l">Downgraded</div></div>',
+      '<div class="cac-summary-stat"><div class="n cac-decision-suppress">' + (s.suppress ?? 0) + '</div><div class="l">Suppressed</div></div>',
+    ].join('');
+  }
+
+  const tEl = document.getElementById('cac-decisions-table');
+  if (!tEl) return;
+  const decisions = body.decisions || [];
+  if (decisions.length === 0) {
+    tEl.innerHTML = '<div class="ami-empty">No decisions yet. Run validate_code with the predictor enabled in Shadow or Active mode.</div>';
+    return;
+  }
+  const rows = decisions.slice().reverse().slice(0, 30).map(function(d) {
+    const p = d.p_adopted != null ? Number(d.p_adopted).toFixed(2) : '—';
+    const n = d.n_samples ?? 0;
+    const cls = 'cac-decision-' + (d.decision || 'allow');
+    const file = d.file ? escHtml(d.file.split('/').slice(-2).join('/')) : '—';
+    return '<tr>'
+      + '<td>' + escHtml(d.rule_id || d.check || '') + '</td>'
+      + '<td>' + file + '</td>'
+      + '<td>' + escHtml(d.feature || '') + '</td>'
+      + '<td>' + p + '</td>'
+      + '<td>' + n + '</td>'
+      + '<td class="' + cls + '">' + escHtml(d.decision || '') + '</td>'
+      + '<td class="muted">' + escHtml(d.mode || '') + '</td>'
+      + '</tr>';
+  }).join('');
+  tEl.innerHTML = '<table class="cac-table"><thead><tr>'
+    + '<th>Rule</th><th>File</th><th>Feature</th><th>P(adopted)</th><th>N</th><th>Decision</th><th>Mode</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+document.getElementById('cac-toggle-off')?.addEventListener('click', function() {
+  mutateCacConfig({ enabled: false });
+});
+document.getElementById('cac-toggle-shadow')?.addEventListener('click', function() {
+  mutateCacConfig({ enabled: true, mode: 'shadow' });
+});
+document.getElementById('cac-toggle-active')?.addEventListener('click', function() {
+  if (!confirm('Switch CAC predictor to ACTIVE mode?\\n\\nIn active mode, below-threshold diagnostics will be suppressed or downgraded for every validate_code call. Make sure you have observed shadow-mode decisions first.')) return;
+  mutateCacConfig({ enabled: true, mode: 'active' });
+});
+document.getElementById('cac-threshold')?.addEventListener('change', function(e) {
+  const val = Number(e.target.value);
+  if (Number.isFinite(val)) mutateCacConfig({ threshold: val });
+});
+document.getElementById('cac-threshold')?.addEventListener('input', function(e) {
+  const lbl = document.getElementById('cac-threshold-val');
+  if (lbl) lbl.textContent = Number(e.target.value).toFixed(2);
+});
+document.getElementById('cac-action')?.addEventListener('change', function(e) {
+  mutateCacConfig({ action: e.target.value });
+});
+document.getElementById('cac-min-samples')?.addEventListener('change', function(e) {
+  const val = parseInt(e.target.value, 10);
+  if (Number.isFinite(val) && val >= 0) {
+    mutateCacConfig({ min_samples: val });
+    const lbl = document.getElementById('cac-min-samples-val');
+    if (lbl) lbl.textContent = String(val);
+  }
+});
+document.getElementById('cac-refresh-btn')?.addEventListener('click', function() {
+  fetchCacConfig();
+  fetchCacDecisions();
+});
 
 // Two-backslash sequence is deliberate: the entire dashboard JS lives inside
 // an outer template literal in buildDashboardHtml(). \\' in the source

@@ -2,6 +2,7 @@
  * MissingPartial rules — first check fully ported to rule engine.
  *
  * Priority order:
+ *    5 — invalid_lib_prefix: literal `lib/commands/` or `lib/queries/` prefix → text_edit
  *   10 — module_path: module partials → guidance + module_info see_also
  *   20 — file_exists: target exists on disk but LSP still flags → guidance
  *   30 — suggest_nearest: did-you-mean via Levenshtein on reachable partials
@@ -15,6 +16,45 @@ import {
 } from './module-paths.js';
 
 export const rules = [
+  {
+    // `function` tag paths resolve relative to the partial search paths
+    // (`app/views/partials/`, `app/lib/`), not project root, so `lib/commands/X`
+    // expands to `app/lib/lib/commands/X` which never exists. Drop the prefix
+    // — `commands/X` and `queries/X` are the canonical forms.
+    id: 'MissingPartial.invalid_lib_prefix',
+    check: 'MissingPartial',
+    priority: 5,
+    when: (diag) => {
+      const name = diag.params?.partial;
+      return !!name && (name.startsWith('lib/commands/') || name.startsWith('lib/queries/'));
+    },
+    apply: (diag) => {
+      const name = diag.params.partial;
+      const corrected = name.slice('lib/'.length);
+      const category = name.startsWith('lib/commands/') ? 'command' : 'query';
+      const hint =
+        `Drop the invalid \`lib/\` prefix from \`${name}\`. ` +
+        `\`function\` tag paths resolve from the partial search paths ` +
+        `(\`app/views/partials/\`, \`app/lib/\`) — a literal \`lib/\` prefix expands ` +
+        `to \`app/lib/lib/${corrected}\` which never exists. ` +
+        `Use \`${corrected}\` instead.`;
+
+      const fix = buildLibPrefixTextEdit(diag, name, corrected) ?? {
+        type: 'guidance',
+        description:
+          `Drop the \`lib/\` prefix from the ${category} call: replace \`${name}\` with \`${corrected}\` ` +
+          `in the \`{% function %}\` tag on line ${diag.line ?? '?'}.`,
+      };
+
+      return {
+        rule_id: 'MissingPartial.invalid_lib_prefix',
+        hint_md: hint,
+        fixes: [fix],
+        confidence: 0.95,
+      };
+    },
+  },
+
   {
     id: 'MissingPartial.module_path',
     check: 'MissingPartial',
@@ -247,6 +287,33 @@ export const rules = [
     },
   },
 ];
+
+/**
+ * Build a `text_edit` fix that swaps a quoted partial reference for its
+ * `lib/`-stripped form. Returns null when the diagnostic lacks the position
+ * fields LSP normally provides (line/column/endColumn) — callers fall back
+ * to a guidance fix in that case.
+ *
+ * The replacement quotes with `'` (single-quote convention used throughout
+ * platformOS templates and our scaffolds). The rule engine has no access to
+ * the source buffer, so a perfect echo of the user's quote style can't be
+ * preserved here; `fix-generator.js` carries content and re-emits the fix
+ * with the correct quote when a buffer is available.
+ */
+function buildLibPrefixTextEdit(diag, name, corrected) {
+  if (diag.line == null || diag.column == null || diag.endColumn == null) return null;
+  return {
+    type: 'text_edit',
+    range: {
+      start: { line: diag.line, character: diag.column },
+      end: { line: diag.endLine ?? diag.line, character: diag.endColumn },
+    },
+    new_text: `'${corrected}'`,
+    description:
+      `Drop invalid \`lib/\` prefix — function paths resolve from \`app/lib/\`. ` +
+      `Replace \`${name}\` with \`${corrected}\`.`,
+  };
+}
 
 /**
  * Split `modules/<name>/<category>/<rest...>` into its parts. The returned

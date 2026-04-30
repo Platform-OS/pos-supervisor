@@ -16,6 +16,8 @@ import { addPromotedRule, removePromotedRule, listPromotedRules } from './core/r
 import { reloadRules, loadAllRules } from './core/rules/index.js';
 import { runRules, getDisabledRules, getAllChecksWithRules, getRulesForCheck, getDisabledRuleDetails, getForceEnabledRules, getForceDisabledRules } from './core/rules/engine.js';
 import { loadOverrides, addForceEnable, addForceDisable, removeOverride } from './core/rule-overrides.js';
+import { loadCacConfig, updateCacConfig, defaultCacConfig, VALID_MODES, VALID_ACTIONS } from './core/cac-config.js';
+import { getRecentCacDecisions } from './core/cac-predictor.js';
 import { extractParams, templateOf, KNOWN_EXTRACTOR_CHECKS } from './core/diagnostic-record.js';
 import { buildFactGraph } from './core/project-fact-graph.js';
 
@@ -23,7 +25,7 @@ import { buildFactGraph } from './core/project-fact-graph.js';
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
  * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild, onOverridesChanged, switchEngineMode, getEngineMode }) {
+export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild, onOverridesChanged, onCacConfigChanged, switchEngineMode, getEngineMode }) {
   if (!port) return null;
 
   const dashboardHtml = buildDashboardHtml();
@@ -173,6 +175,10 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       if (url.pathname === '/api/engine/rule-overrides') {
         return handleRuleOverridesMutate(projectDir, body, res, log, onOverridesChanged);
       }
+
+      if (url.pathname === '/api/cac/config') {
+        return handleCacConfigMutate(projectDir, body, res, log, onCacConfigChanged);
+      }
     }
 
     // ── Analytics GET routes ──────────────────────────────────────────────
@@ -266,6 +272,15 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
     }
     // POST on this path is dispatched inside the POST block above so the
     // shared body-parser isn't read twice.
+
+    if (method === 'GET' && url.pathname === '/api/cac/config') {
+      return handleCacConfigGet(projectDir, res, log);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/cac/decisions') {
+      return handleCacDecisions(url, res);
+    }
+    // POST /api/cac/config is dispatched inside the POST block above.
 
     // ── Fallback ────────────────────────────────────────────────────────
     sendJson(res, 404, { error: 'Not found' });
@@ -1227,6 +1242,79 @@ function handleRuleOverridesMutate(projectDir, body, res, log, onOverridesChange
   } catch (e) {
     sendJson(res, 500, { error: e.message });
   }
+}
+
+// ── CAC predictor (Cohen's Agentic Conjecture) ───────────────────────────
+//
+// Opt-in 4th gating axis. The validator behaves identically to a build
+// without the predictor when `enabled: false`. These endpoints expose the
+// persisted config + recent decision telemetry to the dashboard.
+
+function handleCacConfigGet(projectDir, res, log) {
+  try {
+    const state = loadCacConfig(projectDir, { log });
+    sendJson(res, 200, {
+      config: state,
+      defaults: defaultCacConfig(),
+      valid_modes: VALID_MODES,
+      valid_actions: VALID_ACTIONS,
+    });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+/**
+ * POST /api/cac/config
+ *
+ * Body: any subset of `{ enabled, mode, threshold, action, min_samples }`.
+ * Unknown keys are dropped; out-of-range values are coerced to defaults.
+ * The `onCacConfigChanged` hook re-reads the file into the live ref so the
+ * change takes effect immediately for in-flight validate_code calls
+ * (without requiring a server restart).
+ */
+function handleCacConfigMutate(projectDir, body, res, log, onCacConfigChanged) {
+  if (!body || typeof body !== 'object') {
+    return sendJson(res, 400, { error: 'body required' });
+  }
+  try {
+    const state = updateCacConfig(projectDir, body, { log });
+    try { onCacConfigChanged?.(); } catch (e) { log?.(`onCacConfigChanged failed: ${e.message}`); }
+    sendJson(res, 200, { config: state });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleCacDecisions(url, res) {
+  const limit = clampInt(url.searchParams.get('limit'), 1, 200, 50);
+  try {
+    const decisions = getRecentCacDecisions(limit);
+    sendJson(res, 200, {
+      count: decisions.length,
+      decisions,
+      summary: summarizeCacDecisions(decisions),
+    });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function summarizeCacDecisions(decisions) {
+  const out = { allow: 0, downgrade: 0, suppress: 0, by_feature: {}, by_mode: {} };
+  for (const d of decisions) {
+    const dec = d.decision || 'allow';
+    out[dec] = (out[dec] ?? 0) + 1;
+    out.by_feature[d.feature] = (out.by_feature[d.feature] ?? 0) + 1;
+    out.by_mode[d.mode] = (out.by_mode[d.mode] ?? 0) + 1;
+  }
+  return out;
+}
+
+function clampInt(raw, min, max, fallback) {
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

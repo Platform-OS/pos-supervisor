@@ -44,18 +44,32 @@ Wrap a GraphQL call location in a query partial so the actual graphql tag stays 
 
 ## Command Partial Pattern
 
-See [Commands](../commands/README.md) for the full build/check/execute pattern.
+See [Commands](../commands/README.md) for the full build/check/execute
+pattern. The command is **three** files: orchestrator + sibling
+`build.liquid` + sibling `check.liquid`. There is **no**
+`modules/core/commands/build` / `…/check` — only `commands/execute`
+runs at the module level.
 
 ```liquid
 {% comment %} app/lib/commands/products/create.liquid {% endcomment %}
-{% assign object = { "title": title, "price": price } %}
-{% function object = 'modules/core/commands/build', object: object %}
-{% assign validators = [{ "name": "presence", "property": "title" }] %}
-{% function object = 'modules/core/commands/check', object: object, validators: validators %}
-{% if object.valid %}
-  {% function object = 'modules/core/commands/execute', mutation_name: 'products/create', selection: 'record_create', object: object %}
-{% endif %}
-{% return object %}
+{% doc %}
+  @param {object} params - raw input
+{% enddoc %}
+{% liquid
+  function object = 'commands/products/create/build', object: params
+  function object = 'commands/products/create/check', object: object
+
+  if object.valid == false
+    return object
+  endif
+
+  function object = 'modules/core/commands/execute',
+    mutation_name: 'products/create',
+    selection: 'record_create',
+    object: object
+
+  return object
+%}
 ```
 
 ## Form Partial with Validation Errors

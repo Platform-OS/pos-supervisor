@@ -13,6 +13,7 @@ import { validateTranslationYaml } from '../core/translation-validator.js';
 import { checkSchemaProperties } from '../core/schema-property-checker.js';
 import { runDiagnosticPipeline, stampDefaultsOn, suppressUpstreamFrontmatterDup } from '../core/diagnostic-pipeline.js';
 import { isCheckForceDisabled } from '../core/rules/engine.js';
+import { applyCac } from '../core/cac-predictor.js';
 import { partitionCallersByPending } from '../core/pending-callers.js';
 import { toUri, sanitizePath } from '../core/utils.js';
 import { fingerprint, templateFingerprint, messageTemplate, extractParams } from '../core/diagnostic-record.js';
@@ -788,6 +789,35 @@ explicitly only if you are validating a file that is NOT part of the most recent
       result.errors = result.errors.filter(dropForceDisabled);
       result.warnings = result.warnings.filter(dropForceDisabled);
       result.infos = result.infos.filter(dropForceDisabled);
+
+      // 12c. CAC predictor — opt-in 4th gating axis (Cohen's Agentic Conjecture).
+      //
+      //      Predicts P(adopted | rule_id, file_domain) from the analytics
+      //      store and either suppresses or downgrades emits whose predicted
+      //      adoption falls below the configured threshold. Disabled by
+      //      default; enabled per project via the dashboard. When disabled,
+      //      this step is a no-op (`applyCac` returns immediately on
+      //      !config.enabled). When enabled in `shadow` mode, decisions are
+      //      recorded for analysis but no diagnostics are mutated. Skipped
+      //      for live-console calls (ctx.untracked) so experimental runs
+      //      don't fight the gate.
+      //
+      //      Wrapped in try/catch — predictor failure must NEVER break
+      //      validate_code. The whole layer is decoupled in src/core/cac-*.
+      const cacConfig = ctx.cacConfigState?.current;
+      if (cacConfig?.enabled && !ctx.untracked) {
+        try {
+          applyCac(result, {
+            config: cacConfig,
+            analyticsStore: ctx.analyticsStore,
+            filePath: file_path,
+            sessionBus: ctx.sessionBus,
+            log: ctx.log,
+          });
+        } catch (e) {
+          ctx.log?.(`cac-predictor: applyCac threw (${e?.message ?? e}); diagnostics passed through`);
+        }
+      }
 
       // 12. Strip null hint fields — diagnostics without hints should omit the field
       // entirely rather than returning hint: null which looks like a bug in the output.

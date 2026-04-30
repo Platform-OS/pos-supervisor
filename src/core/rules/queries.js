@@ -103,13 +103,24 @@ export function assetNames(graph) {
 export function classifyPath(partialName) {
   if (!partialName) return { type: 'unknown', path: null };
   if (partialName.startsWith('modules/')) return { type: 'module', path: null };
-  if (partialName.startsWith('commands/') || partialName.startsWith('lib/commands/')) {
-    const stripped = partialName.replace(/^(lib\/)?commands\//, '');
-    return { type: 'command', path: `app/lib/commands/${stripped}.liquid` };
+  // `function` tag paths resolve from the partial search paths
+  // (`app/views/partials/`, `app/lib/`) per `@platformos/platformos-common`'s
+  // `DocumentsLocator`. A literal `lib/` prefix expands to `app/lib/lib/...`,
+  // which never exists. Surface this as its own type so the rule engine can
+  // emit a path-correction fix instead of silently routing it to the same
+  // bucket as the (legal) bare `commands/` / `queries/` form.
+  if (partialName.startsWith('lib/commands/') || partialName.startsWith('lib/queries/')) {
+    return {
+      type: 'invalid_lib_prefix',
+      path: null,
+      correctedName: partialName.slice('lib/'.length),
+    };
   }
-  if (partialName.startsWith('queries/') || partialName.startsWith('lib/queries/')) {
-    const stripped = partialName.replace(/^(lib\/)?queries\//, '');
-    return { type: 'query', path: `app/lib/queries/${stripped}.liquid` };
+  if (partialName.startsWith('commands/')) {
+    return { type: 'command', path: `app/lib/${partialName}.liquid` };
+  }
+  if (partialName.startsWith('queries/')) {
+    return { type: 'query', path: `app/lib/${partialName}.liquid` };
   }
   return { type: 'partial', path: `app/views/partials/${partialName}.liquid` };
 }

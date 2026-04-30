@@ -31,7 +31,7 @@ data and display it. They have no concept of "what page called me" or what conte
 ```liquid
 {# WRONG — GraphQL in partial: #}
 {% comment %}@prompt: Shows user profile{% endcomment %}
-{% graphql g = 'lib/queries/users/find', id: context.params.id %}
+{% graphql g = 'users/find', id: context.params.id %}
 {{ g.user.email }}
 
 {# RIGHT — receive data as parameter: #}
@@ -41,7 +41,7 @@ data and display it. They have no concept of "what page called me" or what conte
 
 ```liquid
 {# In the page that renders it: #}
-{% graphql g = 'lib/queries/users/find', id: context.params.id %}
+{% graphql g = 'users/find', id: context.params.id %}
 {% render 'users/profile', user: g.user %}
 ```
 

@@ -1,5 +1,462 @@
 # Changelog
 
+## 0.7.2 — 2026-04-28
+
+CAC predictor — opt-in 4th gating axis for the diagnostic emit
+cascade (Cohen's Agentic Conjecture). Introduces a hierarchical
+empirical-Bayes scorer over the analytics store that predicts the
+probability an agent will adopt the proposed fix for a given
+diagnostic, and either suppresses or downgrades emits whose
+predicted adoption falls below a configured threshold. **Disabled
+by default**; behavior is bit-identical to 0.7.1 until an operator
+explicitly enables it from the dashboard.
+
+### Added — `src/core/cac-config.js`
+
+Persisted config at `<projectDir>/.pos-supervisor/cac-config.json`.
+Mirrors the `rule-overrides.js` pattern (atomic temp+rename writes,
+tolerant reads, never throws). Schema:
+`{ version: 1, enabled: false, mode: 'shadow' | 'active', threshold:
+0.30, action: 'downgrade' | 'suppress', min_samples: 5 }`.
+Out-of-range values are coerced to defaults — invalid mode strings,
+threshold outside `[0, 1]`, negative `min_samples`, etc. all silently
+fall back instead of throwing. Public API: `loadCacConfig`,
+`saveCacConfig`, `updateCacConfig`, `defaultCacConfig`,
+`VALID_MODES`, `VALID_ACTIONS`.
+
+### Added — `src/core/cac-predictor.js`
+
+Pure scoring + decision functions, decoupled from the integration
+via dependency injection (`historyProvider` / `severityProvider`):
+
+- `scoreFixHelpfulness({ rule_id, severity, file_domain, min_samples,
+  historyProvider, severityProvider })` — hierarchical
+  empirical-Bayes scorer. Tries `(rule_id, file_domain)` first, falls
+  back to `(rule_id)` alone, then `(severity)`, then a `Beta(2, 2)`
+  prior. Returns `{ p_adopted, p_lower, p_upper, n_samples, adopted,
+  feature, model }` where `feature ∈ { 'rule_id+domain', 'rule_id',
+  'severity', 'prior' }`. Re-uses `betaPosterior(...)` already
+  exported from `analytics-queries.js`.
+- `decideAction(prediction, config)` — returns `{ decision, reason }`
+  where decision is `'allow' | 'downgrade' | 'suppress'`. The
+  `feature: 'prior'` case (no signal) always allows — the predictor
+  refuses to gate when flying blind.
+- `applyCac(result, { config, analyticsStore, filePath, sessionBus,
+  log })` — the gate function. Walks `result.errors / warnings /
+  infos`, scores each diagnostic, and either passes through (shadow
+  mode) or mutates the result (active mode). Severity downgrades
+  trigger a bucket rebalance so `result.errors → result.warnings`
+  reflects the new severity. NEVER throws — predictor / store
+  failures degrade open. **Predictor only ever suppresses or
+  downgrades; never adds, never mutates fix proposals.**
+- `buildHistoryProvider(analyticsStore)` /
+  `buildSeverityProvider(analyticsStore)` — real implementations
+  that issue correlated SQL subqueries against
+  `diagnostics × outcomes` and return `{ adopted, total }`. Each
+  provider is wrapped in `safeProvide` so a failed query is treated
+  as zero samples (falls through the hierarchy).
+- In-memory ring buffer of the last 200 decisions
+  (`getRecentCacDecisions(limit)`) plus a
+  `sessionBus.emit('cac_decision', ...)` event per decision for the
+  dashboard's recent-decisions panel.
+
+### Added — validate-code integration (`src/tools/validate-code.js`)
+
+New step 12c, inserted between the existing force-disable filter
+(step 12b) and the null-hint strip (step 12). Reads
+`ctx.cacConfigState?.current.enabled` — when `false`, the call site
+short-circuits and validate-code is bit-identical to 0.7.1. When
+enabled, `applyCac(...)` is called inside a try/catch — any
+predictor failure is logged and diagnostics pass through unchanged.
+Skipped when `ctx.untracked` is set (dashboard live-console calls).
+
+### Added — server wiring (`src/server.js`)
+
+Shared mutable config ref:
+`const cacConfigState = { current: loadCacConfig(projectDir, { log })
+}`. Threaded through `ctx` so validate-code reads the latest config
+on every call. New `syncCacConfig()` callback passed to `startHttp`
+as `onCacConfigChanged` — POST to `/api/cac/config` triggers it,
+re-reading the file and refreshing the live ref without restart
+(mirrors the existing `onOverridesChanged` hot-reload pattern for
+rule overrides).
+
+### Added — HTTP endpoints (`src/http-server.js`)
+
+- **`GET /api/cac/config`** — returns
+  `{ config, defaults, valid_modes, valid_actions }` for dashboard
+  bootstrapping.
+- **`POST /api/cac/config`** — body is any subset of
+  `{ enabled, mode, threshold, action, min_samples }`. Unknown keys
+  are silently dropped; out-of-range values are coerced. Triggers
+  `onCacConfigChanged` for live-ref refresh. Returns `{ config }`
+  with the persisted state.
+- **`GET /api/cac/decisions?limit=N`** — returns
+  `{ count, decisions, summary }` from the ring buffer. `summary`
+  groups by `decision` (allow / downgrade / suppress), `feature`,
+  and `mode` for at-a-glance dashboard stats.
+
+### Added — dashboard CAC Predictor panel (`src/dashboard.js`)
+
+New panel inside the Engine Map tab, sited next to "Adaptive Mode
+Impact":
+
+- **Status badge** (OFF / SHADOW / ACTIVE) with color-coded fill.
+- **Three-state toggle** — Off / Shadow / Active. Active requires
+  `confirm()` (prevents accidental enable). Each click POSTs the
+  matching patch and re-renders.
+- **Threshold slider** (0–1, step 0.05) with live label.
+- **Action selector** (Downgrade / Suppress).
+- **min_samples** numeric input.
+- **Recent decisions** mini-table — last 30 entries with rule_id,
+  file (last two segments), feature, P(adopted), N samples,
+  decision, mode. Color-coded decision column.
+- Refresh button + auto-fetch when the Engine Map tab is opened.
+
+CSS additions (`.cac-*` classes) follow the existing AMI / em-panel
+style. Browser-side dashboard JS verified via inline `Function()`
+constructor parse — passes.
+
+### Tests
+
+- `tests/unit/cac-config.test.js` — 13 cases: defaults, missing-file
+  load, malformed-JSON tolerance, round-trip, invalid mode coerced,
+  out-of-range threshold clamped, negative `min_samples` rejected,
+  patch via `updateCacConfig`, unknown-keys dropped.
+- `tests/unit/cac-predictor.test.js` — 19 cases covering the scorer
+  hierarchy (`rule_id+domain` → `rule_id` → `severity` → `prior`),
+  the decision function (prior always allows; threshold gating with
+  both `suppress` and `downgrade` actions), the gate (disabled →
+  no-op, shadow → records-only, active → mutates result, severity
+  downgrade rebalances buckets, predictor failure passes through,
+  `<Check>.unmatched` synthesized when rule_id is missing,
+  file_domain derived from `filePath`, ring buffer caps at 200,
+  `sessionBus.emit('cac_decision', ...)` fires).
+- `tests/integration/cac/toggle.test.js` — 8 end-to-end cases
+  exercising the full HTTP + validate-code path: defaults at boot,
+  disabled is a true no-op, shadow records but doesn't modify,
+  active mode is wired without crashing, disabling resets behavior
+  immediately, garbage POST returns 400, unknown keys dropped,
+  out-of-range threshold coerced.
+
+40 new tests (32 unit + 8 integration), all green. Pre-existing
+flakes in `tests/integration/scenarios/` and the `0.7.0`-documented
+`load_development_guide` drift are unchanged by this release —
+verified by stashing the diff and re-running on a clean tree.
+
+### Safety contract
+
+The CAC layer is fully separable. Disabling it (`enabled: false` in
+config — the default) makes validate-code execute the same code path
+as 0.7.1: the integration call site is gated by a single `if
+(cacConfig?.enabled && !ctx.untracked)` check. Even when enabled,
+the predictor only ever suppresses or downgrades — it never adds
+diagnostics, never mutates fix proposals, and never throws (every
+boundary is wrapped). Schema migrations are not required — the
+analytics DB is unchanged.
+
+### Fixed — CAC decisions are now persistent
+
+Two compounding silent failures were dropping every CAC decision on
+the floor before reaching disk, leaving the dashboard's "Recent CAC
+Decisions" panel empty after every server restart even though the
+predictor was firing correctly.
+
+1. **Missing event-kind registration.** `recordDecision` called
+   `sessionBus.emit('cac_decision', …)`, but `cac_decision` was
+   absent from `KIND_SCHEMAS` in `src/core/session-events.js`.
+   `makeEvent` threw `unknown kind "cac_decision"`, the throw was
+   swallowed by the `try { sessionBus.emit(…) } catch {}` wrapper,
+   and the event never reached the NDJSON writer.
+2. **Envelope-key collision in the payload.** Even after registering
+   the schema, the in-memory ring entry carried its own `ts` field
+   that collided with `ENVELOPE_KEYS` in `makeEvent`, so the next
+   gate would have thrown `reserved envelope key "ts"` and been
+   swallowed too.
+
+Both fixes are in this release:
+
+- `src/core/session-events.js` — added `CacDecisionPayload` (typed
+  enums for `feature` / `decision` / `mode` / `severity`, nullable
+  probability fields for the no-signal `prior` case), registered as
+  `cac_decision` in `KIND_SCHEMAS`. Pinned by 6 new tests covering
+  happy path, the `prior` shape with null probabilities, the `ts`
+  envelope-collision regression, an unknown-decision rejection, and
+  full NDJSON roundtrip.
+- `src/core/cac-predictor.js::recordDecision` — compute `ts` once,
+  pass it as the `emit(kind, payload, ts)` third argument, strip
+  `ts` from the payload. Refactored ring push into `pushRingEntry`
+  shared by live emits and the rehydrator. Added defensive `?? null`
+  on optional payload fields so `.nullable()` schema constraints
+  hold even for malformed callers. Bus-failure regression test
+  asserts a thrown emit no longer drops the in-memory ring entry.
+
+### Added — CAC decision rehydration on startup
+
+The 200-entry `recentDecisions` ring lives in module-level memory and
+was previously never read from disk on boot, so the dashboard panel
+started empty even when prior sessions' NDJSON logs contained
+hundreds of decisions. New layer:
+
+- `loadRecentCacDecisions(sessionsDir, limit)` — pure function. Lists
+  `<sessionsDir>/session-*` subdirectories newest-first (session ids
+  are ISO timestamps, so lexical sort matches chronological), peeks
+  each line via cheap `JSON.parse` for `kind === 'cac_decision'`
+  before paying the full `readEvent` Zod cost, sorts the surviving
+  entries by `ts` ascending, trims to `limit`. Tolerates corrupt
+  JSON, malformed payloads, future-version events, missing files,
+  and an absent sessions directory — every error path returns `[]`
+  so a broken log can never block server boot. Overscan caps I/O at
+  `2 × limit` candidates across recent sessions.
+- `rehydrateRecentCacDecisions(sessionsDir, limit)` — replaces the
+  ring contents and returns the count. Idempotent; safe to call
+  before any live emits.
+- `src/server.js` — wired immediately after `syncCacConfig()` (uses
+  the existing `sessionsDir` declared above, no new globals). Logs
+  `cac-predictor: rehydrated N decision(s) from prior sessions` only
+  when N > 0; runs even when the predictor is disabled so flipping
+  it on later in the session doesn't show an empty audit trail.
+  Try/catch wrapped — boot continues unconditionally on I/O failure.
+
+13 new tests cover missing dir, empty dir, single-session reads,
+mixed-kind sessions, corrupt JSON / partial events / future-version
+lines, multi-session chronological merge, limit clamp + most-recent
+semantics, idempotence, and ring clearing when the sessions dir is
+empty.
+
+End-to-end verified on a real project: validate_code on a broken
+file produced 2 errors → 2 `cac_decision` lines persisted to
+`events.ndjson` → server restart → log line `rehydrated 2
+decision(s) from prior sessions` → `/api/cac/decisions` returned
+both entries with their original session timestamps preserved.
+
+### Fixed — `function`/`graphql` tag `lib/` prefix is invalid, never optional
+
+platformOS resolves `function` tag paths under the partial search
+paths declared by `@platformos/platformos-common`:
+`FILE_TYPE_DIRS[Partial] = ['views/partials', 'lib']` joined under
+`app/`. So `'commands/X'` resolves to `app/lib/commands/X.liquid`,
+and `'lib/commands/X'` resolves to `app/lib/lib/commands/X.liquid`
+— a directory that never exists in any sane project. The literal
+`lib/` prefix is **invalid**, not optional. The `graphql` tag uses
+a different search path (`['graphql', 'graph_queries']` under
+`app/`), so `'lib/queries/X'` in a `{% graphql %}` tag is doubly
+wrong.
+
+Pos-supervisor was systematically encoding the wrong assumption in
+five places — and worse, the fix-generator and rule engine were
+**suppressing the LSP's correct `MissingPartial` diagnostic** by
+stripping the `lib/` prefix before the disk check, so the agent
+saw "no problem" while platformOS would 500 at runtime. Compounded
+by ~25 documentation files (hints, references, knowledge.json,
+domain-gotchas) that listed `lib/commands/` as the canonical call
+form, training every agent reading those docs to write broken code.
+
+#### Code fixes
+
+- `src/core/diagnostic-pipeline.js::resolveMissingPartialPaths` —
+  removed the `name.replace(/^lib\//, '')` call. Now mirrors the
+  upstream `DocumentsLocator` exactly, returning candidate paths
+  under `app/views/partials/` and `app/lib/` verbatim. The LSP's
+  `MissingPartial` for `lib/commands/X` is no longer suppressed.
+- `src/tools/analyze-project.js` — same `replace(/^lib\//, '')`
+  removed from the function-call resolver. `app/lib/${fc.path}.liquid`
+  is now constructed directly, so `'lib/commands/X'` correctly
+  resolves to `app/lib/lib/commands/X.liquid` in the error message
+  and surfaces the bug to the agent. Also extended the iteration to
+  `commands` / `queries` / `layouts` `function_calls` (previously
+  only `pages` and `partials` were checked, so a wrong call inside
+  a multi-phase command's orchestrator slipped through unchecked).
+- `src/core/rules/queries.js::classifyPath` — returns
+  `{ type: 'invalid_lib_prefix', path: null, correctedName }` for
+  `lib/commands/` / `lib/queries/` instead of stripping. Existing
+  rules already gate on `path` truthiness, so `file_exists` /
+  `suggest_nearest` / `create_file` correctly skip these.
+- `src/core/rules/MissingPartial.js` — added rule
+  `MissingPartial.invalid_lib_prefix` at priority 5 (beats every
+  other branch). Emits a `text_edit` fix using the LSP positions
+  to swap the quoted reference for its `lib/`-stripped form, with
+  a guidance fallback when position fields are missing.
+- `src/core/fix-generator.js::fixMissingPartial` — handles the
+  invalid-prefix case before any other branch; emits a `text_edit`
+  with original quote-style preserved (`'` or `"`, peeked from the
+  source buffer at the diagnostic column). No longer proposes
+  creating a phantom file at `app/lib/lib/...`.
+- `src/core/error-enricher.js::detectObjectType` /
+  `buildCreatePath` — recognize `invalid_lib_prefix` as its own
+  type and route the hint renderer to the new variant template
+  with the corrected disk path.
+
+#### New hint variant
+
+`src/data/hints/MissingPartial-invalid_lib_prefix.md` — explains the
+upstream resolver semantics and prescribes "drop the prefix"
+instead of the generic "create the file" template. Renders with
+both the wrong call form (so the agent recognizes their input) and
+the corrected one, and the disk path the corrected call would
+resolve to.
+
+#### Data sweep — ~25 documentation files
+
+Every `function`-tag use of `'lib/commands/X'` and `'lib/queries/X'`
+in `src/data/` rewritten to `'commands/X'` / `'queries/X'`. Every
+`graphql`-tag use of `'lib/queries/X'` rewritten to `'X'` (graphql
+search path is `app/graphql/`, not `app/lib/queries/`). Touched
+files include `knowledge.json`, `domain-gotchas.yml`,
+`checks/MissingPartial.yml`, all `references/{partials, pages,
+commands, authentication, graphql, liquid, modules, forms}/*.md`,
+`domains/{commands, queries}.md`. Three teaching-context references
+that explicitly cite `lib/commands/X` as the wrong form
+(`Do NOT prepend lib/...`) were preserved deliberately. All YAML /
+JSON files re-validated after the sweep.
+
+#### Tests
+
+- `tests/integration/analyze-project-lib-prefix.integration.test.js`
+  — fully rewritten. The previous version pinned the inverse
+  contract (asserting `lib/commands/X` was NOT flagged when the
+  bare-form file existed); the rewrite pins the correct one
+  (`lib/commands/X` MUST be flagged with the doubled `app/lib/lib/`
+  resolution string in the error message; the bare `commands/X`
+  form is not flagged).
+- `tests/unit/rules/queries.test.js` — `classifyPath` now pinned
+  on the new `invalid_lib_prefix` shape with `correctedName`.
+- `tests/unit/rules/MissingPartial.test.js` — 7 new tests for the
+  `invalid_lib_prefix` rule (text_edit happy path, guidance
+  fallback when positions are missing, `lib/queries/` symmetry,
+  doesn't fire for bare `commands/X`, doesn't fire for module
+  paths, beats `create_file` even when the corrected file doesn't
+  exist on disk).
+- `tests/unit/diagnostic-pipeline.test.js` — 4 new tests for
+  `verifyMissingPartialsOnDisk` (suppresses bare-form cache lag,
+  does NOT suppress `lib/`-prefixed errors even when the bare-form
+  file exists on disk, symmetric for queries, still suppresses
+  legitimate non-`lib/` cache-lag misses).
+- `tests/unit/error-enricher.test.js` — 2 existing tests rewritten
+  to use canonical syntax; 1 new regression test pinning that the
+  invalid-prefix variant fires "drop the prefix" copy and never
+  the create-file template, with the single-`lib/` corrected disk
+  path always in the hint.
+
+Targeted: 373/373 pass across 22 touched test files. Full suite:
+2238/2243 pass — same 5 pre-existing failures from main (CRUD
+scenario timeout cascade and `load_development_guide` MANDATORY
+WORKFLOW), zero new regressions.
+
+The trigger for this work was a session report on 2026-04-29: an
+agent failed repeatedly to call commands from a page, concluded
+that path resolution was caller-relative ("two valid styles that
+look the same but behave differently"). The diagnosis was wrong
+(resolution is global, not caller-relative), but the symptom was
+real and ours — agents kept writing `lib/commands/X` because our
+docs said to, and our suppression hid the LSP's correct rejection.
+
+### Fixed — Commands domain references contradicted modules/core docs
+
+The `references/modules/core/*.md` docs were modernized for
+pos-cli 6.0.7+ (canonical syntax, app-level build/check phases,
+validators at `modules/core/lib/validations/<name>`), but the
+parallel `references/commands/*.md` docs still showed the **legacy**
+API: phantom `modules/core/commands/build` and `modules/core/commands/check`
+helpers, an array-of-validators shape (`validators: [{...}]`)
+passed to a single check helper, validators called at the wrong
+path (`modules/core/validations/<name>` instead of
+`modules/core/lib/validations/`), and validator argument order
+diverging from the actual `@param` order.
+
+Net effect: `domain_guide(commands, patterns)` returned a fake API
+that would 500 at runtime, while `module_info(core, patterns)`
+returned the correct one. Agents got opposite advice from the two
+tools depending on which they consulted first. A real session
+report on 2026-04-29 documented an agent following the wrong
+domain_guide and producing a non-working command file.
+
+#### Authoritative pattern (now consistent across both tools)
+
+Three files per command action: orchestrator + sibling
+`<action>/build.liquid` + sibling `<action>/check.liquid`. Only
+`modules/core/commands/execute` is module-level. Validators chain
+individually with `modules/core/lib/validations/<name>` and argument
+order `c, field_name, object, [options...]`.
+
+```liquid
+{% function object = 'commands/products/create/build', object: params %}
+{% function object = 'commands/products/create/check', object: object %}
+{% function c = 'modules/core/lib/validations/presence',
+   c: c, field_name: 'title', object: object %}
+{% function object = 'modules/core/commands/execute',
+   mutation_name: 'products/create',
+   selection: 'record_create',
+   object: object %}
+```
+
+#### Files rewritten — `src/data/references/commands/`
+
+- `README.md` — minimal orchestrator example now uses the canonical
+  three-file pattern. Removed every legacy build/check reference
+  that wasn't an explicit anti-pattern callout.
+- `configuration.md` — directory tree shows
+  `<action>.liquid` + `<action>/build.liquid` + `<action>/check.liquid`
+  per CRUD operation. Naming-conventions table includes the new
+  "Phase call" row. Command file template rewritten as the
+  three-file canonical layout.
+- `api.md` — fully rewritten. Removed the phantom
+  `modules/core/commands/build` and `modules/core/commands/check`
+  sections. Validator family now keyed at
+  `modules/core/lib/validations/<name>` with the modern names
+  (`number`, `matches`, `equal`, `included`, …). New "Legacy
+  Forms — No Longer Supported" appendix lists every renamed
+  validator and the `validators: [...]` shape so existing agents
+  reading legacy docs know what to migrate.
+- `patterns.md` — fully rewritten. CRUD examples (create / update /
+  delete / event-publishing / conditional validation / error
+  display / command composition) all use the canonical
+  three-file shape with chained `lib/validations/<name>` calls.
+- `gotchas.md` — TOP GOTCHA section explicitly framing the
+  phantom `modules/core/commands/build` / `…/check` as the most
+  common error. New entries for the wrong validator path
+  (`modules/core/validations/` vs `modules/core/lib/validations/`),
+  the legacy `validators: validators` array shape, and the new
+  argument order. Troubleshooting flowchart updated.
+- `advanced.md` — transactions / composition / custom validation /
+  uniqueness / file uploads / idempotent / debugging — all
+  rewritten to the canonical three-file shape. The transaction
+  example no longer reaches for a phantom
+  `modules/core/commands/build` for line items.
+
+#### Secondary doc sweep
+
+- `references/partials/patterns.md` — Command Partial Pattern
+  example rewritten to use `commands/products/create/build` and
+  `commands/products/create/check` (was using the phantom helpers).
+- `resources/ok-platformos-development-guide.md` and
+  `resources/short-platformos-development-guide.md` — Check Stage
+  examples updated:
+  `modules/core/validations/presence` →
+  `modules/core/lib/validations/presence`, with the canonical
+  argument order (`c, field_name, object`). The "DEPRECATED — DO
+  NOT USE" anti-pattern callout was already correct and was left
+  intact.
+- `knowledge.json` and `modules-missing-docs.json` — entry
+  `modules/core/validations/presence` (used by the
+  MetadataParamsCheck false-positive suppression list) corrected
+  to `modules/core/lib/validations/presence`. JSON files
+  re-validated.
+
+#### What was deliberately NOT changed
+
+Every reference to `modules/core/commands/build` /
+`modules/core/commands/check` / `modules/core/validations/` that
+remains in the docs is now an **anti-pattern teaching reference**:
+either inside a "DO NOT", "✗ WRONG", "Template not found",
+"Legacy shape", or `TOP GOTCHA` block. Removing those would lose
+the authoritative "this path doesn't exist; here's why" copy
+agents need when they hit the error in the wild.
+
+The authoritative `references/modules/core/*.md` docs were
+already correct and remain unchanged. The `commands` domain now
+mirrors them.
+
 ## 0.7.1 — 2026-04-28
 
 Fix for the `GraphQLVariablesCheck.required` regression spiral

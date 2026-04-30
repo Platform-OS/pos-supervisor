@@ -248,6 +248,79 @@ describe('diagnostic-pipeline: pending suppression via runDiagnosticPipeline', (
   });
 });
 
+// ── verifyMissingPartialsOnDisk: lib/-prefix correctness ────────────────────
+//
+// Regression: the resolver used to strip a leading `lib/` before the disk
+// check, which routed `lib/commands/X` to `app/lib/commands/X.liquid` and
+// silently suppressed the LSP's correct MissingPartial when that bare-form
+// file existed. Net effect: the agent saw "no problem" while platformOS
+// would 500 at runtime because `lib/commands/X` resolves to
+// `app/lib/lib/commands/X.liquid` (the partial search paths are
+// `app/views/partials/` and `app/lib/`, not project root). The resolver
+// now mirrors upstream `DocumentsLocator` exactly — no prefix stripping —
+// so the LSP error survives all the way to the agent.
+
+describe('diagnostic-pipeline: verifyMissingPartialsOnDisk does not strip `lib/` prefix', () => {
+  let tmpDir;
+
+  beforeAll(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'pipeline-libpref-'));
+    mkdirSync(join(tmpDir, 'app/lib/commands/contacts'), { recursive: true });
+    writeFileSync(
+      join(tmpDir, 'app/lib/commands/contacts/create.liquid'),
+      '{% doc %}{% enddoc %}',
+      'utf8',
+    );
+    mkdirSync(join(tmpDir, 'app/views/partials/cards'), { recursive: true });
+    writeFileSync(
+      join(tmpDir, 'app/views/partials/cards/product.liquid'),
+      '<div></div>',
+      'utf8',
+    );
+  });
+
+  afterAll(() => { if (tmpDir) rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('suppresses MissingPartial for the bare `commands/X` form when X.liquid is on disk (LSP cache lag)', () => {
+    const result = makeResult([
+      { check: 'MissingPartial', severity: 'error', message: "'commands/contacts/create' does not exist" },
+    ]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/contacts/new.html.liquid', content: '', projectDir: tmpDir });
+    expect(result.errors).toHaveLength(0);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPartialSuppressed')).toBe(true);
+  });
+
+  it('does NOT suppress MissingPartial for the `lib/commands/X` form — the `lib/` prefix expands to `app/lib/lib/...`', () => {
+    const result = makeResult([
+      { check: 'MissingPartial', severity: 'error', message: "'lib/commands/contacts/create' does not exist" },
+    ]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/contacts/new.html.liquid', content: '', projectDir: tmpDir });
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toContain('lib/commands/contacts/create');
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPartialSuppressed')).toBe(false);
+  });
+
+  it('does NOT suppress MissingPartial for the `lib/queries/X` form even when the bare-form file exists on disk', () => {
+    mkdirSync(join(tmpDir, 'app/lib/queries/products'), { recursive: true });
+    writeFileSync(join(tmpDir, 'app/lib/queries/products/find.liquid'), '{% doc %}{% enddoc %}', 'utf8');
+    const result = makeResult([
+      { check: 'MissingPartial', severity: 'error', message: "'lib/queries/products/find' does not exist" },
+    ]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/products/show.html.liquid', content: '', projectDir: tmpDir });
+    expect(result.errors).toHaveLength(1);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPartialSuppressed')).toBe(false);
+  });
+
+  it('still suppresses real partial cache-lag misses (non-`lib/` paths)', () => {
+    const result = makeResult([
+      { check: 'MissingPartial', severity: 'error', message: "'cards/product' does not exist" },
+    ]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/index.html.liquid', content: '', projectDir: tmpDir });
+    expect(result.errors).toHaveLength(0);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPartialSuppressed')).toBe(true);
+  });
+});
+
 // ── verifyMissingAssets ──────────────────────────────────────────────────────
 
 describe('diagnostic-pipeline: verifyMissingAssets via runDiagnosticPipeline', () => {

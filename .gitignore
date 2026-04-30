@@ -3,6 +3,7 @@
 /modules
 /prompts
 /.claude
+.serena
 IDEAS.md
 node_modules/
 *.log
@@ -21,3 +22,6 @@ CLAUDE.md
 # Stray test/scratch files
 /t
 /2026-*.txt
+.serena/project.yml
+.gitignore~
+.serena/project.yml

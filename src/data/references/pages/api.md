@@ -54,8 +54,8 @@ Calls a partial and captures its return value.
 
 ```liquid
 {% function profile = 'modules/user/queries/user/current' %}
-{% function valid = 'lib/commands/products/validate', params: context.params %}
-{% function slug = 'lib/helpers/slugify', text: product.title %}
+{% function valid = 'commands/products/validate', params: context.params %}
+{% function slug = 'helpers/slugify', text: product.title %}
 ```
 
 ### include

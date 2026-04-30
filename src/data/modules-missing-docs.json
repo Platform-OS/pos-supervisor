@@ -6,7 +6,7 @@
     "modules/user/helpers/can_do",
     "modules/common-styling/forms/error_list",
     "modules/common-styling/forms/error_input_handler",
-    "modules/core/validations/presence",
+    "modules/core/lib/validations/presence",
     "modules/core/commands/execute"
   ]
 }

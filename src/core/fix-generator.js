@@ -378,19 +378,6 @@ function fixMissingPartial(diagnostic, projectDir, ast, content) {
   const partialPath = extractParams(diagnostic.check, diagnostic.message).partial ?? null;
   if (!partialPath) return null;
 
-  // Determine the correct directory based on the partial path
-  let targetPath;
-  let fileType = 'partial';
-  if (partialPath.startsWith('commands/') || partialPath.startsWith('lib/commands/')) {
-    targetPath = `app/lib/commands/${partialPath.replace(/^(lib\/)?commands\//, '')}.liquid`;
-    fileType = 'command';
-  } else if (partialPath.startsWith('queries/') || partialPath.startsWith('lib/queries/')) {
-    targetPath = `app/lib/queries/${partialPath.replace(/^(lib\/)?queries\//, '')}.liquid`;
-    fileType = 'query';
-  } else {
-    targetPath = `app/views/partials/${partialPath}.liquid`;
-  }
-
   // Module paths: never create_file — agent cannot create files inside installed modules
   if (partialPath.startsWith('modules/')) {
     if (diagnostic.suggestion) {
@@ -403,6 +390,36 @@ function fixMissingPartial(diagnostic, projectDir, ast, content) {
       type: 'guidance',
       description: `\`${partialPath}\` cannot be resolved. Call project_map to see installed modules and their available paths.`,
     };
+  }
+
+  // Invalid `lib/` prefix on a function call. `function` tag paths resolve
+  // from the partial search paths (`app/views/partials/`, `app/lib/`), not
+  // project root, so `lib/commands/X` expands to `app/lib/lib/commands/X`
+  // which never exists. Emit a text_edit that strips the prefix; do NOT
+  // propose creating a phantom file at `app/lib/lib/...`.
+  if (partialPath.startsWith('lib/commands/') || partialPath.startsWith('lib/queries/')) {
+    const corrected = partialPath.slice('lib/'.length);
+    const edit = buildLibPrefixTextEdit(diagnostic, partialPath, corrected, content);
+    if (edit) return edit;
+    return {
+      type: 'guidance',
+      description:
+        `Drop the \`lib/\` prefix from \`${partialPath}\`. Function tag paths resolve from ` +
+        `\`app/lib/\`, so use \`${corrected}\` instead.`,
+    };
+  }
+
+  // Determine the correct directory based on the partial path
+  let targetPath;
+  let fileType = 'partial';
+  if (partialPath.startsWith('commands/')) {
+    targetPath = `app/lib/${partialPath}.liquid`;
+    fileType = 'command';
+  } else if (partialPath.startsWith('queries/')) {
+    targetPath = `app/lib/${partialPath}.liquid`;
+    fileType = 'query';
+  } else {
+    targetPath = `app/views/partials/${partialPath}.liquid`;
   }
 
   // Check if file already exists — if so, don't suggest creating it again
@@ -424,6 +441,42 @@ function fixMissingPartial(diagnostic, projectDir, ast, content) {
     path: targetPath,
     scaffold,
     description: `Create missing file: \`${targetPath}\``,
+  };
+}
+
+/**
+ * Build a `text_edit` fix that strips the invalid `lib/` prefix from a
+ * `function` tag call. Returns null if the diagnostic lacks the position
+ * fields the edit needs (line/column/endColumn).
+ *
+ * Quote handling: when `content` is available, peek at the source byte
+ * under `diagnostic.column` and re-emit with the same quote style the user
+ * wrote (`'` or `"`). Otherwise fall back to single-quote, which is the
+ * convention everywhere in platformOS templates and our scaffolds.
+ */
+function buildLibPrefixTextEdit(diagnostic, partialPath, corrected, content) {
+  if (diagnostic.line == null || diagnostic.column == null || diagnostic.endColumn == null) {
+    return null;
+  }
+  let quote = "'";
+  if (typeof content === 'string') {
+    const lines = content.split('\n');
+    const sourceLine = lines[diagnostic.line];
+    if (typeof sourceLine === 'string' && diagnostic.column < sourceLine.length) {
+      const ch = sourceLine[diagnostic.column];
+      if (ch === "'" || ch === '"') quote = ch;
+    }
+  }
+  return {
+    type: 'text_edit',
+    range: {
+      start: { line: diagnostic.line, character: diagnostic.column },
+      end: { line: diagnostic.endLine ?? diagnostic.line, character: diagnostic.endColumn },
+    },
+    new_text: `${quote}${corrected}${quote}`,
+    description:
+      `Drop invalid \`lib/\` prefix — function tag paths resolve from \`app/lib/\`. ` +
+      `Replace \`${partialPath}\` with \`${corrected}\`.`,
   };
 }
 

@@ -164,7 +164,9 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
     const objType = detectObjectType(partialName);
     const createPath = buildCreatePath(objType, partialName);
     const tag = objType === 'partial' ? 'render' : 'function';
-    const hintVariant = objType === 'module' ? 'module' : null;
+    let hintVariant = null;
+    if (objType === 'module') hintVariant = 'module';
+    else if (objType === 'invalid_lib_prefix') hintVariant = 'invalid_lib_prefix';
 
     // For module paths: fetch LSP completions to show available paths.
     // For project paths: agent has project_map context — no completions needed.
@@ -197,6 +199,9 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
     }
     if (suggestion) result.suggestion = suggestion;
 
+    const correctedName = objType === 'invalid_lib_prefix'
+      ? partialName.slice('lib/'.length)
+      : null;
     result.hint = partialName
       ? getHint(diagnostic.check, hintVariant, {
           object: objType,
@@ -204,6 +209,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
           create_path: createPath,
           tag,
           has_suggestion: !!suggestion,
+          ...(correctedName ? { corrected_name: correctedName } : {}),
         })
       : getHint(diagnostic.check, hintVariant);
   }
@@ -482,14 +488,22 @@ function extractCompletionLabels(result) {
 function detectObjectType(name) {
   if (!name) return 'partial';
   if (name.startsWith('modules/')) return 'module';
-  if (/(?:^|\/)commands\//.test(name)) return 'command';
-  if (/(?:^|\/)queries\//.test(name)) return 'query';
+  // Literal `lib/commands/` or `lib/queries/` prefix is invalid: `function`
+  // tag paths resolve under the partial search paths, so `lib/commands/X`
+  // expands to `app/lib/lib/commands/X` which never exists. Tag separately
+  // so the hint renderer can surface "drop the prefix" instead of the
+  // generic "missing file" copy.
+  if (name.startsWith('lib/commands/') || name.startsWith('lib/queries/')) {
+    return 'invalid_lib_prefix';
+  }
+  if (name.startsWith('commands/')) return 'command';
+  if (name.startsWith('queries/')) return 'query';
   return 'partial';
 }
 
 /**
  * Build the expected disk path for a missing platformOS file.
- * @param {'partial'|'command'|'query'|'module'} type
+ * @param {'partial'|'command'|'query'|'module'|'invalid_lib_prefix'} type
  * @param {string|null} name
  * @returns {string}
  */
@@ -497,10 +511,14 @@ function buildCreatePath(type, name) {
   if (!name) return '(unknown path)';
   switch (type) {
     case 'command':
-    case 'query': {
-      // Name may come with or without lib/ prefix — normalize to avoid app/lib/lib/...
-      const stripped = name.replace(/^lib\//, '');
-      return `app/lib/${stripped}.liquid`;
+    case 'query':
+      return `app/lib/${name}.liquid`;
+    case 'invalid_lib_prefix': {
+      // The path is wrong, not the file. Show where the corrected call
+      // *would* resolve so the agent can sanity-check that the existing
+      // file is the intended target before applying the rule's text edit.
+      const corrected = name.slice('lib/'.length);
+      return `app/lib/${corrected}.liquid`;
     }
     case 'module': {
       const moduleName = name.split('/')[1] ?? name;

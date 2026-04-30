@@ -74,12 +74,12 @@ Since variables are local, use these patterns:
 {% return result %}
 
 {% comment %} In calling page {% endcomment %}
-{% function data = 'lib/helpers/calculate', input: value %}
+{% function data = 'helpers/calculate', input: value %}
 {{ data }}
 ```
 
 ### Passing parameters (caller → partial)
 ```liquid
 {% render 'products/card', product: product, show_price: true %}
-{% function result = 'lib/commands/create', title: "Test" %}
+{% function result = 'commands/create', title: "Test" %}
 ```

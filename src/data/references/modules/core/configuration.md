@@ -65,8 +65,9 @@ modules/core/
     views/                              # admin pages, layouts, partials
 ```
 
-There is NO `lib/commands/build.liquid` or `lib/commands/check.liquid` —
-those phases are app-level (or domain-specific within other commands).
+There is NO `commands/build.liquid` or `commands/check.liquid` exposed by
+core — those phases are inline files of YOUR command (siblings of your
+`execute.liquid` under `app/lib/commands/<feature>/`).
 
 ## Overriding Module Files
 

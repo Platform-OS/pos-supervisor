@@ -50,7 +50,7 @@ method: post
 {% liquid
   function profile = 'modules/user/queries/user/current'
   include 'modules/user/helpers/can_do_or_unauthorized', requester: profile, do: 'products.create'
-  function result = 'lib/commands/products/create', params: context.params
+  function result = 'commands/products/create', params: context.params
   if result.errors != blank
     render 'products/new', errors: result.errors, params: context.params
     break
@@ -70,7 +70,7 @@ method: put
 {% liquid
   function profile = 'modules/user/queries/user/current'
   include 'modules/user/helpers/can_do_or_unauthorized', requester: profile, do: 'products.edit'
-  function result = 'lib/commands/products/update', id: context.params.id, params: context.params
+  function result = 'commands/products/update', id: context.params.id, params: context.params
   if result.errors != blank
     render 'products/edit', errors: result.errors, params: context.params, id: context.params.id
     break

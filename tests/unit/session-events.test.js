@@ -43,6 +43,7 @@ describe('session-events: schema registry', () => {
       'tool_call',
       'validator_emit',
       'log',
+      'cac_decision',
     ]);
     for (const kind of KNOWN_KINDS) {
       expect(KIND_SCHEMAS[kind]).toBeDefined();
@@ -110,6 +111,107 @@ describe('session-events: makeEvent + validateEvent', () => {
     });
     expect(e.input.anything.nested).toBe(true);
     expect(e.output.warnings[0].check).toBe('X');
+  });
+
+  // Regression: prior to registering the schema, every cac_decision emit
+  // threw "unknown kind" inside makeEvent, the throw was swallowed by the
+  // caller's try/catch, and the predictor's audit trail was silently lost
+  // on every restart. Pin the happy path AND every rejection edge so a
+  // future refactor can't reopen the hole quietly.
+  it('builds a cac_decision event with envelope + payload', () => {
+    const e = makeEvent({
+      session_id: SID, ts: FIXED_TS, kind: 'cac_decision',
+      payload: {
+        file: 'app/views/pages/index.liquid',
+        rule_id: 'MissingPartial.create_file',
+        check: 'MissingPartial',
+        severity: 'error',
+        file_domain: 'pages',
+        p_adopted: 0.18,
+        p_lower: 0.05,
+        p_upper: 0.45,
+        n_samples: 7,
+        feature: 'rule_id',
+        decision: 'downgrade',
+        reason: 'below_threshold',
+        mode: 'shadow',
+      },
+    });
+    expect(e.kind).toBe('cac_decision');
+    expect(e.rule_id).toBe('MissingPartial.create_file');
+    expect(e.feature).toBe('rule_id');
+    expect(e.decision).toBe('downgrade');
+    expect(e.mode).toBe('shadow');
+  });
+
+  it('cac_decision accepts the no-signal `prior` shape with null probabilities', () => {
+    const e = makeEvent({
+      session_id: SID, ts: FIXED_TS, kind: 'cac_decision',
+      payload: {
+        file: 'app/views/pages/x.liquid',
+        rule_id: 'NewCheck.unmatched',
+        check: 'NewCheck',
+        severity: 'warning',
+        file_domain: null,
+        p_adopted: 0.5,
+        p_lower: null,
+        p_upper: null,
+        n_samples: 0,
+        feature: 'prior',
+        decision: 'allow',
+        reason: 'no_signal',
+        mode: 'shadow',
+      },
+    });
+    expect(e.feature).toBe('prior');
+    expect(e.p_lower).toBeNull();
+  });
+
+  it('cac_decision rejects a payload that smuggles the envelope `ts` key', () => {
+    // This is the exact collision that used to drop events at runtime — the
+    // ring entry carried `ts` (its own timestamp) and was passed verbatim
+    // as a payload, hitting `ENVELOPE_KEYS` in makeEvent.
+    expect(() => makeEvent({
+      session_id: SID, ts: FIXED_TS, kind: 'cac_decision',
+      payload: {
+        ts: FIXED_TS,
+        rule_id: 'X', severity: 'error',
+        p_adopted: 0.5, p_lower: null, p_upper: null,
+        n_samples: 0, feature: 'prior', decision: 'allow', reason: '',
+        mode: 'shadow',
+      },
+    })).toThrow(/reserved envelope key/i);
+  });
+
+  it('cac_decision rejects an unknown decision value', () => {
+    expect(() => makeEvent({
+      session_id: SID, ts: FIXED_TS, kind: 'cac_decision',
+      payload: {
+        rule_id: 'X', severity: 'error',
+        p_adopted: 0.5, p_lower: null, p_upper: null,
+        n_samples: 0, feature: 'prior', decision: 'mute_forever', reason: '',
+        mode: 'shadow',
+      },
+    })).toThrow();
+  });
+
+  it('cac_decision round-trips through readEvent / writeEvent', () => {
+    const written = makeEvent({
+      session_id: SID, ts: FIXED_TS, kind: 'cac_decision',
+      payload: {
+        file: 'a.liquid',
+        rule_id: 'PartialCallArguments.required_render',
+        check: 'PartialCallArguments',
+        severity: 'warning',
+        file_domain: 'partials',
+        p_adopted: 0.17, p_lower: 0.03, p_upper: 0.41,
+        n_samples: 8, feature: 'rule_id+domain',
+        decision: 'downgrade', reason: 'below_threshold',
+        mode: 'active',
+      },
+    });
+    const back = readEvent(JSON.stringify(written));
+    expect(back).toEqual(written);
   });
 });
 

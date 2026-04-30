@@ -510,25 +510,25 @@ function performIntegrityChecks(projectMap) {
   }
 
   // 3. Broken function calls (from pages, partials, commands, queries)
-  // In platformOS, both `{% function result = 'queries/X' %}` and
-  // `{% function result = 'lib/queries/X' %}` resolve to
-  // `app/lib/queries/X.liquid`. The `lib/` prefix is OPTIONAL, the `app/`
-  // prefix is implicit. Naively prepending `app/lib/` to a call that
-  // already carries `lib/` produces phantom `app/lib/lib/...` paths and
-  // false-positive missing_command/missing_query issues.
+  //
+  // platformOS resolves `function` paths relative to the partial search
+  // paths declared by `@platformos/platformos-common`:
+  //   FILE_TYPE_DIRS[Partial] = ['views/partials', 'lib']
+  // joined under `app/`. So `'commands/X'` resolves to `app/lib/commands/X.liquid`,
+  // and `'lib/commands/X'` resolves to `app/lib/lib/commands/X.liquid`
+  // (which never exists). A literal `lib/` prefix is *invalid*, not optional.
+  // Reporting the resolution verbatim — without stripping `lib/` — surfaces
+  // the bug to the agent through the error message itself.
   const checkFunctionCalls = (sourcePath, functionCalls) => {
     for (const fc of functionCalls ?? []) {
       if (isModuleRef(fc.path)) continue;
-      // Strip optional leading `lib/` so `'lib/commands/X'` and `'commands/X'`
-      // both resolve to `app/lib/commands/X.liquid` consistently.
-      const stripped = fc.path.replace(/^lib\//, '');
-      const fullPath = `app/lib/${stripped}.liquid`;
-      if (stripped.includes('commands/') && !allCommands.has(fullPath)) {
+      const fullPath = `app/lib/${fc.path}.liquid`;
+      if (fc.path.includes('commands/') && !allCommands.has(fullPath)) {
         issues.push({
           type: 'missing_command', severity: 'error', source: sourcePath, target: fullPath,
           message: `'${sourcePath}' calls command '${fc.path}' (resolves to ${fullPath}) which does not exist`,
         });
-      } else if (stripped.includes('queries/') && !allQueries.has(fullPath)) {
+      } else if (fc.path.includes('queries/') && !allQueries.has(fullPath)) {
         issues.push({
           type: 'missing_query', severity: 'error', source: sourcePath, target: fullPath,
           message: `'${sourcePath}' calls query '${fc.path}' (resolves to ${fullPath}) which does not exist`,
@@ -537,12 +537,25 @@ function performIntegrityChecks(projectMap) {
     }
   };
 
-  for (const [slug, page] of Object.entries(projectMap.pages ?? {})) {
+  for (const [, page] of Object.entries(projectMap.pages ?? {})) {
     checkFunctionCalls(page.path, page.function_calls);
   }
-  // Also check function calls from partials, commands, and queries
-  for (const [name, partial] of Object.entries(projectMap.partials ?? {})) {
+  for (const [, partial] of Object.entries(projectMap.partials ?? {})) {
     checkFunctionCalls(partial.path, partial.function_calls);
+  }
+  // Commands invoke their own build/check phases via {% function %}; queries
+  // and layouts also carry function_calls in the project map. Without these,
+  // a wrong call inside a command (the most common form: a multi-phase
+  // command calling its sibling phase with `lib/commands/...`) slips through
+  // unchecked.
+  for (const [path, cmd] of Object.entries(projectMap.commands ?? {})) {
+    checkFunctionCalls(path, cmd.function_calls);
+  }
+  for (const [path, query] of Object.entries(projectMap.queries ?? {})) {
+    checkFunctionCalls(path, query.function_calls);
+  }
+  for (const [, layout] of Object.entries(projectMap.layouts ?? {})) {
+    checkFunctionCalls(layout.path, layout.function_calls);
   }
 
   // 4. Orphan partials (never rendered by anything) — shared predicate so

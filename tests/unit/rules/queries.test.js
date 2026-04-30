@@ -172,12 +172,28 @@ describe('classifyPath', () => {
     expect(classifyPath('commands/blog_posts/create')).toEqual({ type: 'command', path: 'app/lib/commands/blog_posts/create.liquid' });
   });
 
-  test('classifies lib/commands prefix', () => {
-    expect(classifyPath('lib/commands/blog_posts/create')).toEqual({ type: 'command', path: 'app/lib/commands/blog_posts/create.liquid' });
+  test('flags `lib/commands/` as an invalid prefix and exposes the corrected name', () => {
+    // Function-tag paths resolve under the partial search paths
+    // (`app/views/partials/`, `app/lib/`), so a literal `lib/` prefix
+    // would expand to `app/lib/lib/...` which never exists. Treating the
+    // prefix as "optional" (the prior behaviour) hid the bug from agents.
+    expect(classifyPath('lib/commands/blog_posts/create')).toEqual({
+      type: 'invalid_lib_prefix',
+      path: null,
+      correctedName: 'commands/blog_posts/create',
+    });
   });
 
   test('classifies query', () => {
     expect(classifyPath('queries/blog_posts/find')).toEqual({ type: 'query', path: 'app/lib/queries/blog_posts/find.liquid' });
+  });
+
+  test('flags `lib/queries/` as an invalid prefix and exposes the corrected name', () => {
+    expect(classifyPath('lib/queries/blog_posts/find')).toEqual({
+      type: 'invalid_lib_prefix',
+      path: null,
+      correctedName: 'queries/blog_posts/find',
+    });
   });
 
   test('classifies module', () => {

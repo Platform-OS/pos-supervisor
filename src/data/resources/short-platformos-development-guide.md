@@ -408,8 +408,8 @@ Validates the built object:
 {% liquid
   assign c = '{ "errors": {}, "valid": true }' | parse_json
 
-  function c = 'modules/core/validations/presence', c: c, object: object, field_name: 'title'
-  function c = 'modules/core/validations/presence', c: c, object: object, field_name: 'body'
+  function c = 'modules/core/lib/validations/presence', c: c, field_name: 'title', object: object
+  function c = 'modules/core/lib/validations/presence', c: c, field_name: 'body',  object: object
 
   assign object = object | hash_merge: valid: c.valid, errors: c.errors
 

@@ -107,7 +107,7 @@ slug: api/products
 method: post
 ---
 {% liquid
-  function result = 'lib/commands/products/create',
+  function result = 'commands/products/create',
     title: context.params.product.title,
     price: context.params.product.price
 

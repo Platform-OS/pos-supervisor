@@ -16,7 +16,7 @@ but the architecture is wrong and becomes unmaintainable.
 slug: products/index
 layout: application
 ---
-{% graphql g = 'lib/queries/products/list' %}
+{% graphql g = 'products/list' %}
 <div class="container">
   <h1>Products</h1>
   {% for product in g.records.results %}
@@ -29,7 +29,7 @@ layout: application
 slug: products/index
 layout: application
 ---
-{% graphql g = 'lib/queries/products/list' %}
+{% graphql g = 'products/list' %}
 {% render 'products/index', products: g.records.results %}
 ```
 
@@ -61,7 +61,7 @@ metadata:
 
 ```liquid
 {# In page — after fetching data: #}
-{% graphql g = 'lib/queries/products/find', id: context.params.id %}
+{% graphql g = 'products/find', id: context.params.id %}
 {% assign product = g.record %}
 {% content_for 'title' %}{{ product.properties_object.name }}{% endcontent_for %}
 {% render 'products/show', product: product %}

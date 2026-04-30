@@ -215,6 +215,115 @@ describe('MissingPartial.create_file', () => {
   });
 });
 
+describe('MissingPartial.invalid_lib_prefix', () => {
+  // Regression: prior code stripped a leading `lib/` everywhere it saw one,
+  // collapsing `lib/commands/X` and `commands/X` into the same bucket. That
+  // hid the bug from agents (and from us) — `lib/commands/X` is *not* a
+  // valid platformOS function-tag path, since paths resolve under
+  // `app/views/partials/` and `app/lib/`. The literal prefix expands to
+  // `app/lib/lib/...` and never resolves.
+
+  test('fires for `lib/commands/X` with the corrected name in the hint', () => {
+    const diag = {
+      check: 'MissingPartial',
+      params: { partial: 'lib/commands/contact_submissions/create' },
+      line: 6,
+      column: 20,
+      endLine: 6,
+      endColumn: 61,
+    };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('MissingPartial.invalid_lib_prefix');
+    expect(result.hint_md).toContain('lib/commands/contact_submissions/create');
+    expect(result.hint_md).toContain('commands/contact_submissions/create');
+    expect(result.confidence).toBeGreaterThanOrEqual(0.9);
+  });
+
+  test('emits a text_edit fix that replaces the quoted reference with the corrected form', () => {
+    const diag = {
+      check: 'MissingPartial',
+      params: { partial: 'lib/commands/contact_submissions/create' },
+      line: 6,
+      column: 20,
+      endLine: 6,
+      endColumn: 61,
+    };
+    const result = runRules(diag, facts);
+    expect(result.fixes).toHaveLength(1);
+    const fix = result.fixes[0];
+    expect(fix.type).toBe('text_edit');
+    expect(fix.new_text).toBe(`'commands/contact_submissions/create'`);
+    expect(fix.range).toEqual({
+      start: { line: 6, character: 20 },
+      end:   { line: 6, character: 61 },
+    });
+  });
+
+  test('falls back to a guidance fix when the diagnostic lacks position fields', () => {
+    const diag = {
+      check: 'MissingPartial',
+      params: { partial: 'lib/queries/products/search' },
+    };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('MissingPartial.invalid_lib_prefix');
+    expect(result.fixes).toHaveLength(1);
+    expect(result.fixes[0].type).toBe('guidance');
+    expect(result.fixes[0].description).toContain('lib/queries/products/search');
+    expect(result.fixes[0].description).toContain('queries/products/search');
+  });
+
+  test('handles `lib/queries/X` symmetrically with `lib/commands/X`', () => {
+    const diag = {
+      check: 'MissingPartial',
+      params: { partial: 'lib/queries/products/search' },
+      line: 4,
+      column: 16,
+      endLine: 4,
+      endColumn: 47,
+    };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('MissingPartial.invalid_lib_prefix');
+    expect(result.fixes[0].type).toBe('text_edit');
+    expect(result.fixes[0].new_text).toBe(`'queries/products/search'`);
+  });
+
+  test('does NOT fire for the bare `commands/X` form (the canonical syntax)', () => {
+    const diag = {
+      check: 'MissingPartial',
+      params: { partial: 'commands/contact_submissions/create' },
+      line: 1, column: 0, endLine: 1, endColumn: 35,
+    };
+    const result = runRules(diag, facts);
+    expect(result?.rule_id).not.toBe('MissingPartial.invalid_lib_prefix');
+  });
+
+  test('does NOT fire for module paths that happen to contain `lib/`', () => {
+    // Module paths look like `modules/core/lib/commands/...` in some tree
+    // layouts on disk, but the *call* path is `modules/<name>/...` — never
+    // begins with `lib/`. Guard against false positives.
+    const diag = {
+      check: 'MissingPartial',
+      params: { partial: 'modules/core/commands/execute' },
+    };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('MissingPartial.module_path');
+  });
+
+  test('beats lower-priority rules: invalid_lib_prefix wins over create_file even when the corrected file would not exist', () => {
+    // The `lib/`-stripped path `commands/never/written` resolves to
+    // `app/lib/commands/never/written.liquid` — absent from the fact graph.
+    // create_file would happily propose creating it; the prefix rule must
+    // fire first so the agent is told to fix the path, not create a phantom.
+    const diag = {
+      check: 'MissingPartial',
+      params: { partial: 'lib/commands/never/written' },
+      line: 2, column: 10, endLine: 2, endColumn: 39,
+    };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('MissingPartial.invalid_lib_prefix');
+  });
+});
+
 describe('MissingPartial — edge cases', () => {
   test('returns null when partial param is missing', () => {
     const diag = { check: 'MissingPartial', params: {} };

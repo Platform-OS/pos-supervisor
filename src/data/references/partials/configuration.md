@@ -5,8 +5,8 @@
 View partials reside in `app/views/partials/`. Commands and queries reside in `app/lib/`. The path in render/function maps directly:
 
 - `{% render 'products/card' %}` → `app/views/partials/products/card.liquid`
-- `{% function r = 'lib/commands/products/create' %}` → `app/lib/commands/products/create.liquid`
-- `{% function r = 'lib/queries/products/search' %}` → `app/lib/queries/products/search.liquid`
+- `{% function r = 'commands/products/create' %}` → `app/lib/commands/products/create.liquid`
+- `{% function r = 'queries/products/search' %}` → `app/lib/queries/products/search.liquid`
 
 ## Naming Rules
 
@@ -68,7 +68,7 @@ Variables must be explicitly passed. The partial cannot access the caller's scop
 ### function (returns data via return tag)
 
 ```liquid
-{% function result = 'lib/commands/products/create', title: "New", price: 19.99 %}
+{% function result = 'commands/products/create', title: "New", price: 19.99 %}
 ```
 
 The partial must use `{% return value %}` to send data back.

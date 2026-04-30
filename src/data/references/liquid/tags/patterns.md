@@ -38,7 +38,7 @@ Use `function` for partials that compute and return data. Use `render` for parti
 
 ```liquid
 {% liquid
-  function order = 'lib/commands/orders/create', user_id: profile.id, items: cart_items
+  function order = 'commands/orders/create', user_id: profile.id, items: cart_items
   if order.errors
     render 'orders/errors', errors: order.errors
     break
@@ -63,7 +63,7 @@ Offload slow operations (emails, API calls, heavy processing) to background jobs
 ### Background partial form (preferred for complex jobs)
 
 ```liquid
-{% background job = 'lib/jobs/process_payment', order_id: order.id, amount: total, delay: 0, priority: 'high' %}
+{% background job = 'jobs/process_payment', order_id: order.id, amount: total, delay: 0, priority: 'high' %}
 ```
 
 ## Transaction Pattern

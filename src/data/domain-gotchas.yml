@@ -63,7 +63,8 @@ partials:
       trigger: uses_tag:graphql
       message: >-
         Do NOT run {% graphql %} in rendering partials (UI components). Fetch data in the page/command and pass results
-        via render parameters. Note: query wrappers in lib/queries/ and commands in lib/commands/ CAN use {% graphql %}.
+        via render parameters. Note: query wrappers under app/lib/queries/ and commands under app/lib/commands/ CAN use
+        {% graphql %} — invoke them via {% function r = 'queries/...' %} / {% function r = 'commands/...' %} (no `lib/` prefix).
       severity: architecture
     - id: partials_missing_args
       trigger: has_check:MissingRenderPartialArguments
@@ -140,8 +141,8 @@ commands:
     - id: commands_function_tag
       trigger: always
       message: >-
-        Pages invoke commands via {% function result = 'lib/commands/name/execute', arg: value %}. Do not call {%
-        graphql %} mutations directly from pages — use commands.
+        Pages invoke commands via {% function result = 'commands/name/execute', arg: value %} (no `lib/` prefix —
+        `function` paths resolve under app/lib/). Do not call {% graphql %} mutations directly from pages — use commands.
       severity: required
     - id: commands_declare_params
       trigger: has_check:UndefinedObject
@@ -167,8 +168,8 @@ queries:
     - id: queries_function_invoke
       trigger: always
       message: >-
-        Pages invoke queries via {% function result = 'lib/queries/name', arg: value %}. Queries are read-only; all
-        writes go through commands.
+        Pages invoke queries via {% function result = 'queries/name', arg: value %} (no `lib/` prefix — `function`
+        paths resolve under app/lib/). Queries are read-only; all writes go through commands.
       severity: architecture
     - id: queries_declare_params
       trigger: has_check:UndefinedObject

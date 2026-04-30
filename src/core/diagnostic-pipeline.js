@@ -944,14 +944,24 @@ function verifyMissingPartialsOnDisk(result, projectDir) {
   });
 }
 
+/**
+ * Mirror upstream `DocumentsLocator` partial-resolution semantics: the
+ * `function` / `render` tags resolve relative to the partial search paths
+ * declared by `@platformos/platformos-common` —
+ *   FILE_TYPE_DIRS[Partial] = ['views/partials', 'lib']
+ * — joined under `app/`. So `commands/X` is found at `app/lib/commands/X.liquid`
+ * and `lib/commands/X` would only resolve at `app/lib/lib/commands/X.liquid`
+ * (which never exists in any sane project). DO NOT strip a leading `lib/`
+ * here: doing so silently suppresses the LSP's correct MissingPartial error
+ * for the invalid prefix and steers agents toward the bug. The `.html.liquid`
+ * variant is included for legacy projects whose partials use the layout
+ * extension; upstream itself only matches `.liquid`, so this is a superset.
+ */
 function resolveMissingPartialPaths(name, projectDir) {
-  if (/(?:^|\/)commands\//.test(name) || /(?:^|\/)queries\//.test(name)) {
-    const stripped = name.replace(/^lib\//, '');
-    return [join(projectDir, 'app', 'lib', `${stripped}.liquid`)];
-  }
   return [
     join(projectDir, 'app', 'views', 'partials', `${name}.liquid`),
     join(projectDir, 'app', 'views', 'partials', `${name}.html.liquid`),
+    join(projectDir, 'app', 'lib', `${name}.liquid`),
   ];
 }
 
