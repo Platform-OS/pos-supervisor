@@ -160,6 +160,7 @@ export function buildDashboardHtml() {
   .badge.error { color: var(--red); }
   .badge.info { color: var(--blue); }
   .badge.warn { color: var(--yellow); }
+  .badge.muted { color: var(--muted); }
   
   .duration { color: var(--muted); font-size: 12px; white-space: nowrap; }
   .ts { color: var(--muted); font-size: 11px; white-space: nowrap; }
@@ -1324,6 +1325,20 @@ export function buildDashboardHtml() {
     <button id="an-refresh-btn">Refresh</button>
     <button id="an-rebuild-btn" class="danger" title="Rebuild analytics DB from session event logs">Rebuild DB</button>
     <span class="ts" id="an-last-fetched"></span>
+    <span class="an-baseline-controls" style="margin-left:14px;display:inline-flex;align-items:center;gap:8px;">
+      <label for="an-since-select" style="color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:0.4px;">Stats since</label>
+      <select id="an-since-select" title="Filter all dashboard widgets and the exported report by reporting baseline. 'Since baseline (default)' uses the operator-set checkpoint (or full history if none); 'All time' bypasses the checkpoint." style="background:var(--card);color:var(--text);border:1px solid var(--border);padding:4px 8px;font-size:11px;">
+        <option value="default">Since baseline (default)</option>
+        <option value="all">All time</option>
+        <option value="24h">Last 24 hours</option>
+        <option value="7d">Last 7 days</option>
+        <option value="custom">Custom...</option>
+      </select>
+      <input type="text" id="an-since-custom" placeholder="ISO timestamp" style="display:none;background:var(--card);color:var(--text);border:1px solid var(--border);padding:4px 8px;font-size:11px;width:200px;font-family:monospace;" />
+      <button id="an-baseline-set-btn" title="Set the analytics baseline to the current moment. All widgets and reports default to post-baseline view until cleared.">Set baseline now</button>
+      <button id="an-baseline-clear-btn" class="danger" title="Clear the analytics baseline — widgets fall back to full history.">Clear baseline</button>
+      <span id="an-baseline-state" style="color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:0.4px;"></span>
+    </span>
   </div>
 
   <div class="an-stats-row" id="an-stats">
@@ -2199,15 +2214,20 @@ async function exportSession() {
   const now = new Date().toISOString();
   const a = analysisData;
 
-  var [analyticsStats, scorecards, ruleScoresData, funnelData, gapsData, engineMap, recommendations, sessionsData] = await Promise.all([
+  // Honour the same Stats-since dropdown the live analytics tab uses, so the
+  // exported Markdown matches what the operator just saw on screen.
+  var sinceQ = resolveSinceQuerySegment();
+  var sinceLead = sinceLeadingQuery();
+  var [analyticsStats, scorecards, ruleScoresData, funnelData, gapsData, engineMap, recommendations, sessionsData, baselineMeta] = await Promise.all([
     fetch(BASE + '/api/analytics/stats').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
-    fetch(BASE + '/api/analytics/scorecards?min_cohort=1').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
-    fetch(BASE + '/api/analytics/rule-performance').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
-    fetch(BASE + '/api/analytics/funnel').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
-    fetch(BASE + '/api/analytics/knowledge-gaps').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/scorecards?min_cohort=1' + sinceQ).then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/rule-performance' + sinceLead).then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/funnel' + sinceLead).then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/knowledge-gaps' + sinceLead).then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
     fetch(BASE + '/api/engine-map').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
-    fetch(BASE + '/api/analytics/recommendations').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
-    fetch(BASE + '/api/analytics/sessions').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/recommendations' + sinceLead).then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/sessions' + sinceLead).then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
+    fetch(BASE + '/api/analytics/baseline').then(function(r) { return r.ok ? r.json() : null; }).catch(function() { return null; }),
   ]);
 
   // Fetch drilldowns for problem checks (effectiveness < 50%)
@@ -2218,7 +2238,7 @@ async function exportSession() {
     return eff < 0.5 || c.emitted >= 5;
   });
   var drilldownPromises = problemChecks.map(function(c) {
-    return fetch(BASE + '/api/analytics/rule-drilldown?rule_id=' + encodeURIComponent(c.check) + '&limit=10')
+    return fetch(BASE + '/api/analytics/rule-drilldown?rule_id=' + encodeURIComponent(c.check) + '&limit=10' + sinceQ)
       .then(function(r) { return r.ok ? r.json() : null; })
       .then(function(data) { if (data) drilldowns[c.check] = data; })
       .catch(function() {});
@@ -2231,7 +2251,15 @@ async function exportSession() {
   L.push('');
   L.push('> Paste this to Claude and ask: "Analyze this report. What should I fix first? Which rules need rewriting? How healthy is the knowledge system?"');
   L.push('');
-  L.push('Generated: ' + now + ' | Project: ' + (d.projectDir || 'unknown') + ' | Version: ' + (d.version || 'unknown') + ' | Uptime: ' + fmtDuration(d.uptimeMs || 0));
+  // The "Stats since" disclosure makes the report self-documenting: an
+  // operator re-reading an old export shouldn't have to remember whether
+  // the dashboard was set to a baseline at the time. Echo whatever the
+  // server resolved (operator override → meta baseline → null).
+  var resolvedSince = scorecards?.since ?? null;
+  var statsSinceLabel = resolvedSince
+    ? resolvedSince
+    : (baselineMeta?.baseline_ts || 'full history');
+  L.push('Generated: ' + now + ' | Project: ' + (d.projectDir || 'unknown') + ' | Version: ' + (d.version || 'unknown') + ' | Uptime: ' + fmtDuration(d.uptimeMs || 0) + ' | Stats since: ' + statsSinceLabel);
   L.push('');
 
   // ── Executive Summary ──
@@ -2256,7 +2284,11 @@ async function exportSession() {
     var regRate = funnelData.regressed ? ((funnelData.regressed / funnelData.emitted) * 100).toFixed(0) : '0';
     findings.push('Overall funnel: ' + funnelData.emitted + ' diagnostics emitted -> ' + (funnelData.resolved || 0) + ' resolved (' + resRate + '%), ' + (funnelData.regressed || 0) + ' regressed (' + regRate + '%). Fix proposal rate: ' + (funnelData.fix_proposed || 0) + '/' + funnelData.emitted + '.');
   }
-  var harmful = cards.filter(function(c) { return rateVal(c.resolution_rate) - rateVal(c.mislead_rate) < 0; });
+  // Honour the sample-size gate: only call something HARMFUL when the
+  // server-side label says so. The server attaches a .label field per scorecard
+  // (see analytics-labels.js) — a row with a single regression no longer
+  // headlines as harmful, it lands in INSUFFICIENT_DATA.
+  var harmful = cards.filter(function(c) { return c.label === 'HARMFUL'; });
   if (harmful.length > 0) {
     findings.push('HARMFUL checks (regression > resolution): ' + harmful.map(function(c) { return c.check + ' (' + c.emitted + ' emitted, ' + ratePct(c.mislead_rate) + '% regression)'; }).join('; ') + '.');
   }
@@ -2400,8 +2432,13 @@ async function exportSession() {
     L.push('|---|---:|---:|---|---|---|---|');
     for (var cdi = 0; cdi < cards.length; cdi++) {
       var c = cards[cdi];
-      var eff = rateVal(c.resolution_rate) - rateVal(c.mislead_rate);
-      var effLabel = eff > 0.5 ? 'GOOD' : eff > 0.15 ? 'OK' : eff >= 0 ? 'LOW' : 'HARMFUL';
+      // Server-attached label honours the sample-size gate (INSUFFICIENT_DATA
+      // for N<5). Falling back to the inline calc keeps old DBs / pre-Phase-2
+      // responses readable, but the server is the source of truth.
+      var effLabel = c.label || (function () {
+        var eff = rateVal(c.resolution_rate) - rateVal(c.mislead_rate);
+        return eff > 0.5 ? 'GOOD' : eff > 0.15 ? 'OK' : eff >= 0 ? 'LOW' : 'HARMFUL';
+      })();
       L.push('| ' + c.check + ' | ' + c.emitted + ' | ' + (c.sample_size || 0) + ' | ' + rateCi(c.resolution_rate) + ' | ' + rateCi(c.mislead_rate) + ' | ' + rateCi(c.adoption_rate) + ' | ' + effLabel + ' |');
     }
     L.push('');
@@ -2457,7 +2494,12 @@ async function exportSession() {
     var sortedRules = [...rules].sort(function(x, y) { return (x.effectiveness || 0) - (y.effectiveness || 0); });
     for (var ri = 0; ri < sortedRules.length; ri++) {
       var r = sortedRules[ri];
-      var rStatus = r.unmatched ? 'UNMATCHED' : (r.effectiveness || 0) < 0.15 ? 'AT RISK' : 'OK';
+      // Server-attached label includes INSUFFICIENT_DATA when total_outcomes < 5.
+      // Inline fallback preserves legacy behaviour for un-labelled responses.
+      var rStatus = r.label || (
+        r.unmatched ? 'UNMATCHED' :
+        (r.effectiveness || 0) < 0.15 ? 'AT RISK' : 'OK'
+      );
       L.push('| ' + r.rule_id + ' | ' + r.emitted + ' | ' + ((r.resolution_rate || 0) * 100).toFixed(0) + '% | ' + ((r.regression_rate || 0) * 100).toFixed(0) + '% | ' + ((r.effectiveness || 0) * 100).toFixed(0) + '% | ' + rStatus + ' |');
     }
     L.push('');
@@ -4131,19 +4173,61 @@ let currentJourneyData = null;
 let selectedJourneyIdx = -1;
 let currentDrilldownData = null;
 
+/**
+ * Resolve the analytics-tab "Stats since" dropdown to the value the
+ * since= query param accepts:
+ *   - 'default' → empty (server reads meta baseline; widgets see the
+ *                 operator-set view by default — same UX as the report).
+ *   - 'all'     → 'all' (engine bypass / "All time").
+ *   - '24h'     → ISO of (now - 24h).
+ *   - '7d'      → ISO of (now - 7d).
+ *   - 'custom'  → ISO entered into the custom input.
+ *
+ * Returned value is appended as &since=<x> (or omitted when default).
+ *
+ * NOTE: this lives inside the giant template literal that builds the
+ * dashboard HTML — so JSDoc cannot use backticks for code emphasis. See
+ * the corresponding feedback memory for context.
+ */
+function resolveSinceQuerySegment() {
+  const sel = document.getElementById('an-since-select');
+  const choice = sel?.value || 'default';
+  if (choice === 'default') return '';
+  if (choice === 'all')     return '&since=all';
+  if (choice === '24h')     return '&since=' + encodeURIComponent(new Date(Date.now() - 86_400_000).toISOString());
+  if (choice === '7d')      return '&since=' + encodeURIComponent(new Date(Date.now() - 7 * 86_400_000).toISOString());
+  if (choice === 'custom') {
+    const v = (document.getElementById('an-since-custom')?.value || '').trim();
+    if (!v) return '';
+    return '&since=' + encodeURIComponent(v);
+  }
+  return '';
+}
+
+/** As above, but for an endpoint that has no other query string yet. */
+function sinceLeadingQuery() {
+  const seg = resolveSinceQuerySegment();
+  return seg ? '?' + seg.slice(1) : '';
+}
+
 async function fetchAnalytics() {
   const tsEl = document.getElementById('an-last-fetched');
   tsEl.textContent = 'refreshing...';
 
+  // Composed once per refresh — every endpoint sees the same filter state.
+  const sinceQ = resolveSinceQuerySegment();
+  const sinceLead = sinceLeadingQuery();
+
   try {
-    const [statsR, scorecardsR, sessionsR, recsR, bigramsR, ruleScoresR, suggestedR] = await Promise.all([
+    const [statsR, scorecardsR, sessionsR, recsR, bigramsR, ruleScoresR, suggestedR, baselineR] = await Promise.all([
       fetch(BASE + '/api/analytics/stats').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(BASE + '/api/analytics/scorecards?min_cohort=1').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(BASE + '/api/analytics/sessions').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(BASE + '/api/analytics/recommendations').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(BASE + '/api/analytics/bigrams').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(BASE + '/api/analytics/rule-performance?min_emitted=1').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(BASE + '/api/analytics/suggested-rules').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/scorecards?min_cohort=1' + sinceQ).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/sessions' + sinceLead).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/recommendations' + sinceLead).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/bigrams' + sinceLead).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/rule-performance?min_emitted=1' + sinceQ).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/suggested-rules' + sinceLead).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/baseline').then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
 
     analyticsData = {
@@ -4154,6 +4238,10 @@ async function fetchAnalytics() {
       bigrams: bigramsR?.bigrams || [],
       ruleScores: ruleScoresR?.scores || [],
       suggestedRules: suggestedR?.suggestions || [],
+      // Echo from the server's resolved filter — used by renderers and the
+      // "Stats since" status pill.
+      since: scorecardsR?.since ?? null,
+      baseline: baselineR ?? { baseline_ts: null, set_at: null },
     };
 
     renderAnalyticsStats();
@@ -4163,6 +4251,7 @@ async function fetchAnalytics() {
     renderAnalyticsBigrams();
     renderRuleScores();
     renderSuggestedRules();
+    renderBaselineStatePill();
     fetchPromotedRules();
     fetchCalibrationChart();
     fetchFunnelChart();
@@ -4172,6 +4261,53 @@ async function fetchAnalytics() {
   } catch (e) {
     tsEl.textContent = 'error: ' + e.message;
     document.getElementById('an-stats').innerHTML = '<span class="an-empty">Analytics store not available (requires Bun runtime).</span>';
+  }
+}
+
+/**
+ * Update the small inline pill next to the baseline buttons so the operator
+ * sees, at a glance, what filter state the analytics tab is rendering.
+ */
+function renderBaselineStatePill() {
+  const el = document.getElementById('an-baseline-state');
+  if (!el) return;
+  const baseline = analyticsData?.baseline?.baseline_ts;
+  const since = analyticsData?.since;
+  if (since && since !== baseline) {
+    // Operator picked a non-default since (24h / 7d / custom / all).
+    el.textContent = 'Filter: ' + since.slice(0, 16);
+  } else if (baseline) {
+    el.textContent = 'Baseline: ' + baseline.slice(0, 16);
+  } else {
+    el.textContent = 'No baseline set';
+  }
+}
+
+/**
+ * POST /api/analytics/baseline with a timestamp or null. After mutation,
+ * refresh the entire analytics view so every widget reflects the change.
+ */
+async function setAnalyticsBaseline(ts) {
+  try {
+    const res = await fetch(BASE + '/api/analytics/baseline', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseline_ts: ts }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      alert('Baseline update failed: ' + (body.error || res.status));
+      return;
+    }
+    // Snap back to "Since baseline (default)" so the operator sees the
+    // newly-set baseline take effect immediately, not the prior since
+    // selection (which would shadow it).
+    const sel = document.getElementById('an-since-select');
+    if (sel) sel.value = 'default';
+    document.getElementById('an-since-custom').style.display = 'none';
+    await fetchAnalytics();
+  } catch (e) {
+    alert('Baseline update failed: ' + e.message);
   }
 }
 
@@ -4369,11 +4505,18 @@ function renderRuleScores() {
         + '<td style="color:var(--red)">' + s.regressed + '</td>'
         + '<td style="color:var(--blue)">' + s.adopted + '</td>'
         + '<td><span class="an-ci-val ' + effCls + '">' + effPct + '%</span></td>'
-        + '<td>' + (s.unmatched
-          ? '<span class="badge warn">UNMATCHED</span>'
-          : s.effectiveness < 0.15
-            ? '<span class="badge error">AT RISK</span>'
-            : '<span class="badge ok">ACTIVE</span>') + '</td>'
+        + '<td>' + (function () {
+            // Server-attached label is the source of truth (analytics-labels.js).
+            // Inline fallback preserves the badge UX for un-labelled rows.
+            const lbl = s.label || (
+              s.unmatched ? 'UNMATCHED' :
+              (s.effectiveness ?? 0) < 0.15 ? 'AT RISK' : 'OK'
+            );
+            if (lbl === 'UNMATCHED')         return '<span class="badge warn">UNMATCHED</span>';
+            if (lbl === 'INSUFFICIENT_DATA') return '<span class="badge muted" title="Below the sample-size gate (5 outcomes); too little data to assess.">INSUFFICIENT DATA</span>';
+            if (lbl === 'AT RISK')           return '<span class="badge error">AT RISK</span>';
+            return '<span class="badge ok">ACTIVE</span>';
+          })() + '</td>'
         + '</tr>';
     }).join('')
     + '</tbody></table>';
@@ -4400,7 +4543,7 @@ async function showRuleDrilldown(ruleId, check) {
   try {
     const baseCheck = check.includes('.') ? check.split('.')[0] : check;
     const [drillRes, hintRes] = await Promise.all([
-      fetch(BASE + '/api/analytics/rule-drilldown?rule_id=' + encodeURIComponent(ruleId)),
+      fetch(BASE + '/api/analytics/rule-drilldown?rule_id=' + encodeURIComponent(ruleId) + resolveSinceQuerySegment()),
       fetch(BASE + '/api/hints?name=' + encodeURIComponent(baseCheck)),
     ]);
     const drill = drillRes.ok ? await drillRes.json() : null;
@@ -4998,7 +5141,7 @@ async function loadDiagnosticJourney(templateFp, check) {
     const qs = templateFp
       ? 'template_fp=' + encodeURIComponent(templateFp)
       : 'check=' + encodeURIComponent(check);
-    const r = await fetch(BASE + '/api/analytics/journey?' + qs);
+    const r = await fetch(BASE + '/api/analytics/journey?' + qs + resolveSinceQuerySegment());
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const journey = await r.json();
     renderJourneyTimeline(el, journey);
@@ -5194,7 +5337,7 @@ async function fetchCalibrationChart() {
   if (!el) return;
 
   try {
-    const r = await fetch(BASE + '/api/analytics/calibration?buckets=10');
+    const r = await fetch(BASE + '/api/analytics/calibration?buckets=10' + resolveSinceQuerySegment());
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const cal = d.calibration || d;
@@ -5263,7 +5406,7 @@ async function fetchFunnelChart() {
   if (!el) return;
 
   try {
-    const r = await fetch(BASE + '/api/analytics/funnel');
+    const r = await fetch(BASE + '/api/analytics/funnel' + sinceLeadingQuery());
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     renderFunnelChart(el, d);
@@ -5315,7 +5458,7 @@ async function fetchHeatmap() {
   if (!el) return;
 
   try {
-    const r = await fetch(BASE + '/api/analytics/rule-heatmap');
+    const r = await fetch(BASE + '/api/analytics/rule-heatmap' + sinceLeadingQuery());
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     renderHeatmap(el, d.cells || []);
@@ -5374,8 +5517,8 @@ async function fetchRadarChart() {
 
   try {
     const [gapsR, funnelR] = await Promise.all([
-      fetch(BASE + '/api/analytics/knowledge-gaps').then(r => r.ok ? r.json() : null).catch(() => null),
-      fetch(BASE + '/api/analytics/funnel').then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/knowledge-gaps' + sinceLeadingQuery()).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(BASE + '/api/analytics/funnel' + sinceLeadingQuery()).then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
 
     const gaps = gapsR?.gaps || [];
@@ -6168,6 +6311,30 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('an-refresh-btn').addEventListener('click', fetchAnalytics);
   document.getElementById('an-rebuild-btn').addEventListener('click', rebuildAnalytics);
 
+  // Reporting baseline + since-filter controls.
+  const sinceSelect = document.getElementById('an-since-select');
+  const sinceCustom = document.getElementById('an-since-custom');
+  if (sinceSelect) {
+    sinceSelect.addEventListener('change', () => {
+      sinceCustom.style.display = sinceSelect.value === 'custom' ? '' : 'none';
+      // For non-custom selections, refetch immediately. Custom waits for the
+      // operator to hit Enter or blur the text input.
+      if (sinceSelect.value !== 'custom') fetchAnalytics();
+    });
+  }
+  if (sinceCustom) {
+    sinceCustom.addEventListener('change', fetchAnalytics);
+    sinceCustom.addEventListener('keydown', (e) => { if (e.key === 'Enter') fetchAnalytics(); });
+  }
+  const baselineSetBtn = document.getElementById('an-baseline-set-btn');
+  if (baselineSetBtn) {
+    baselineSetBtn.addEventListener('click', () => setAnalyticsBaseline(new Date().toISOString()));
+  }
+  const baselineClearBtn = document.getElementById('an-baseline-clear-btn');
+  if (baselineClearBtn) {
+    baselineClearBtn.addEventListener('click', () => setAnalyticsBaseline(null));
+  }
+
   // False Positive Manager
   document.getElementById('fp-add-btn').addEventListener('click', addSuppression);
 
@@ -6641,9 +6808,12 @@ async function fetchAdaptiveImpact() {
   try {
     // Parallel: impact summary (live engine state) + rule-performance list
     // (every rule_id ever seen — powers the autocomplete datalist).
+    // Engine-impact is windowed (24h) — leaves baseline alone. The
+    // datalist-populating rule-performance call honours the operator's
+    // baseline so autocomplete reflects what the analytics tab is showing.
     const [impactR, perfR] = await Promise.all([
       fetch(BASE + '/api/engine/impact'),
-      fetch(BASE + '/api/analytics/rule-performance?min_emitted=1'),
+      fetch(BASE + '/api/analytics/rule-performance?min_emitted=1' + resolveSinceQuerySegment()),
     ]);
     if (!impactR.ok) throw new Error('HTTP ' + impactR.status);
     adaptiveImpactCache = await impactR.json();

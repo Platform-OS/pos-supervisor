@@ -23,6 +23,40 @@ const RULE_DISABLE_THRESHOLD = 0.15;
 const GUARD_MIN_SAMPLES = 5;
 
 /**
+ * Resolve the tri-state `since` parameter to an ISO string or null.
+ * See analytics-queries.js:resolveSince — same contract, kept private to
+ * each module so the case-base never imports from analytics-queries (the
+ * dependency would invert the layering: case-base feeds engine state
+ * decisions; analytics-queries feeds reporting).
+ *
+ * Reporting callers in case-base (retrieveCases*, suggestedRules,
+ * synthesizeGuardPredicate, ruleScores via /api/analytics/rule-scores)
+ * pass `since` and let it auto-resolve to the operator baseline.
+ *
+ * Engine-state callers (`syncDisabledRules` in server.js,
+ * `disabled_rules` in server-status.js, `resolveProbation` here) pass
+ * `since: null` explicitly so a baseline operator-set on the dashboard
+ * never narrows the data the auto-disable / probation logic sees.
+ *
+ * `scoreRule` is the live confidence-adjustment path (called per emit
+ * from rules/engine.js) — it deliberately has no `since` parameter at
+ * all; case-base scoring must always see full history.
+ */
+function resolveSince(store, since) {
+  if (since === null) return null;
+  if (typeof since === 'string' && since.length > 0) return since;
+  if (store && typeof store.getBaselineTs === 'function') {
+    try {
+      const baseline = store.getBaselineTs();
+      return baseline ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
  * F1: Retrieve cases for a diagnostic template.
  *
  * "For diagnostics matching (check, template_fp), what fixes were applied
@@ -33,13 +67,19 @@ const GUARD_MIN_SAMPLES = 5;
  * @param {string} templateFp - Template fingerprint
  * @param {object} [opts]
  * @param {number} [opts.minCases=3] - Minimum cases to include a fix
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {CaseResult}
  */
-export function retrieveCases(store, check, templateFp, { minCases = MIN_CASES } = {}) {
+export function retrieveCases(store, check, templateFp, { minCases = MIN_CASES, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND ts >= ?' : '';
+  const sinceAndD = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const totalRow = store.queryOne(`
     SELECT COUNT(*) as cnt FROM diagnostics
-    WHERE check_name = ? AND template_fp = ? AND suppressed = 0
-  `, [check, templateFp]);
+    WHERE check_name = ? AND template_fp = ? AND suppressed = 0 ${sinceAnd}
+  `, [check, templateFp, ...sinceP]);
 
   const total = totalRow?.cnt ?? 0;
   if (total === 0) return { check, template_fp: templateFp, total: 0, cases: [] };
@@ -48,10 +88,10 @@ export function retrieveCases(store, check, templateFp, { minCases = MIN_CASES }
     SELECT o.outcome, o.fix_applied, o.collateral_added, COUNT(*) as cnt
     FROM outcomes o
     JOIN diagnostics d ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
-    WHERE d.check_name = ? AND d.template_fp = ?
+    WHERE d.check_name = ? AND d.template_fp = ? ${sinceAndD}
     GROUP BY o.outcome, o.fix_applied
     ORDER BY cnt DESC
-  `, [check, templateFp]);
+  `, [check, templateFp, ...sinceP]);
 
   const byFix = new Map();
   for (const row of outcomeRows) {
@@ -83,16 +123,29 @@ export function retrieveCases(store, check, templateFp, { minCases = MIN_CASES }
 
 /**
  * F1 (batch): Retrieve top cases for all templates of a given check.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.minCases=3]
+ * @param {number} [opts.limit=20]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  */
-export function retrieveCasesByCheck(store, check, { minCases = MIN_CASES, limit = 20 } = {}) {
+export function retrieveCasesByCheck(store, check, { minCases = MIN_CASES, limit = 20, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const templates = store.query(`
     SELECT DISTINCT template_fp FROM diagnostics
-    WHERE check_name = ? AND template_fp IS NOT NULL AND suppressed = 0
-  `, [check]);
+    WHERE check_name = ? AND template_fp IS NOT NULL AND suppressed = 0 ${sinceAnd}
+  `, [check, ...sinceP]);
 
   const results = [];
   for (const { template_fp } of templates) {
-    const caseResult = retrieveCases(store, check, template_fp, { minCases });
+    // Forward the *resolved* timestamp (or null) so the inner call doesn't
+    // re-read meta. Without this, an explicit since='ISO' here would still
+    // propagate as undefined inside retrieveCases and pull from meta — which
+    // is the wrong source when the operator is overriding the default.
+    const caseResult = retrieveCases(store, check, template_fp, { minCases, since: sinceTs });
     if (caseResult.cases.length > 0) results.push(caseResult);
   }
 
@@ -114,12 +167,29 @@ export function retrieveCasesByCheck(store, check, { minCases = MIN_CASES, limit
  * registered rule, so "disabling" them has no effect and they shouldn't count
  * toward promotion/probation decisions.
  *
+ * `since` contract — IMPORTANT for engine-state callers:
+ *   - server.js `syncDisabledRules` and tools/server-status.js's
+ *     `disabled_rules` snapshot pass `since: null` explicitly so the
+ *     operator-set reporting baseline cannot narrow what auto-disable
+ *     considers. A sample of "since baseline" might be too small to
+ *     trigger correctly; full history is required for stable engine state.
+ *   - http-server.js endpoints (rule-scores, engine-map) omit `since`
+ *     so they default to the resolved meta baseline — operators viewing
+ *     the dashboard see the post-baseline view.
+ *
  * @param {object} store
  * @param {object} [opts]
  * @param {number} [opts.minEmitted=5] - Minimum emissions to include
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
+ *   ENGINE-STATE callers must pass `null` to bypass the meta baseline.
  * @returns {Array<RuleScore>}
  */
-export function ruleScores(store, { minEmitted = 5 } = {}) {
+export function ruleScores(store, { minEmitted = 5, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceAndD = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const ruleRows = store.query(`
     SELECT d.hint_rule_id as rule_id,
            COUNT(*) as emitted,
@@ -129,9 +199,10 @@ export function ruleScores(store, { minEmitted = 5 } = {}) {
       AND d.hint_rule_id != 'unknown'
       AND d.hint_rule_id NOT LIKE '%.unmatched'
       AND d.suppressed = 0
+      ${sinceAnd}
     GROUP BY d.hint_rule_id
     HAVING COUNT(*) >= ?
-  `, [minEmitted]);
+  `, [...sinceP, minEmitted]);
 
   const scores = [];
 
@@ -140,11 +211,11 @@ export function ruleScores(store, { minEmitted = 5 } = {}) {
       SELECT o.outcome, o.fix_applied, COUNT(*) as cnt
       FROM outcomes o
       WHERE o.fp IN (
-        SELECT DISTINCT fp FROM diagnostics
-        WHERE hint_rule_id = ? AND suppressed = 0
+        SELECT DISTINCT d.fp FROM diagnostics d
+        WHERE d.hint_rule_id = ? AND d.suppressed = 0 ${sinceAndD}
       )
       GROUP BY o.outcome, o.fix_applied
-    `, [row.rule_id]);
+    `, [row.rule_id, ...sinceP]);
 
     let resolved = 0, regressed = 0, unchanged = 0, moved = 0;
     let adopted = 0, totalOutcomes = 0;
@@ -244,18 +315,23 @@ export function scoreRule(store, ruleId, templateFp) {
  * @param {object} [opts]
  * @param {number} [opts.minCases=5] - Minimum outcome count
  * @param {number} [opts.minResolutionRate=0.6] - Minimum resolution rate
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<SuggestedRule>}
  */
-export function suggestedRules(store, existingRuleChecks = new Set(), { minCases = 5, minResolutionRate = 0.6 } = {}) {
+export function suggestedRules(store, existingRuleChecks = new Set(), { minCases = 5, minResolutionRate = 0.6, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const candidates = store.query(`
     SELECT d.check_name, d.template_fp,
            COUNT(DISTINCT d.fp) as emitted,
            GROUP_CONCAT(DISTINCT d.hint_rule_id) as rule_ids
     FROM diagnostics d
-    WHERE d.suppressed = 0 AND d.template_fp IS NOT NULL
+    WHERE d.suppressed = 0 AND d.template_fp IS NOT NULL ${sinceAnd}
     GROUP BY d.check_name, d.template_fp
     HAVING COUNT(DISTINCT d.fp) >= ?
-  `, [minCases]);
+  `, [...sinceP, minCases]);
 
   const suggestions = [];
 
@@ -267,9 +343,9 @@ export function suggestedRules(store, existingRuleChecks = new Set(), { minCases
       SELECT o.outcome, o.fix_applied, COUNT(*) as cnt
       FROM outcomes o
       JOIN diagnostics d ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
-      WHERE d.check_name = ? AND d.template_fp = ?
+      WHERE d.check_name = ? AND d.template_fp = ? ${sinceAnd}
       GROUP BY o.outcome, o.fix_applied
-    `, [c.check_name, c.template_fp]);
+    `, [c.check_name, c.template_fp, ...sinceP]);
 
     let resolved = 0, total = 0;
     let bestFix = null;
@@ -290,11 +366,15 @@ export function suggestedRules(store, existingRuleChecks = new Set(), { minCases
     const resRate = resolved / total;
     if (resRate < minResolutionRate) continue;
 
+    // The sample diagnostic must come from the same window the suggestion
+    // was derived from; if the operator is viewing post-baseline only, the
+    // sample file should reflect that window too.
+    const sampleSinceAnd = sinceTs ? 'AND ts >= ?' : '';
     const sampleDiag = store.queryOne(`
       SELECT file, check_name, fp FROM diagnostics
-      WHERE check_name = ? AND template_fp = ? AND suppressed = 0
+      WHERE check_name = ? AND template_fp = ? AND suppressed = 0 ${sampleSinceAnd}
       ORDER BY ts DESC LIMIT 1
-    `, [c.check_name, c.template_fp]);
+    `, [c.check_name, c.template_fp, ...sinceP]);
 
     suggestions.push({
       check: c.check_name,
@@ -331,15 +411,20 @@ export function suggestedRules(store, existingRuleChecks = new Set(), { minCases
  * @param {string} templateFp - Template fingerprint
  * @param {object} [opts]
  * @param {number} [opts.minSamples=5] - Minimum samples to infer a guard
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {object} JSON `when` object for promoted rules
  */
-export function synthesizeGuardPredicate(store, check, templateFp, { minSamples = GUARD_MIN_SAMPLES } = {}) {
+export function synthesizeGuardPredicate(store, check, templateFp, { minSamples = GUARD_MIN_SAMPLES, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const when = {};
 
   const fileRows = store.query(`
     SELECT DISTINCT file FROM diagnostics
-    WHERE check_name = ? AND template_fp = ? AND suppressed = 0
-  `, [check, templateFp]);
+    WHERE check_name = ? AND template_fp = ? AND suppressed = 0 ${sinceAnd}
+  `, [check, templateFp, ...sinceP]);
 
   if (fileRows.length >= minSamples) {
     const types = fileRows.map(r => classifyFileType(r.file));
@@ -354,7 +439,8 @@ export function synthesizeGuardPredicate(store, check, templateFp, { minSamples 
     WHERE kind = 'validator_emit'
     AND json_extract(payload, '$.check') = ?
     AND json_extract(payload, '$.template_fp') = ?
-  `, [check, templateFp]);
+    ${sinceAnd}
+  `, [check, templateFp, ...sinceP]);
 
   const paramSamples = [];
   for (const row of eventRows) {

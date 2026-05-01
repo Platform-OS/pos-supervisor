@@ -147,7 +147,12 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     }
     if (!analyticsStore) return;
     try {
-      const scores = ruleScores(analyticsStore, { minEmitted: 5 });
+      // Engine state: NEVER apply the operator's reporting baseline. Auto-disable
+      // requires full history so a freshly-set baseline can't accidentally
+      // narrow the sample below the disable threshold and re-enable harmful
+      // rules. `since: null` is the explicit bypass — see case-base.ruleScores
+      // JSDoc and the `resolveSince` contract.
+      const scores = ruleScores(analyticsStore, { minEmitted: 5, since: null });
       const disabled = scores.filter(s => s.disabled).map(s => s.rule_id);
       updateDisabledRules(disabled);
       setDisabledRuleDetails(scores.filter(s => s.disabled));

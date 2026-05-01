@@ -91,8 +91,52 @@ describe('UndefinedObject.generic', () => {
 });
 
 describe('UndefinedObject — edge cases', () => {
-  test('returns null when variable param is missing', () => {
+  test('falls through to .default when variable param is missing', () => {
     const diag = { check: 'UndefinedObject', params: {} };
-    expect(runRules(diag, facts)).toBeNull();
+    const result = runRules(diag, facts);
+    expect(result).not.toBeNull();
+    expect(result.rule_id).toBe('UndefinedObject.default');
+  });
+});
+
+describe('UndefinedObject.default catch-all', () => {
+  test('does NOT preempt .shopify_object', () => {
+    const diag = { check: 'UndefinedObject', params: { variable: 'product' }, file: 'app/views/pages/index.html.liquid' };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UndefinedObject.shopify_object');
+  });
+
+  test('does NOT preempt .context_prefix', () => {
+    const diag = { check: 'UndefinedObject', params: { variable: 'params' }, file: 'app/views/pages/index.html.liquid' };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UndefinedObject.context_prefix');
+  });
+
+  test('does NOT preempt .declare_param in partials', () => {
+    const diag = { check: 'UndefinedObject', params: { variable: 'props' }, file: 'app/views/partials/header.liquid' };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UndefinedObject.declare_param');
+  });
+
+  test('does NOT preempt .generic when variable is extracted', () => {
+    const diag = { check: 'UndefinedObject', params: { variable: 'xyz' }, file: 'app/views/pages/index.html.liquid' };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UndefinedObject.generic');
+  });
+
+  test('fires when extraction failed entirely (no params, no file)', () => {
+    const diag = { check: 'UndefinedObject' };
+    const result = runRules(diag, facts);
+    expect(result).not.toBeNull();
+    expect(result.rule_id).toBe('UndefinedObject.default');
+    expect(result.confidence).toBeLessThan(0.5);
+  });
+
+  test('hint covers the three canonical resolutions (page / partial / local)', () => {
+    const diag = { check: 'UndefinedObject', params: {} };
+    const result = runRules(diag, facts);
+    expect(result.hint_md).toContain('context.');
+    expect(result.hint_md).toContain('@param');
+    expect(result.hint_md).toContain('assign');
   });
 });

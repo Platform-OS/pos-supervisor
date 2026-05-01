@@ -90,6 +90,85 @@ describe('openAnalyticsStore', () => {
   });
 });
 
+describe('reporting baseline', () => {
+  test('absent by default — getBaselineTs returns null', () => {
+    expect(store.getBaselineTs()).toBeNull();
+    const meta = store.getBaselineMeta();
+    expect(meta.baseline_ts).toBeNull();
+    expect(meta.set_at).toBeNull();
+  });
+
+  test('setBaselineTs persists ISO + stamps set_at', () => {
+    const ts = '2026-04-30T12:00:00.000Z';
+    store.setBaselineTs(ts);
+    expect(store.getBaselineTs()).toBe(ts);
+    const meta = store.getBaselineMeta();
+    expect(meta.baseline_ts).toBe(ts);
+    // set_at is the wall-clock moment of the call — non-null + parseable.
+    expect(meta.set_at).not.toBeNull();
+    expect(Number.isFinite(new Date(meta.set_at).getTime())).toBe(true);
+  });
+
+  test('setBaselineTs(null) clears both keys', () => {
+    store.setBaselineTs('2026-04-30T12:00:00.000Z');
+    expect(store.getBaselineTs()).not.toBeNull();
+    store.setBaselineTs(null);
+    expect(store.getBaselineTs()).toBeNull();
+    expect(store.getBaselineMeta().set_at).toBeNull();
+  });
+
+  test('clearBaseline() removes both keys', () => {
+    store.setBaselineTs('2026-04-30T12:00:00.000Z');
+    store.clearBaseline();
+    expect(store.getBaselineTs()).toBeNull();
+    expect(store.getBaselineMeta().set_at).toBeNull();
+  });
+
+  test('overwrites a prior baseline (single source of truth)', () => {
+    store.setBaselineTs('2026-04-01T00:00:00.000Z');
+    store.setBaselineTs('2026-04-30T12:00:00.000Z');
+    expect(store.getBaselineTs()).toBe('2026-04-30T12:00:00.000Z');
+    // exactly one row each — no historical accumulation in the meta table
+    const rows = store.query(
+      `SELECT key FROM meta WHERE key IN ('analytics_baseline_ts','analytics_baseline_set_at')`,
+    );
+    expect(rows).toHaveLength(2);
+  });
+
+  test('rejects non-ISO inputs without mutating state', () => {
+    store.setBaselineTs('2026-04-30T12:00:00.000Z');
+    const before = store.getBaselineTs();
+    expect(() => store.setBaselineTs('not-a-date')).toThrow(TypeError);
+    expect(() => store.setBaselineTs(123)).toThrow(TypeError);
+    expect(() => store.setBaselineTs('')).toThrow(TypeError);
+    expect(store.getBaselineTs()).toBe(before);
+  });
+
+  test('survives store close/reopen — persisted in meta table', () => {
+    const ts = '2026-04-30T12:00:00.000Z';
+    store.setBaselineTs(ts);
+    store.close();
+    store = openAnalyticsStore(dbPath);
+    expect(store.getBaselineTs()).toBe(ts);
+  });
+
+  test('rebuild() preserves the baseline (rebuild clears derived data, not meta)', () => {
+    const sessionsRoot = tmpSessionDir();
+    const sess = join(sessionsRoot, 'session-1');
+    mkdirSync(sess, { recursive: true });
+    writeFileSync(join(sess, 'events.ndjson'), [
+      makeServerStartLine({ session_id: 's1' }),
+      makeValidatorEmitLine({ session_id: 's1', fp: 'a' }),
+    ].join('\n') + '\n');
+
+    store.setBaselineTs('2026-04-30T12:00:00.000Z');
+    store.rebuild(sessionsRoot);
+    expect(store.getBaselineTs()).toBe('2026-04-30T12:00:00.000Z');
+
+    rmSync(sessionsRoot, { recursive: true, force: true });
+  });
+});
+
 describe('ingestEvent', () => {
   test('inserts generic event', () => {
     store.ingestEvent({

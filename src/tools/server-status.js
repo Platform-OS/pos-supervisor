@@ -13,7 +13,11 @@ export const serverStatusTool = {
       let disabledRules = [];
       if (ctx.analyticsStore) {
         try {
-          disabledRules = ruleScores(ctx.analyticsStore, { minEmitted: 10 })
+          // Engine state snapshot: bypass any operator reporting baseline.
+          // The disabled-rules list must reflect the case-base's full-history
+          // verdict — same data the runtime uses for syncDisabledRules.
+          // `since: null` is the explicit bypass; see case-base.ruleScores.
+          disabledRules = ruleScores(ctx.analyticsStore, { minEmitted: 10, since: null })
             .filter(s => s.disabled)
             .map(s => ({ rule_id: s.rule_id, effectiveness: s.effectiveness, total_outcomes: s.total_outcomes }));
         } catch { /* non-fatal */ }

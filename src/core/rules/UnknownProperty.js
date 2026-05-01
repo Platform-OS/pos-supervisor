@@ -2,9 +2,13 @@
  * UnknownProperty rules — property does not exist on the given object.
  *
  * Priority order:
- *   10 — schema_property: object is a known schema table → suggest valid properties
- *   20 — context_property: object is context.* → list valid sub-properties
- *   100 — generic: fallback hint
+ *    10 — schema_property:  object is a known schema table → suggest valid properties
+ *    20 — context_property: object is context.* → list valid sub-properties
+ *   100 — generic:          property + object extracted but no specialised rule applies
+ *  1000 — default:          catch-all for the case where extraction failed —
+ *         the LSP message did not yield both `params.property` AND
+ *         `params.object`. Stops the diagnostic from landing as
+ *         `UnknownProperty.unmatched`.
  */
 import { nearestByLevenshtein } from './queries.js';
 
@@ -102,5 +106,36 @@ export const rules = [
         confidence: 0.4,
       };
     },
+  },
+
+  // Last-resort catch-all. Reached when `.generic`'s extraction guard failed
+  // (object name OR property name absent from the parsed message). Hint
+  // stays generic and points at \`lookup\` so the agent can still recover
+  // without the symbol names.
+  {
+    id: 'UnknownProperty.default',
+    check: 'UnknownProperty',
+    priority: 1000,
+    when: () => true,
+    apply: () => ({
+      rule_id: 'UnknownProperty.default',
+      hint_md:
+        `A property reference does not resolve on its host object. Read the upstream message — ` +
+        `it names both the object and the property. Three canonical resolutions:\n` +
+        `  • **Typo** — fix the property name on the call site.\n` +
+        `  • **Schema property** — if the object is a record from a schema, verify the property ` +
+        `against \`app/schema/<table>.yml\`. Use \`lookup\` (completions mode) at the property ` +
+        `position to see what's actually defined.\n` +
+        `  • **Partial @param** — if this fires inside a partial / command / query, declare the ` +
+        `parameter in the file's \`{% doc %}\` block so the linter knows its shape.`,
+      fixes: [{
+        type: 'guidance',
+        description:
+          `Re-read the upstream message for the object and property names, then verify against ` +
+          `the relevant \`app/schema/<table>.yml\`, the partial's \`{% doc %}\` block, or via ` +
+          `\`lookup\` (completions mode) at the property position.`,
+      }],
+      confidence: 0.4,
+    }),
   },
 ];

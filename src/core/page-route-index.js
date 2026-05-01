@@ -27,15 +27,38 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 
 const PAGES_SUBDIR = 'app/views/pages';
 
 /**
+ * Build a route → methods index from the project's pages directory.
+ *
+ * The optional `overlay` represents the file CURRENTLY under validation. Its
+ * in-memory content is used in place of the on-disk version (or in addition
+ * to, if the file does not yet exist on disk). This is load-bearing for the
+ * self-page case: when the agent runs validate_code on `app/views/pages/index.liquid`
+ * with `method: post` in-memory frontmatter while disk still has no method
+ * declaration, the LSP fires `MissingPage` for route `/` (POST). The on-disk
+ * scan alone would not see the in-memory frontmatter and the false positive
+ * would survive verification — even though, the moment the agent writes,
+ * the route IS served.
+ *
+ * Overlay rules:
+ *   - filePath may be relative (resolved against projectDir) or absolute.
+ *   - Only files under `app/views/pages/` are considered. A non-page overlay
+ *     (e.g., a partial under validation) is ignored — the index covers pages
+ *     only.
+ *   - The overlay is treated as the source of truth for that one file. When
+ *     the same path also exists on disk, the disk read is skipped and the
+ *     overlay frontmatter wins. When the path does not exist on disk yet,
+ *     the overlay adds a new entry to the index.
+ *
  * @param {string} projectDir
+ * @param {{ filePath: string, content: string } | null} [overlay]
  * @returns {{ routes: Map<string, Set<string>> }}
  */
-export function buildPageRouteIndex(projectDir) {
+export function buildPageRouteIndex(projectDir, overlay = null) {
   const routes = new Map();
   if (!projectDir) return { routes };
 
@@ -58,10 +81,31 @@ export function buildPageRouteIndex(projectDir) {
     }
   }
 
+  // Resolve the overlay (if any) to an absolute path under the pages root.
+  // Overlays outside `app/views/pages/` are ignored — the route index covers
+  // pages only, and partials/layouts/assets cannot serve a route.
+  let overlayAbs = null;
+  if (
+    overlay &&
+    typeof overlay.filePath === 'string' &&
+    typeof overlay.content === 'string' &&
+    /\.liquid$/.test(overlay.filePath)
+  ) {
+    const abs = isAbsolute(overlay.filePath) ? overlay.filePath : join(projectDir, overlay.filePath);
+    if (abs === rootAbs || abs.startsWith(rootAbs + sep)) {
+      overlayAbs = abs;
+      if (!files.includes(abs)) files.push(abs);
+    }
+  }
+
   for (const abs of files) {
     let raw;
-    try { raw = readFileSync(abs, 'utf8'); }
-    catch { continue; }
+    if (abs === overlayAbs) {
+      raw = overlay.content;
+    } else {
+      try { raw = readFileSync(abs, 'utf8'); }
+      catch { continue; }
+    }
 
     const rel = relative(rootAbs, abs).split(sep).join('/');
     const { slug, method } = extractFrontmatter(raw);

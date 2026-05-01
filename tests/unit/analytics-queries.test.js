@@ -12,6 +12,9 @@ import {
   fixAdoptionFunnel,
   adaptiveModeImpact,
   fixRulePerformance,
+  ruleScoresByCategory,
+  knowledgeGaps,
+  confidenceCalibration,
 } from '../../src/core/analytics-queries.js';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -510,5 +513,301 @@ describe('fixRulePerformance', () => {
     emitWithFixes('s3', 'c', [{ range: null, new_text_hash: 'h', kind: 'text_edit', rule_id: 'heuristic:Common.text_edit' }]);
     const out = fixRulePerformance(store, { minProposed: 2 });
     expect(out.map(r => r.rule_id)).toEqual(['heuristic:Common.text_edit']);
+  });
+});
+
+// ── Reporting baseline (`since`) — tri-state contract ─────────────────────
+//
+// All reporting queries accept `opts.since`:
+//   - undefined ⇒ read store.getBaselineTs(); absent ⇒ no filter
+//   - null      ⇒ explicit bypass (engine-state callers)
+//   - ISO       ⇒ filter d.ts >= since (or pf.ts for fix-rule queries)
+//
+// Each test below seeds two timestamps — one before a midpoint, one after —
+// and asserts the query honours the explicit ISO, the absent meta default
+// (full history), and the meta-set value (auto-applied default).
+
+describe('reporting baseline: since param', () => {
+  const OLD = '2026-04-01T00:00:00.000Z';   // pre-midpoint
+  const NEW = '2026-04-30T00:00:00.000Z';   // post-midpoint
+  const MID = '2026-04-15T00:00:00.000Z';
+
+  function seedTwoEras() {
+    // Old + new emit on the same template — easy to count. Two emits in the
+    // OLD era share session 's1' so a single window can host both outcomes
+    // and the diagnostic↔outcome (fp, session_id, file) JOIN matches.
+    emitEvent(store, 's1', 'old1', 'CheckA', OLD);
+    emitEvent(store, 's1', 'old2', 'CheckA', OLD);
+    emitEvent(store, 's3', 'new1', 'CheckA', NEW);
+  }
+
+  function seedTwoErasWithOutcomes() {
+    seedTwoEras();
+    const wOld = store.insertWindow({
+      session_id: 's1', file: 'app/views/pages/index.html.liquid', idx: 0,
+      ts_start: OLD, ts_end: OLD,
+    });
+    const wNew = store.insertWindow({
+      session_id: 's3', file: 'app/views/pages/index.html.liquid', idx: 0,
+      ts_start: NEW, ts_end: NEW,
+    });
+    store.insertOutcome({ fp: 'old1', window_id: wOld, outcome: 'regressed' });
+    store.insertOutcome({ fp: 'old2', window_id: wOld, outcome: 'regressed' });
+    store.insertOutcome({ fp: 'new1', window_id: wNew, outcome: 'resolved' });
+  }
+
+  test('checkScorecards: ISO since filters out pre-baseline emits', () => {
+    seedTwoEras();
+    const all = checkScorecards(store, { minCohort: 1 });
+    expect(all[0].emitted).toBe(3);
+    const post = checkScorecards(store, { minCohort: 1, since: MID });
+    expect(post[0].emitted).toBe(1);
+  });
+
+  test('checkScorecards: outcome counts honour the same baseline', () => {
+    seedTwoErasWithOutcomes();
+    const post = checkScorecards(store, { minCohort: 1, since: MID });
+    // Only the post-baseline emit's outcome (resolved) should count.
+    expect(post[0].sample_size).toBe(1);
+    expect(post[0].resolution_rate.mean).toBeGreaterThan(0.5);
+  });
+
+  test('checkScorecards: since=null bypasses meta baseline', () => {
+    seedTwoEras();
+    store.setBaselineTs(MID);
+    const all = checkScorecards(store, { minCohort: 1, since: null });
+    expect(all[0].emitted).toBe(3);
+    store.clearBaseline();
+  });
+
+  test('checkScorecards: since=undefined reads meta baseline by default', () => {
+    seedTwoEras();
+    store.setBaselineTs(MID);
+    const post = checkScorecards(store, { minCohort: 1 });
+    expect(post[0].emitted).toBe(1);
+    store.clearBaseline();
+  });
+
+  test('rulePerformance: ISO since filters by d.ts', () => {
+    seedTwoEras();
+    const all = rulePerformance(store);
+    expect(all[0].emitted).toBe(3);
+    const post = rulePerformance(store, { since: MID });
+    expect(post[0].emitted).toBe(1);
+  });
+
+  test('rulePerformance: outcome counts narrow to the window', () => {
+    seedTwoErasWithOutcomes();
+    const post = rulePerformance(store, { since: MID });
+    expect(post[0].total_outcomes).toBe(1);
+    expect(post[0].resolved).toBe(1);
+    expect(post[0].regressed).toBe(0);
+  });
+
+  test('rulePerformance: meta default fires when since is absent', () => {
+    seedTwoEras();
+    store.setBaselineTs(MID);
+    expect(rulePerformance(store)[0].emitted).toBe(1);
+    store.clearBaseline();
+    expect(rulePerformance(store)[0].emitted).toBe(3);
+  });
+
+  test('fixAdoptionFunnel: emit + outcome counts narrow to the window', () => {
+    seedTwoErasWithOutcomes();
+    const post = fixAdoptionFunnel(store, { since: MID });
+    expect(post.emitted).toBe(1);
+    expect(post.resolved).toBe(1);
+    expect(post.regressed).toBe(0);
+    const all = fixAdoptionFunnel(store);
+    expect(all.emitted).toBe(3);
+    expect(all.regressed).toBe(2);
+  });
+
+  test('fixAdoptionFunnel: meta baseline + since=null bypass', () => {
+    seedTwoErasWithOutcomes();
+    store.setBaselineTs(MID);
+    expect(fixAdoptionFunnel(store).emitted).toBe(1);
+    expect(fixAdoptionFunnel(store, { since: null }).emitted).toBe(3);
+    store.clearBaseline();
+  });
+
+  test('knowledgeGaps: filters total_emitted by since', () => {
+    // Need ≥3 emits to pass the HAVING gate post-filter.
+    emitEvent(store, 's1', 'old1', 'KGCheck', OLD);
+    emitEvent(store, 's1', 'old2', 'KGCheck', OLD);
+    emitEvent(store, 's1', 'new1', 'KGCheck', NEW);
+    emitEvent(store, 's1', 'new2', 'KGCheck', NEW);
+    emitEvent(store, 's1', 'new3', 'KGCheck', NEW);
+
+    const all = knowledgeGaps(store);
+    const allRow = all.find(r => r.check === 'KGCheck');
+    expect(allRow?.total_emitted).toBe(5);
+
+    const post = knowledgeGaps(store, { since: MID });
+    const postRow = post.find(r => r.check === 'KGCheck');
+    expect(postRow?.total_emitted).toBe(3);
+  });
+
+  test('confidenceCalibration: filters by d.ts', () => {
+    const wid = store.insertWindow({
+      session_id: 's1', file: 'app/views/pages/index.html.liquid', idx: 0,
+      ts_start: OLD, ts_end: NEW,
+    });
+    // Old: low confidence, regressed. New: high confidence, resolved.
+    store.ingestEvent({
+      v: 1, session_id: 's1', ts: OLD, kind: 'validator_emit',
+      fp: 'cal-old', file: 'app/views/pages/index.html.liquid',
+      hint_rule_id: 'X', confidence: 0.2, proposed_fixes: [],
+    });
+    store.ingestEvent({
+      v: 1, session_id: 's1', ts: NEW, kind: 'validator_emit',
+      fp: 'cal-new', file: 'app/views/pages/index.html.liquid',
+      hint_rule_id: 'X', confidence: 0.9, proposed_fixes: [],
+    });
+    store.insertOutcome({ fp: 'cal-old', window_id: wid, outcome: 'regressed' });
+    store.insertOutcome({ fp: 'cal-new', window_id: wid, outcome: 'resolved' });
+
+    const allBuckets = confidenceCalibration(store);
+    const allTotal = allBuckets.reduce((s, b) => s + b.sample_size, 0);
+    expect(allTotal).toBe(2);
+
+    const postBuckets = confidenceCalibration(store, { since: MID });
+    const postTotal = postBuckets.reduce((s, b) => s + b.sample_size, 0);
+    expect(postTotal).toBe(1);
+  });
+
+  test('ruleScoresByCategory: filters by d.ts', () => {
+    seedTwoErasWithOutcomes();
+    const all = ruleScoresByCategory(store);
+    const allRow = all.find(r => r.rule_id === 'CheckA');
+    expect(allRow.outcomes).toBe(3);
+    const post = ruleScoresByCategory(store, { since: MID });
+    const postRow = post.find(r => r.rule_id === 'CheckA');
+    expect(postRow.outcomes).toBe(1);
+  });
+
+  test('sessionSummaries: filters session list to those active in window', () => {
+    // Distinct sessions per era.
+    store.ingestEvent({ v: 1, session_id: 'old-only', ts: OLD, kind: 'server_start',
+      project_dir: '/tmp', version: '1.0', started_at: OLD });
+    toolCallEvent(store, 'old-only', 'validate_code', OLD);
+    toolCallEvent(store, 'new-only', 'validate_code', NEW);
+
+    const all = sessionSummaries(store);
+    expect(all.map(s => s.session_id).sort()).toEqual(['new-only', 'old-only']);
+
+    const post = sessionSummaries(store, { since: MID });
+    expect(post.map(s => s.session_id)).toEqual(['new-only']);
+  });
+
+  test('toolSequenceBigrams: filters events by ts', () => {
+    toolCallEvent(store, 's1', 'project_map', OLD);
+    toolCallEvent(store, 's1', 'scaffold',    OLD);
+    toolCallEvent(store, 's1', 'project_map', NEW);
+    toolCallEvent(store, 's1', 'validate_code', NEW);
+
+    const all = toolSequenceBigrams(store);
+    expect(all.find(b => b.bigram[0] === 'project_map' && b.bigram[1] === 'scaffold')).toBeDefined();
+
+    const post = toolSequenceBigrams(store, { since: MID });
+    expect(post.find(b => b.bigram[0] === 'project_map' && b.bigram[1] === 'scaffold')).toBeUndefined();
+    expect(post.find(b => b.bigram[0] === 'project_map' && b.bigram[1] === 'validate_code')).toBeDefined();
+  });
+
+  test('diagnosticJourney: filters timeline to post-baseline emits', () => {
+    store.ingestEvent({
+      v: 1, session_id: 's1', ts: OLD, kind: 'validator_emit',
+      fp: 'fp-old', template_fp: 'jt', file: 'app/views/pages/x.liquid',
+      hint_rule_id: 'CheckJ', proposed_fixes: [],
+    });
+    store.ingestEvent({
+      v: 1, session_id: 's2', ts: NEW, kind: 'validator_emit',
+      fp: 'fp-new', template_fp: 'jt', file: 'app/views/pages/x.liquid',
+      hint_rule_id: 'CheckJ', proposed_fixes: [],
+    });
+
+    const all = diagnosticJourney(store, 'jt');
+    expect(all.session_count).toBe(2);
+    const post = diagnosticJourney(store, 'jt', { since: MID });
+    expect(post.session_count).toBe(1);
+    expect(post.timeline[0].session_id).toBe('s2');
+  });
+
+  test('ruleDrilldown: filters samples + file/template stats', () => {
+    seedTwoErasWithOutcomes();
+    const all = ruleDrilldown(store, 'CheckA');
+    expect(all.samples).toHaveLength(3);
+    expect(all.file_distribution[0].emitted).toBe(3);
+
+    const post = ruleDrilldown(store, 'CheckA', { since: MID });
+    expect(post.samples).toHaveLength(1);
+    expect(post.file_distribution[0].emitted).toBe(1);
+    expect(post.file_distribution[0].resolved).toBe(1);
+    expect(post.file_distribution[0].regressed).toBe(0);
+  });
+
+  test('fixRulePerformance: filters by pf.ts', () => {
+    function emitWithFix(sid, fp, ts) {
+      store.ingestEvent({
+        v: 1, session_id: sid, ts, kind: 'validator_emit',
+        fp, template_fp: 'tpl', file: 'app/views/pages/x.liquid',
+        hint_rule_id: 'X.r',
+        proposed_fixes: [{ range: null, new_text_hash: 'h', kind: 'text_edit', rule_id: 'X.r' }],
+      });
+    }
+    emitWithFix('s1', 'oldA', OLD);
+    emitWithFix('s2', 'oldB', OLD);
+    emitWithFix('s3', 'new1', NEW);
+
+    const all = fixRulePerformance(store);
+    expect(all.find(r => r.rule_id === 'X.r').proposed).toBe(3);
+
+    const post = fixRulePerformance(store, { since: MID });
+    expect(post.find(r => r.rule_id === 'X.r').proposed).toBe(1);
+  });
+
+  test('recommendations: forwards since to checkScorecards', () => {
+    // Old era: clearly harmful. New era: clean.
+    for (let i = 0; i < 10; i++) {
+      emitEvent(store, 's1', `bad-${i}`, 'BadCheck', OLD);
+    }
+    const wOld = store.insertWindow({
+      session_id: 's1', file: 'app/views/pages/index.html.liquid', idx: 0,
+      ts_start: OLD, ts_end: OLD,
+    });
+    for (let i = 0; i < 10; i++) {
+      store.insertOutcome({ fp: `bad-${i}`, window_id: wOld, outcome: 'regressed' });
+    }
+
+    const allRecs = recommendations(store, 0.3);
+    expect(allRecs.find(r => r.check === 'BadCheck')).toBeDefined();
+    const postRecs = recommendations(store, 0.3, { since: MID });
+    expect(postRecs.find(r => r.check === 'BadCheck')).toBeUndefined();
+  });
+
+  test('resolveSince precedence: explicit ISO beats meta baseline', () => {
+    // meta says MID, query says OLD → query wins, sees everything.
+    store.setBaselineTs(MID);
+    seedTwoEras();
+    const out = checkScorecards(store, { minCohort: 1, since: OLD });
+    expect(out[0].emitted).toBe(3);
+    store.clearBaseline();
+  });
+
+  test('store without getBaselineTs (mock) — undefined since means no filter', () => {
+    // Defensive: resolveSince must degrade gracefully when given a partial mock.
+    const fakeStore = {
+      query: store.query,
+      queryOne: store.queryOne,
+      // Note: no getBaselineTs.
+    };
+    seedTwoEras();
+    // Bind the real prepared-statement methods to the real db path so the
+    // fake store can still issue queries (we just test the resolver path).
+    fakeStore.query = (sql, params) => store.query(sql, params);
+    fakeStore.queryOne = (sql, params) => store.queryOne(sql, params);
+
+    const out = checkScorecards(fakeStore, { minCohort: 1 });
+    expect(out[0].emitted).toBe(3);
   });
 });

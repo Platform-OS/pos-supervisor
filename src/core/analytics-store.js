@@ -332,6 +332,52 @@ export function openAnalyticsStore(dbPath, { readonly = false, blobStore = null 
     return row ? row.value : null;
   }
 
+  /**
+   * Reporting-window baseline. Operator-set checkpoint that filters every
+   * dashboard / Markdown-report query to "stats from this timestamp forward".
+   * Engine-state callers (case-base.ruleScores for syncDisabledRules,
+   * scoreRule, cac-predictor history providers, server-status disabledRules)
+   * MUST keep using full history — they pass `since: null` explicitly. Reporting
+   * callers that omit `since` resolve it via this helper.
+   *
+   * Two meta keys: `analytics_baseline_ts` (the timestamp itself) and
+   * `analytics_baseline_set_at` (when the operator set it — audit trail).
+   * Both absent ⇒ no baseline ⇒ full history (default behaviour, identical
+   * to pre-baseline releases).
+   */
+  function getBaselineTs() {
+    return getMeta('analytics_baseline_ts');
+  }
+
+  function getBaselineMeta() {
+    return {
+      baseline_ts: getMeta('analytics_baseline_ts'),
+      set_at: getMeta('analytics_baseline_set_at'),
+    };
+  }
+
+  function setBaselineTs(iso) {
+    if (iso === null || iso === undefined) {
+      clearBaseline();
+      return;
+    }
+    if (typeof iso !== 'string' || iso.length === 0) {
+      throw new TypeError(`setBaselineTs: expected ISO string or null, got ${typeof iso}`);
+    }
+    const parsed = new Date(iso);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new TypeError(`setBaselineTs: '${iso}' is not a valid date`);
+    }
+    setMeta(db, 'analytics_baseline_ts', iso);
+    setMeta(db, 'analytics_baseline_set_at', new Date().toISOString());
+  }
+
+  function clearBaseline() {
+    db.prepare('DELETE FROM meta WHERE key IN (?, ?)').run(
+      'analytics_baseline_ts', 'analytics_baseline_set_at',
+    );
+  }
+
   function stats() {
     const events = db.prepare('SELECT COUNT(*) as count FROM events').get().count;
     const diagnostics = db.prepare('SELECT COUNT(*) as count FROM diagnostics').get().count;
@@ -391,6 +437,10 @@ export function openAnalyticsStore(dbPath, { readonly = false, blobStore = null 
     query,
     queryOne,
     getMeta,
+    getBaselineTs,
+    getBaselineMeta,
+    setBaselineTs,
+    clearBaseline,
     stats,
     recordPromotion,
     resolvePromotion,

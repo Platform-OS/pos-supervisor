@@ -2,14 +2,18 @@
  * TranslationKeyExists rules — translation key not found.
  *
  * Priority order (first match wins):
- *   5  — array_index_misuse: agent wrote `key[0]` / `key[1]` etc.
- *        platformOS translations cannot be subscripted with `[N]` —
- *        the modern pattern is `{% assign items = 'key' | t %}` then
- *        iterate with `{% for item in items %}`. Owns this case so the
- *        downstream Levenshtein rule never produces a misleading
- *        "did you mean en.key.items" suggestion.
- *   10 — suggest_nearest: key is close to an existing translation key
- *   20 — create_key:      suggest adding the key to translation file
+ *   5    — array_index_misuse: agent wrote `key[0]` / `key[1]` etc.
+ *          platformOS translations cannot be subscripted with `[N]` —
+ *          the modern pattern is `{% assign items = 'key' | t %}` then
+ *          iterate with `{% for item in items %}`. Owns this case so the
+ *          downstream Levenshtein rule never produces a misleading
+ *          "did you mean en.key.items" suggestion.
+ *   10   — suggest_nearest: key is close to an existing translation key
+ *   20   — create_key:      suggest adding the key to translation file
+ *  1000  — default:         catch-all for cases where extraction failed and
+ *          no specialised rule's guard matched. Without this, the diagnostic
+ *          would land as `TranslationKeyExists.unmatched` and the agent would
+ *          see the bare LSP message.
  *
  * Defensive design: every `[N]`-aware gate looks at BOTH `params.key` and
  * `diag.message`. If the extractor ever drifts (LSP message shape change,
@@ -153,6 +157,41 @@ export const rules = [
           description: `Add the following YAML to \`app/translations/${DEFAULT_LOCALE}.yml\` (nested under the existing \`${DEFAULT_LOCALE}:\` root):\n${snippet}`,
         }],
         confidence: 0.8,
+      };
+    },
+  },
+
+  // Last-resort catch-all. Triggered when the LSP emits a translation-key
+  // diagnostic whose message did not yield a `params.key` (extractor drift,
+  // unrecognised wording). Emits a generic but typed hint so the row is
+  // attributed to a real rule_id rather than `.unmatched`.
+  {
+    id: 'TranslationKeyExists.default',
+    check: 'TranslationKeyExists',
+    priority: 1000,
+    when: () => true,
+    apply: (diag) => {
+      const key = diag.params?.key ?? null;
+      const ref = key ? `\`${key}\`` : 'this translation key';
+      return {
+        rule_id: 'TranslationKeyExists.default',
+        hint_md:
+          `${ref} is not defined in any translation file under \`app/translations/\`. ` +
+          `Two valid resolutions:\n` +
+          `  • **Typo** — correct the key in the \`{{ '...' | t }}\` call site. ` +
+          `Do NOT prepend the locale (\`${DEFAULT_LOCALE}.\`) — \`| t\` resolves the active ` +
+          `locale automatically.\n` +
+          `  • **Missing key** — add it to \`app/translations/${DEFAULT_LOCALE}.yml\` under the ` +
+          `\`${DEFAULT_LOCALE}:\` root, mirroring the dot-path of the call.\n\n` +
+          `If you're mid-feature and the key is part of the plan but not yet on disk, pass ` +
+          `\`pending_translations=[<key>]\` to validate_code so this stops firing while you write it.`,
+        fixes: [{
+          type: 'guidance',
+          description: key
+            ? `Reconcile \`${key}\` with \`app/translations/${DEFAULT_LOCALE}.yml\`: either fix the call-site spelling or add the key under the \`${DEFAULT_LOCALE}:\` root.`
+            : `Inspect \`app/translations/${DEFAULT_LOCALE}.yml\` and reconcile the failing key.`,
+        }],
+        confidence: 0.5,
       };
     },
   },

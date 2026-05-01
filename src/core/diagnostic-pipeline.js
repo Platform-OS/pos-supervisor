@@ -6,6 +6,10 @@
  * and is documented with its purpose and ordering dependencies.
  *
  * ORDERING CONTRACT:
+ *   0a. suppressLspKnownFalsePositives — must run FIRST (after raw user suppressions) so
+ *       downstream enrichment, fix generation, and the must_fix_before_write gate
+ *       never see the spurious LSP error. Currently covers the pos-cli LSP
+ *       "Syntax is not supported" regression on `assign x = a <op> b`.
  *   1. suppressDocParams               — must run before Shopify elevation (doc params may look like Shopify objects)
  *   2. suppressUnusedDocParams         — depends on content, independent of other filters
  *   3. elevateShopify                  — must run after enrichment (needs .suggestion field)
@@ -47,6 +51,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
+import { toLiquidHtmlAST } from '@platformos/liquid-html-parser';
 import { getKnownModulesMissingDocs } from './knowledge-loader.js';
 import { buildAssetIndex, resolveAssetPath } from './asset-index.js';
 import { buildTranslationIndex } from './translation-index.js';
@@ -102,6 +107,12 @@ export function runDiagnosticPipeline(result, opts) {
   if (projectDir) {
     traceStep('userSuppressions', () => applyUserSuppressions(result, filePath, projectDir));
   }
+
+  // 0a. Suppress known pos-cli LSP false positives. Currently covers the
+  //     "Syntax is not supported" regression on `assign x = a <op> b` boolean
+  //     comparisons. Runs first so downstream enrichment, fix generation,
+  //     and the must_fix_before_write gate never see the spurious error.
+  traceStep('suppressLspKnownFalsePositives', () => suppressLspKnownFalsePositives(result, content));
 
   // 1. Suppress UndefinedObject for declared @param names
   if (docParamNames.size > 0) {
@@ -188,9 +199,14 @@ export function runDiagnosticPipeline(result, opts) {
     traceStep('verifyTranslationKeysOnDisk', () => verifyTranslationKeysOnDisk(result, projectDir));
   }
 
-  // 14. Verify MissingPage against filesystem
+  // 14. Verify MissingPage against filesystem. The file under validation is
+  //     passed as an overlay so its in-memory frontmatter (`slug:`, `method:`)
+  //     contributes to the route index — fixes the self-page case where an
+  //     agent validating `app/views/pages/index.liquid` with `method: post`
+  //     in-memory would otherwise see a stale MissingPage warning for the
+  //     very route this page is about to serve.
   if (projectDir) {
-    traceStep('verifyPageRoutesOnDisk', () => verifyPageRoutesOnDisk(result, projectDir));
+    traceStep('verifyPageRoutesOnDisk', () => verifyPageRoutesOnDisk(result, projectDir, { filePath, content }));
   }
 
   // 15. Verify OrphanedPartial against filesystem
@@ -213,6 +229,80 @@ export function runDiagnosticPipeline(result, opts) {
 }
 
 // ── Individual filters ──────────────────────────────────────────────────────
+
+/**
+ * Suppress known pos-cli LSP false positives.
+ *
+ * Currently covers ONE pattern: `LiquidHTMLSyntaxError` with the generic
+ * upstream message `Syntax is not supported`, fired by pos-cli's LSP on a
+ * boolean comparison inside an `assign` tag (e.g. `assign object.valid = c == empty`,
+ * `assign x = 1 == 1`). The platformOS Liquid parser
+ * (`@platformos/liquid-html-parser`, the same package the runtime parser is
+ * derived from) accepts this syntax, and `pos-cli check run` reports no
+ * offenses on it. Only the LSP rejects it — a stand-alone regression in the
+ * LSP's expression parser, not in the language.
+ *
+ * Without this suppression, agents are forced to rewrite valid Liquid
+ * (typically by lowering `assign x = a == b` to a four-line if/else) just to
+ * pass the must_fix_before_write gate. Worse, the diagnostic message
+ * "Syntax is not supported" gives no actionable hint, so agents iterate
+ * blindly until something passes.
+ *
+ * Suppression criteria — all must hold:
+ *   1. The diagnostic check is `LiquidHTMLSyntaxError`.
+ *   2. The message matches the exact upstream phrasing `Syntax is not supported`
+ *      (case-insensitive). Other LiquidHTMLSyntaxError messages — unclosed
+ *      blocks, malformed tag arguments, etc. — point at real bugs and stay.
+ *   3. The file parses cleanly under the strict mode of the platformOS parser.
+ *      A genuine syntax error elsewhere in the file would fail strict parse,
+ *      and we leave every diagnostic in place to avoid masking it.
+ *
+ * When all three hold, the matching diagnostics are removed and a single
+ * `pos-supervisor:LspSyntaxFalsePositiveSuppressed` info diagnostic is
+ * emitted naming the lines so the agent can audit the suppression.
+ */
+function suppressLspKnownFalsePositives(result, content) {
+  const matches = (d) =>
+    d.check === 'LiquidHTMLSyntaxError' &&
+    typeof d.message === 'string' &&
+    /^Syntax is not supported$/i.test(d.message.trim());
+
+  const candidates = [
+    ...result.errors.filter(matches),
+    ...result.warnings.filter(matches),
+  ];
+  if (candidates.length === 0) return;
+
+  // Strict parse — no tolerant flag — is the gate. If the platformOS parser
+  // rejects the file, there IS a genuine syntax error and we must not
+  // suppress LSP errors that may be the agent's only signal.
+  let parsesCleanly;
+  try {
+    toLiquidHtmlAST(content);
+    parsesCleanly = true;
+  } catch {
+    parsesCleanly = false;
+  }
+  if (!parsesCleanly) return;
+
+  const removeSet = new Set(candidates);
+  result.errors = result.errors.filter(d => !removeSet.has(d));
+  result.warnings = result.warnings.filter(d => !removeSet.has(d));
+
+  const lines = candidates
+    .map(d => d.line)
+    .filter(n => n != null);
+  result.infos.push({
+    check: 'pos-supervisor:LspSyntaxFalsePositiveSuppressed',
+    severity: 'info',
+    message:
+      `Suppressed ${candidates.length} LiquidHTMLSyntaxError("Syntax is not supported") ` +
+      `diagnostic(s)${lines.length ? ` on line(s) ${lines.join(', ')}` : ''} — ` +
+      `the platformOS parser (@platformos/liquid-html-parser) accepts the file. ` +
+      `This is a known pos-cli LSP regression, most often triggered by a boolean ` +
+      `comparison inside \`assign\` (e.g. \`assign x = a == b\`).`,
+  });
+}
 
 function applyUserSuppressions(result, filePath, projectDir) {
   const suppressFile = join(projectDir, '.pos-supervisor-ignore.yml');
@@ -818,11 +908,11 @@ function verifyMissingAssets(result, projectDir) {
  *     link to a POST-only route) and the agent needs to see it.
  *   - route not served at all → diagnostic stands.
  */
-function verifyPageRoutesOnDisk(result, projectDir) {
+function verifyPageRoutesOnDisk(result, projectDir, currentFile = null) {
   const candidates = [...result.errors, ...result.warnings].filter(d => d.check === 'MissingPage');
   if (candidates.length === 0) return;
 
-  const index = buildPageRouteIndex(projectDir);
+  const index = buildPageRouteIndex(projectDir, currentFile);
   if (index.routes.size === 0) return;
 
   const suppressed = new Set();

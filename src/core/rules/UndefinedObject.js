@@ -2,9 +2,15 @@
  * UndefinedObject rules — variable not defined in current scope.
  *
  * Priority order:
- *   10 — shopify_object: Shopify theme object detected → migration guidance
- *   20 — context_prefix: bare variable in page needs context. prefix
- *   30 — declare_param: partial/command/query needs @param declaration
+ *    10 — shopify_object:   Shopify theme object detected → migration guidance
+ *    20 — context_prefix:   bare variable in page needs context. prefix
+ *    30 — declare_param:    partial/command/query needs @param declaration
+ *   100 — generic:          variable name extracted but no specialised rule applies
+ *  1000 — default:          catch-all for the case where extraction failed
+ *         (LSP message shape change, etc.). Without this rule the diagnostic
+ *         would land as `UndefinedObject.unmatched`. Confidence is intentionally
+ *         lower than `.generic` so analytics treat it as a coverage signal, not
+ *         an authoritative answer.
  */
 import { isShopifyObject, getShopifyObject, getCheckKnowledge } from '../knowledge-loader.js';
 
@@ -134,5 +140,35 @@ export const rules = [
         confidence: 0.5,
       };
     },
+  },
+
+  // Last-resort catch-all. Reached only when `.generic`'s extraction guard
+  // failed — the LSP emitted an UndefinedObject whose message did not match
+  // the documented shape. Surfaces a diagnostic that names "an undefined
+  // variable" without pretending we know which one.
+  {
+    id: 'UndefinedObject.default',
+    check: 'UndefinedObject',
+    priority: 1000,
+    when: () => true,
+    apply: () => ({
+      rule_id: 'UndefinedObject.default',
+      hint_md:
+        `An undefined variable is referenced. Read the upstream message — it names the variable. ` +
+        `Three canonical resolutions:\n` +
+        `  • **In a page** — bare names like \`params\`, \`session\`, \`current_user\` need ` +
+        `the \`context.\` prefix.\n` +
+        `  • **In a partial / command / query** — declare the variable as a \`{% doc %} ` +
+        `@param {<type>} <name> {% enddoc %}\` and have the caller pass it.\n` +
+        `  • **Local computation** — assign before use: \`{% assign x = ... %}\` / ` +
+        `\`{% graphql x = ... %}\` / \`{% function x = ... %}\`.`,
+      fixes: [{
+        type: 'guidance',
+        description:
+          `Re-read the upstream message for the variable name, then either prefix with \`context.\`, ` +
+          `declare as a \`@param\`, or assign before use depending on where the reference lives.`,
+      }],
+      confidence: 0.4,
+    }),
   },
 ];

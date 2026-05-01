@@ -2,10 +2,13 @@
  * UnknownFilter rules — filter does not exist in platformOS Liquid.
  *
  * Priority order:
- *   10 — tag_confusion: filter name is actually a tag
- *   20 — shopify_filter: Shopify-specific filter detected
- *   30 — suggest_nearest: did-you-mean via filters index
- *   40 — generic: fallback hint
+ *    10 — tag_confusion:   filter name is actually a tag
+ *    20 — shopify_filter:  Shopify-specific filter detected
+ *    30 — suggest_nearest: did-you-mean via filters index
+ *   100 — generic:         filter name extracted but no specialised rule applies
+ *  1000 — default:         catch-all for the case where extraction failed.
+ *         Stops the diagnostic from landing as `UnknownFilter.unmatched` and
+ *         gives the agent a typed hint regardless of upstream message shape.
  */
 import { isShopifyFilter, getShopifyFilter } from '../knowledge-loader.js';
 
@@ -134,5 +137,37 @@ export const rules = [
         confidence: 0.4,
       };
     },
+  },
+
+  // Last-resort catch-all. Reached only when `.generic`'s extraction guard
+  // failed — the LSP emitted an UnknownFilter whose message did not match
+  // the documented "Unknown filter '<name>'" shape. Hint stays generic but
+  // is enough to direct the agent at the lookup tool and the
+  // platformOS-vs-Shopify distinction.
+  {
+    id: 'UnknownFilter.default',
+    check: 'UnknownFilter',
+    priority: 1000,
+    when: () => true,
+    apply: () => ({
+      rule_id: 'UnknownFilter.default',
+      hint_md:
+        `An unknown filter is referenced. Read the upstream message — it names the filter. ` +
+        `Two canonical resolutions:\n` +
+        `  • **Typo** — fix the filter name. Use \`lookup\` (completions mode) at the filter position ` +
+        `to see what platformOS actually ships.\n` +
+        `  • **Shopify-only filter** — platformOS does not have Shopify's \`money\`, \`img_url\`, ` +
+        `\`link_to\` family. Replace with the platformOS equivalent or restructure the template.\n\n` +
+        `Tags and filters are syntactically distinct: \`{% tag ... %}\` vs \`| filter\`. ` +
+        `If the name is actually a tag, switch to block syntax.`,
+      fixes: [{
+        type: 'guidance',
+        description:
+          `Re-read the upstream message for the filter name, then look it up via \`lookup\` ` +
+          `(completions mode) at the filter position. If it's Shopify-specific, find the ` +
+          `platformOS equivalent or rewrite the expression.`,
+      }],
+      confidence: 0.4,
+    }),
   },
 ];

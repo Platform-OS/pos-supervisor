@@ -758,3 +758,248 @@ describe('stampDefaultsOn: late-push diagnostics get default confidence', () => 
     expect(result.errors[0].rule_id).toBe('UnknownFilter.typo');
   });
 });
+
+// ── suppressLspKnownFalsePositives ──────────────────────────────────────────
+//
+// Pins the LSP "Syntax is not supported" suppression on `assign x = a <op> b`
+// boolean comparisons. Upstream pos-cli LSP rejects this construct even
+// though `pos-cli check run` and the platformOS Liquid parser both accept
+// it. Without the suppression, agents are forced to rewrite valid code as a
+// multi-line if/else just to clear the must_fix_before_write gate.
+
+describe('diagnostic-pipeline: suppressLspKnownFalsePositives', () => {
+  function syntaxErr(line, message = 'Syntax is not supported') {
+    return { check: 'LiquidHTMLSyntaxError', severity: 'error', line, message };
+  }
+
+  it('suppresses the LSP false positive on `assign x = a == b` when the file parses cleanly', () => {
+    const content = [
+      '{% doc %}',
+      '  @param {object} object',
+      '{% enddoc %}',
+      '{% liquid',
+      '  assign c = object.errors | default: empty',
+      '  assign object.valid = c == empty',
+      '  return object',
+      '%}',
+    ].join('\n');
+
+    const result = makeResult([syntaxErr(6)]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/lib/commands/contacts/create/check.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const info = result.infos.find(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed');
+    expect(info).toBeDefined();
+    expect(info.message).toContain('line(s) 6');
+    expect(info.message).toContain('@platformos/liquid-html-parser');
+  });
+
+  it('suppresses every "Syntax is not supported" diagnostic in the same file at once', () => {
+    const content = [
+      '{% liquid',
+      '  assign a = 1 == 1',
+      '  assign b = 2 != 3',
+      '%}',
+    ].join('\n');
+
+    const result = makeResult([syntaxErr(2), syntaxErr(3)]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/check.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const info = result.infos.find(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed');
+    expect(info.message).toContain('line(s) 2, 3');
+  });
+
+  it('does NOT suppress when the file has a real syntax error elsewhere (parser fails)', () => {
+    const content = [
+      '{% liquid',
+      '  assign x = 1 == 1',
+      '%}',
+      '{% if foo %}',
+      '  hello',
+      '{# missing endif — strict parse fails here #}',
+    ].join('\n');
+
+    const result = makeResult([syntaxErr(2)]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/broken.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].check).toBe('LiquidHTMLSyntaxError');
+    expect(result.infos.some(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed')).toBe(false);
+  });
+
+  it('does NOT suppress LiquidHTMLSyntaxError diagnostics with a different upstream message', () => {
+    const content = [
+      '{% liquid',
+      '  assign x = 1',
+      '%}',
+    ].join('\n');
+
+    const result = makeResult([
+      { check: 'LiquidHTMLSyntaxError', severity: 'error', line: 1, message: "Invalid syntax for tag 'render'" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/x.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed')).toBe(false);
+  });
+
+  it('does NOT suppress non-LiquidHTMLSyntaxError checks even when the message text matches', () => {
+    const content = '{% liquid\n  assign x = 1\n%}\n';
+
+    const result = makeResult([
+      { check: 'UnknownFilter', severity: 'error', line: 1, message: 'Syntax is not supported' },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/x.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].check).toBe('UnknownFilter');
+  });
+
+  it('also handles diagnostics surfaced as warnings, not just errors', () => {
+    const content = '{% liquid\n  assign x = 1 == 1\n%}\n';
+
+    const result = makeResult([], [
+      { check: 'LiquidHTMLSyntaxError', severity: 'warning', line: 2, message: 'Syntax is not supported' },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/x.liquid',
+      content,
+    });
+
+    expect(result.warnings).toHaveLength(0);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed')).toBe(true);
+  });
+});
+
+// ── verifyPageRoutesOnDisk: in-memory file overlay ──────────────────────────
+//
+// Pins the self-page suppression: when an agent runs validate_code on a
+// page whose in-memory frontmatter declares the very (slug, method) pair
+// the LSP is complaining about, the route index must reflect the
+// in-memory version, not the older on-disk one. Without this overlay the
+// agent sees a MissingPage warning for a route the file IS about to serve
+// the moment it lands on disk — exactly the false positive observed in
+// the DEMO project (POST `/` warning while `app/views/pages/index.liquid`
+// declared `method: post` in-memory).
+
+describe('diagnostic-pipeline: verifyPageRoutesOnDisk respects in-memory overlay', () => {
+  let tmpDir;
+
+  beforeAll(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'pipeline-route-overlay-'));
+    mkdirSync(join(tmpDir, 'app/views/pages'), { recursive: true });
+    // Disk version: GET / only — no method declared.
+    writeFileSync(
+      join(tmpDir, 'app/views/pages/index.liquid'),
+      '<p>old version (no frontmatter)</p>\n',
+      'utf8',
+    );
+  });
+
+  afterAll(() => { if (tmpDir) rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it("suppresses MissingPage for route '/' (POST) when the file under validation declares method: post in-memory", () => {
+    const inMemory = [
+      '---',
+      'method: post',
+      'metadata:',
+      '  title: "Home"',
+      '---',
+      '<p>POST handler in-memory</p>',
+    ].join('\n');
+
+    const result = makeResult([], [
+      { check: 'MissingPage', severity: 'warning', line: 6, column: 0, message: "No page found for route '/' (POST)" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/pages/index.liquid',
+      content: inMemory,
+      projectDir: tmpDir,
+    });
+
+    expect(result.warnings).toHaveLength(0);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPageSuppressed')).toBe(true);
+  });
+
+  it('still flags MissingPage when the in-memory frontmatter does not cover the reported method', () => {
+    const inMemory = [
+      '---',
+      'method: get',
+      '---',
+      '<p>GET only</p>',
+    ].join('\n');
+
+    const result = makeResult([], [
+      { check: 'MissingPage', severity: 'warning', line: 4, column: 0, message: "No page found for route '/' (POST)" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/pages/index.liquid',
+      content: inMemory,
+      projectDir: tmpDir,
+    });
+
+    expect(result.warnings).toHaveLength(1);
+    // wrong-method enrichment — the route IS served, just for GET.
+    expect(result.warnings[0].hint).toContain('GET');
+  });
+
+  it('treats a brand-new page (not yet on disk) as serving its declared route', () => {
+    const inMemory = [
+      '---',
+      'slug: contact',
+      'method: post',
+      '---',
+      '<p>new page</p>',
+    ].join('\n');
+
+    const result = makeResult([], [
+      { check: 'MissingPage', severity: 'warning', line: 5, column: 0, message: "No page found for route '/contact' (POST)" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/pages/contact.liquid',
+      content: inMemory,
+      projectDir: tmpDir,
+    });
+
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('ignores the overlay when the file under validation is not under app/views/pages/ (partial / layout)', () => {
+    // A partial cannot serve a route. Even if it has frontmatter (it shouldn't),
+    // the route index must remain disk-only for non-page files.
+    const inMemory = [
+      '---',
+      'slug: pretend',
+      'method: post',
+      '---',
+      '<p>partial pretending to be a page</p>',
+    ].join('\n');
+
+    const result = makeResult([], [
+      { check: 'MissingPage', severity: 'warning', line: 5, column: 0, message: "No page found for route '/pretend' (POST)" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/pretend.liquid',
+      content: inMemory,
+      projectDir: tmpDir,
+    });
+
+    expect(result.warnings).toHaveLength(1);
+  });
+});

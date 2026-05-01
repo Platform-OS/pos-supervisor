@@ -325,16 +325,21 @@ describe('MissingPartial.invalid_lib_prefix', () => {
 });
 
 describe('MissingPartial — edge cases', () => {
-  test('returns null when partial param is missing', () => {
+  test('falls through to .default when partial param is missing (was .unmatched before catch-all)', () => {
     const diag = { check: 'MissingPartial', params: {} };
     const result = runRules(diag, facts);
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result.rule_id).toBe('MissingPartial.default');
+    // No symbol name in the hint when extraction failed.
+    expect(result.hint_md).toContain('this reference');
+    expect(result.hint_md).not.toContain('``');  // no empty backticked symbol
   });
 
-  test('returns null when params is undefined', () => {
+  test('falls through to .default when params is undefined', () => {
     const diag = { check: 'MissingPartial' };
     const result = runRules(diag, facts);
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result.rule_id).toBe('MissingPartial.default');
   });
 
   test('rule_id is always set in result', () => {
@@ -343,5 +348,53 @@ describe('MissingPartial — edge cases', () => {
     expect(result).not.toBeNull();
     expect(result.rule_id).toBeDefined();
     expect(result.rule_id.startsWith('MissingPartial.')).toBe(true);
+  });
+});
+
+describe('MissingPartial.default catch-all', () => {
+  test('does NOT preempt a more specific rule (priority order intact)', () => {
+    const diag = {
+      check: 'MissingPartial',
+      params: { partial: 'lib/commands/orders/create' },
+      line: 3, column: 12, endLine: 3, endColumn: 41,
+    };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('MissingPartial.invalid_lib_prefix');
+  });
+
+  test('does NOT preempt MissingPartial.module_path', () => {
+    const diag = { check: 'MissingPartial', params: { partial: 'modules/user/helpers/auth' } };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('MissingPartial.module_path');
+  });
+
+  test('emits the partial name in the hint when extractParams found one', () => {
+    const diag = {
+      check: 'MissingPartial',
+      // Path that doesn't match any specialised guard: not modules/, not lib/,
+      // not file_exists, no levenshtein neighbours, classifyPath says nothing
+      // useful → .default catches it.
+      params: { partial: 'completely/unrecognisable/shape/that/no/specialised/rule/wants' },
+    };
+    const result = runRules(diag, facts);
+    expect(result).not.toBeNull();
+    // Either a more specific rule fires (acceptable) or the default carries
+    // the symbol name. The contract is "every emit gets a typed rule_id".
+    expect(result.rule_id.startsWith('MissingPartial.')).toBe(true);
+    expect(result.rule_id).not.toBe('MissingPartial.unmatched');
+  });
+
+  test('default rule confidence is intentionally lower than the named guards', () => {
+    const diag = { check: 'MissingPartial' };  // no params at all
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('MissingPartial.default');
+    expect(result.confidence).toBeLessThanOrEqual(0.6);
+  });
+
+  test('default emits a project_map see_also so the agent has a recovery path', () => {
+    const diag = { check: 'MissingPartial', params: {} };
+    const result = runRules(diag, facts);
+    expect(result.see_also).toBeDefined();
+    expect(result.see_also.tool).toBe('project_map');
   });
 });

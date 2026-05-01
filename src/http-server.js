@@ -12,6 +12,7 @@ import { getProjectMap } from './tools/project-map.js';
 import { buildDependencyGraph } from './core/dependency-graph.js';
 import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams, diagnosticJourney, confidenceCalibration, fixAdoptionFunnel, knowledgeGaps, ruleScoresByCategory, ruleDrilldown, rulePerformance, adaptiveModeImpact, fixRulePerformance } from './core/analytics-queries.js';
 import { ruleScores, suggestedRules, retrieveCasesByCheck, generateRuleTemplate, synthesizeGuardPredicate } from './core/case-base.js';
+import { withCheckLabels, withRuleLabels } from './core/analytics-labels.js';
 import { addPromotedRule, removePromotedRule, listPromotedRules } from './core/rules/promoted-rules.js';
 import { reloadRules, loadAllRules } from './core/rules/index.js';
 import { runRules, getDisabledRules, getAllChecksWithRules, getRulesForCheck, getDisabledRuleDetails, getForceEnabledRules, getForceDisabledRules } from './core/rules/engine.js';
@@ -144,6 +145,10 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
         return handleCall(registry, body, res);
       }
 
+      if (url.pathname === '/api/analytics/baseline') {
+        return handleAnalyticsBaselineSet(analyticsStore, body, res);
+      }
+
       if (url.pathname === '/api/pos-cli/data-clean') {
         return handlePosCliCommand(posCliPath, projectDir, body, 'data-clean', log, res);
       }
@@ -187,12 +192,16 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       return sendJson(res, 200, analyticsStore.stats());
     }
 
+    if (method === 'GET' && url.pathname === '/api/analytics/baseline') {
+      return handleAnalyticsBaselineGet(analyticsStore, res);
+    }
+
     if (method === 'GET' && url.pathname === '/api/analytics/scorecards') {
       return handleAnalyticsScorecards(analyticsStore, url, res);
     }
 
     if (method === 'GET' && url.pathname === '/api/analytics/sessions') {
-      return handleAnalyticsSessions(analyticsStore, res);
+      return handleAnalyticsSessions(analyticsStore, url, res);
     }
 
     if (method === 'GET' && url.pathname === '/api/analytics/recommendations') {
@@ -220,7 +229,7 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
     }
 
     if (method === 'GET' && url.pathname === '/api/analytics/suggested-rules') {
-      return handleSuggestedRules(analyticsStore, res);
+      return handleSuggestedRules(analyticsStore, url, res);
     }
 
     if (method === 'GET' && url.pathname === '/api/analytics/cases') {
@@ -240,15 +249,15 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
     }
 
     if (method === 'GET' && url.pathname === '/api/analytics/funnel') {
-      return handleFixAdoptionFunnel(analyticsStore, res);
+      return handleFixAdoptionFunnel(analyticsStore, url, res);
     }
 
     if (method === 'GET' && url.pathname === '/api/analytics/knowledge-gaps') {
-      return handleKnowledgeGaps(analyticsStore, res);
+      return handleKnowledgeGaps(analyticsStore, url, res);
     }
 
     if (method === 'GET' && url.pathname === '/api/analytics/rule-heatmap') {
-      return handleRuleHeatmap(analyticsStore, res);
+      return handleRuleHeatmap(analyticsStore, url, res);
     }
 
     if (method === 'GET' && url.pathname === '/api/rules/checks') {
@@ -790,62 +799,70 @@ function handleDeletePromotedRule(projectDir, url, res) {
 
 function handleDiagnosticJourney(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
-  let templateFp = url.searchParams.get('template_fp');
-  const check = url.searchParams.get('check');
-  if (!templateFp && check) {
-    const row = analyticsStore.queryOne(
-      `SELECT template_fp, COUNT(*) as cnt FROM diagnostics WHERE check_name = ? AND template_fp IS NOT NULL GROUP BY template_fp ORDER BY cnt DESC LIMIT 1`,
-      [check],
-    );
-    templateFp = row?.template_fp;
-  }
-  if (!templateFp) return sendJson(res, 400, { error: 'template_fp or check parameter required' });
   try {
-    const journey = diagnosticJourney(analyticsStore, templateFp);
-    sendJson(res, 200, journey);
+    const since = parseSinceParam(url);
+    let templateFp = url.searchParams.get('template_fp');
+    const check = url.searchParams.get('check');
+    if (!templateFp && check) {
+      const row = analyticsStore.queryOne(
+        `SELECT template_fp, COUNT(*) as cnt FROM diagnostics WHERE check_name = ? AND template_fp IS NOT NULL GROUP BY template_fp ORDER BY cnt DESC LIMIT 1`,
+        [check],
+      );
+      templateFp = row?.template_fp;
+    }
+    if (!templateFp) return sendJson(res, 400, { error: 'template_fp or check parameter required' });
+    const journey = diagnosticJourney(analyticsStore, templateFp, { since });
+    sendJson(res, 200, { ...journey, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
 function handleConfidenceCalibration(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
+    const since = parseSinceParam(url);
     const buckets = parseInt(url.searchParams.get('buckets') || '10', 10);
-    const calibration = confidenceCalibration(analyticsStore, { buckets: Math.min(Math.max(buckets, 2), 20) });
-    sendJson(res, 200, { calibration });
+    const calibration = confidenceCalibration(analyticsStore, {
+      buckets: Math.min(Math.max(buckets, 2), 20),
+      since,
+    });
+    sendJson(res, 200, { calibration, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
-function handleFixAdoptionFunnel(analyticsStore, res) {
+function handleFixAdoptionFunnel(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
-    const funnel = fixAdoptionFunnel(analyticsStore);
-    sendJson(res, 200, funnel);
+    const since = parseSinceParam(url);
+    const funnel = fixAdoptionFunnel(analyticsStore, { since });
+    sendJson(res, 200, { ...funnel, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
-function handleKnowledgeGaps(analyticsStore, res) {
+function handleKnowledgeGaps(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
-    const gaps = knowledgeGaps(analyticsStore);
-    sendJson(res, 200, { gaps });
+    const since = parseSinceParam(url);
+    const gaps = knowledgeGaps(analyticsStore, { since });
+    sendJson(res, 200, { gaps, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
-function handleRuleHeatmap(analyticsStore, res) {
+function handleRuleHeatmap(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
-    const cells = ruleScoresByCategory(analyticsStore);
-    sendJson(res, 200, { cells });
+    const since = parseSinceParam(url);
+    const cells = ruleScoresByCategory(analyticsStore, { since });
+    sendJson(res, 200, { cells, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
@@ -1344,6 +1361,63 @@ function readLogTail(logPath, limit) {
 
 // ── Analytics handlers (Phase B) ───────────────────────────────────────────
 
+/**
+ * Parse the `since` query parameter into the value the analytics-queries +
+ * case-base reporting paths accept:
+ *
+ *   - `?since=all`            → null  (explicit bypass — operator clicked
+ *                                       "All time" in the dashboard)
+ *   - `?since=ISO`            → string (explicit override)
+ *   - `?since` absent / empty → undefined (function looks up meta baseline)
+ *
+ * Validates the ISO string by attempting Date parse; rejects with a thrown
+ * Error so the surrounding try/catch returns 400. Strict validation is the
+ * point — silently accepting garbage means an operator typing a bad date
+ * sees stats they don't expect with no error.
+ *
+ * Exported so unit tests can pin the parsing contract without spinning up
+ * the HTTP server. (Server startup uses bun:sqlite via analytics-store,
+ * which fails under integration tests that spawn `node bin/...`.)
+ */
+export function parseSinceParam(url) {
+  const raw = url.searchParams.get('since');
+  if (raw == null || raw === '') return undefined;
+  if (raw === 'all') return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`since must be 'all' or a valid ISO timestamp; got '${raw}'`);
+  }
+  return raw;
+}
+
+function handleAnalyticsBaselineGet(analyticsStore, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    sendJson(res, 200, analyticsStore.getBaselineMeta());
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleAnalyticsBaselineSet(analyticsStore, body, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    // Body shape: { baseline_ts: ISO } to set, { baseline_ts: null } to clear.
+    if (!body || typeof body !== 'object') {
+      return sendJson(res, 400, { error: 'request body must be an object' });
+    }
+    if (!('baseline_ts' in body)) {
+      return sendJson(res, 400, { error: 'missing required field: baseline_ts (ISO string or null)' });
+    }
+    analyticsStore.setBaselineTs(body.baseline_ts);
+    sendJson(res, 200, { ok: true, ...analyticsStore.getBaselineMeta() });
+  } catch (e) {
+    // setBaselineTs throws TypeError on invalid input — surface as 400.
+    const status = e instanceof TypeError ? 400 : 500;
+    sendJson(res, status, { error: e.message });
+  }
+}
+
 function handleAnalyticsRebuild(analyticsStore, sessionsDir, onAnalyticsRebuild, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   if (!sessionsDir) return sendJson(res, 400, { error: 'sessions dir not configured' });
@@ -1359,120 +1433,158 @@ function handleAnalyticsRebuild(analyticsStore, sessionsDir, onAnalyticsRebuild,
 function handleAnalyticsScorecards(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
+    const since = parseSinceParam(url);
     const sessionId = url.searchParams.get('session_id') || undefined;
     const minCohort = parseInt(url.searchParams.get('min_cohort') || '10', 10);
-    const cards = checkScorecards(analyticsStore, { sessionId, minCohort });
-    sendJson(res, 200, { scorecards: cards });
+    const cards = checkScorecards(analyticsStore, { sessionId, minCohort, since });
+    sendJson(res, 200, { scorecards: withCheckLabels(cards), since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
-function handleAnalyticsSessions(analyticsStore, res) {
+function handleAnalyticsSessions(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
-    const summaries = sessionSummaries(analyticsStore);
-    sendJson(res, 200, { sessions: summaries });
+    const since = parseSinceParam(url);
+    const summaries = sessionSummaries(analyticsStore, { since });
+    sendJson(res, 200, { sessions: summaries, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
 function handleAnalyticsRecommendations(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
+    const since = parseSinceParam(url);
     const threshold = parseFloat(url.searchParams.get('threshold') || '0.3');
-    const recs = recommendations(analyticsStore, threshold);
-    sendJson(res, 200, { recommendations: recs });
+    const recs = recommendations(analyticsStore, threshold, { since });
+    sendJson(res, 200, { recommendations: recs, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
 function handleAnalyticsBigrams(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
+    const since = parseSinceParam(url);
     const sessionId = url.searchParams.get('session_id') || undefined;
-    const bigrams = toolSequenceBigrams(analyticsStore, { sessionId });
-    sendJson(res, 200, { bigrams });
+    const bigrams = toolSequenceBigrams(analyticsStore, { sessionId, since });
+    sendJson(res, 200, { bigrams, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
 function handleRuleScores(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
+    const since = parseSinceParam(url);
     const minEmitted = parseInt(url.searchParams.get('min_emitted') || '5', 10);
-    const scores = ruleScores(analyticsStore, { minEmitted });
-    sendJson(res, 200, { scores });
+    const scores = ruleScores(analyticsStore, { minEmitted, since });
+    sendJson(res, 200, { scores: withRuleLabels(scores), since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
 function handleRulePerformance(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
+    const since = parseSinceParam(url);
     const minEmitted = parseInt(url.searchParams.get('min_emitted') || '1', 10);
-    const scores = rulePerformance(analyticsStore, { minEmitted });
-    sendJson(res, 200, { scores });
+    const scores = rulePerformance(analyticsStore, { minEmitted, since });
+    sendJson(res, 200, { scores: withRuleLabels(scores), since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
 function handleFixRulePerformance(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
+    const since = parseSinceParam(url);
     const minProposed = parseInt(url.searchParams.get('min_proposed') || '1', 10);
-    const scores = fixRulePerformance(analyticsStore, { minProposed });
-    sendJson(res, 200, { scores });
+    const scores = fixRulePerformance(analyticsStore, { minProposed, since });
+    sendJson(res, 200, { scores, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
 function handleRuleDrilldown(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
+    const since = parseSinceParam(url);
     const ruleId = url.searchParams.get('rule_id');
     if (!ruleId) return sendJson(res, 400, { error: 'rule_id parameter required' });
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '30', 10), 100);
-    const data = ruleDrilldown(analyticsStore, ruleId, { limit });
-    sendJson(res, 200, data);
+    const data = ruleDrilldown(analyticsStore, ruleId, { limit, since });
+    sendJson(res, 200, { ...data, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
-function handleSuggestedRules(analyticsStore, res) {
+function handleSuggestedRules(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
-    const suggestions = suggestedRules(analyticsStore).map(s => {
-      const guards = synthesizeGuardPredicate(analyticsStore, s.check, s.template_fp);
+    const since = parseSinceParam(url);
+    const suggestions = suggestedRules(analyticsStore, new Set(), { since }).map(s => {
+      // Forward the same since to guard synthesis so the inferred guard
+      // window matches the suggestion window.
+      const guards = synthesizeGuardPredicate(analyticsStore, s.check, s.template_fp, { since });
       return {
         ...s,
         when: guards,
         template: generateRuleTemplate(s, guards),
       };
     });
-    sendJson(res, 200, { suggestions });
+    sendJson(res, 200, { suggestions, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
 }
 
 function handleCases(analyticsStore, url, res) {
   if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
   try {
+    const since = parseSinceParam(url);
     const check = url.searchParams.get('check');
     if (!check) return sendJson(res, 400, { error: 'check parameter required' });
-    const cases = retrieveCasesByCheck(analyticsStore, check, { minCases: 1 });
-    sendJson(res, 200, { cases });
+    const cases = retrieveCasesByCheck(analyticsStore, check, { minCases: 1, since });
+    sendJson(res, 200, { cases, since: resolvedSinceForResponse(analyticsStore, since) });
   } catch (e) {
-    sendJson(res, 500, { error: e.message });
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
   }
+}
+
+/**
+ * Surface what the queries actually filtered by. When `since` was undefined
+ * (meta default), this returns the meta value so the dashboard can show a
+ * "Stats since: <ISO>" banner without a separate round-trip. When the
+ * caller explicitly passed `?since=all`, returns null. Tolerates errors so
+ * a missing baseline meta column never breaks the analytics response.
+ */
+function resolvedSinceForResponse(store, sinceArg) {
+  if (sinceArg === null) return null;
+  if (typeof sinceArg === 'string') return sinceArg;
+  try {
+    return store.getBaselineTs?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `parseSinceParam` throws on a malformed `since` query param; surface as
+ * 400 (client error). Anything else propagates the existing 500 path.
+ */
+function sinceErrorStatus(err) {
+  if (err && typeof err.message === 'string' && err.message.includes("since must be")) return 400;
+  return 500;
 }
 
 function readJsonBody(req) {

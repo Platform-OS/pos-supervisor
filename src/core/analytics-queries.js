@@ -15,6 +15,39 @@ function tryParseJson(str) {
 }
 
 /**
+ * Resolve the tri-state `since` parameter to an ISO string or null.
+ *
+ * Reporting queries take an optional `since` opt. The contract:
+ *
+ *   - `since === undefined` (or absent): read the store's reporting baseline
+ *     meta (`analytics_baseline_ts`). Absent meta ⇒ null ⇒ no filter. This is
+ *     the reporting default — operators set the baseline once and every
+ *     dashboard widget / Markdown report widget sees the post-baseline view.
+ *   - `since === null`: explicit bypass — never filter, regardless of meta.
+ *     Reserved for engine-state callers that must see full history (case-base
+ *     auto-disable, scoreRule, server-status ops snapshot). Reporting callers
+ *     should not use this; tests use it to assert "default behaviour with no
+ *     baseline" without depending on meta state.
+ *   - `since === '<ISO>'`: explicit override — use that timestamp.
+ *
+ * `store.getBaselineTs` is the analytics-store helper; absent (e.g. mock
+ * stores), the resolver degrades to "no baseline" gracefully.
+ */
+function resolveSince(store, since) {
+  if (since === null) return null;
+  if (typeof since === 'string' && since.length > 0) return since;
+  if (store && typeof store.getBaselineTs === 'function') {
+    try {
+      const baseline = store.getBaselineTs();
+      return baseline ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
  * Beta-binomial posterior: given `successes` out of `total` trials
  * with prior Beta(a, b), return { mean, lower95, upper95 }.
  */
@@ -64,35 +97,48 @@ function normalQuantile(p) {
  * @param {object} [opts]
  * @param {number} [opts.minCohort=10] - Minimum sample size for inclusion
  * @param {string} [opts.sessionId] - Limit to specific session
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<CheckScorecard>}
  */
-export function checkScorecards(store, { minCohort = MIN_COHORT, sessionId } = {}) {
+export function checkScorecards(store, { minCohort = MIN_COHORT, sessionId, since } = {}) {
+  const sinceTs = resolveSince(store, since);
   const sessionFilter = sessionId ? 'AND d.session_id = ?' : '';
+  const sinceFilter = sinceTs ? 'AND d.ts >= ?' : '';
   const params = sessionId ? [sessionId] : [];
+  if (sinceTs) params.push(sinceTs);
 
   const emittedRows = store.query(`
     SELECT d.check_name, COUNT(*) as emitted
     FROM diagnostics d
-    WHERE d.suppressed = 0 ${sessionFilter}
+    WHERE d.suppressed = 0 ${sessionFilter} ${sinceFilter}
     GROUP BY d.check_name
     HAVING COUNT(*) >= ?
   `, [...params, minCohort]);
 
   const scorecards = [];
 
+  // The `since` filter is applied to the diagnostics subquery — we want to
+  // count outcomes only for diagnostics that fall in the reporting window.
+  // The outcomes table itself has no ts column; the diagnostic's emit ts is
+  // the canonical "when this happened" for reporting purposes.
+  const outcomeSinceClause = sinceTs ? 'AND ts >= ?' : '';
+  const outcomeSinceParams = sinceTs ? [sinceTs] : [];
+
   for (const row of emittedRows) {
     const check = row.check_name;
     const emitted = row.emitted;
 
-    const outcomeParams = sessionId ? [check, sessionId] : [check];
-    const outcomeFilter = sessionId ? 'AND o.fp IN (SELECT fp FROM diagnostics WHERE session_id = ?)' : '';
+    const sessionDiagFilter = sessionId ? 'AND session_id = ?' : '';
 
     const outcomeRows = store.query(`
       SELECT o.outcome, COUNT(*) as cnt
       FROM outcomes o
-      WHERE o.fp IN (SELECT fp FROM diagnostics WHERE check_name = ?) ${outcomeFilter}
+      WHERE o.fp IN (
+        SELECT fp FROM diagnostics
+        WHERE check_name = ? ${sessionDiagFilter} ${outcomeSinceClause}
+      )
       GROUP BY o.outcome
-    `, outcomeParams);
+    `, [check, ...(sessionId ? [sessionId] : []), ...outcomeSinceParams]);
 
     const outcomes = {};
     for (const r of outcomeRows) outcomes[r.outcome] = r.cnt;
@@ -112,10 +158,13 @@ export function checkScorecards(store, { minCohort = MIN_COHORT, sessionId } = {
     const fixRows = store.query(`
       SELECT o.fix_applied, COUNT(*) as cnt
       FROM outcomes o
-      WHERE o.fp IN (SELECT fp FROM diagnostics WHERE check_name = ?)
+      WHERE o.fp IN (
+        SELECT fp FROM diagnostics
+        WHERE check_name = ? ${outcomeSinceClause}
+      )
         AND o.fix_applied IS NOT NULL
       GROUP BY o.fix_applied
-    `, [check]);
+    `, [check, ...outcomeSinceParams]);
 
     const fixCounts = {};
     for (const r of fixRows) fixCounts[r.fix_applied] = r.cnt;
@@ -129,9 +178,12 @@ export function checkScorecards(store, { minCohort = MIN_COHORT, sessionId } = {
     const collateralRow = store.queryOne(`
       SELECT AVG(o.collateral_added) as avg_collateral
       FROM outcomes o
-      WHERE o.fp IN (SELECT fp FROM diagnostics WHERE check_name = ?)
+      WHERE o.fp IN (
+        SELECT fp FROM diagnostics
+        WHERE check_name = ? ${outcomeSinceClause}
+      )
         AND o.outcome = 'regressed'
-    `, [check]);
+    `, [check, ...outcomeSinceParams]);
 
     scorecards.push({
       check,
@@ -155,15 +207,26 @@ export function checkScorecards(store, { minCohort = MIN_COHORT, sessionId } = {
  * @param {object} store - Opened analytics store
  * @param {object} [opts]
  * @param {string} [opts.sessionId] - Limit to specific session
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<{bigram: [string,string], count, lift, confidence}>}
  */
-export function toolSequenceBigrams(store, { sessionId } = {}) {
-  const filter = sessionId ? 'WHERE session_id = ?' : '';
-  const params = sessionId ? [sessionId] : [];
+export function toolSequenceBigrams(store, { sessionId, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const clauses = [];
+  const params = [];
+  if (sessionId) {
+    clauses.push('session_id = ?');
+    params.push(sessionId);
+  }
+  if (sinceTs) {
+    clauses.push('ts >= ?');
+    params.push(sinceTs);
+  }
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const events = store.query(`
     SELECT kind, payload FROM events
-    ${filter}
+    ${where}
     ORDER BY ts ASC
   `, params);
 
@@ -212,35 +275,48 @@ export function toolSequenceBigrams(store, { sessionId } = {}) {
  * Session-level summary: key metrics per session for cohort comparison.
  *
  * @param {object} store - Opened analytics store
+ * @param {object} [opts]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<SessionSummary>}
  */
-export function sessionSummaries(store) {
+export function sessionSummaries(store, { since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const eventSinceWhere = sinceTs ? 'WHERE ts >= ?' : '';
+  const eventSinceAnd   = sinceTs ? 'AND ts >= ?'   : '';
+  const windowSinceAnd  = sinceTs ? 'AND w.ts_start >= ?' : '';
+
+  // Session list: sessions that had ANY event at-or-after the baseline. The
+  // session's apparent first_event is naturally clamped to the window since
+  // MIN(ts) only sees ts >= since rows.
   const sessions = store.query(`
     SELECT session_id,
            MIN(ts) as first_event,
            MAX(ts) as last_event,
            COUNT(*) as event_count
     FROM events
+    ${eventSinceWhere}
     GROUP BY session_id
     ORDER BY MIN(ts) DESC
-  `);
+  `, sinceTs ? [sinceTs] : []);
 
   return sessions.map(s => {
+    const sinceP = sinceTs ? [sinceTs] : [];
+
     const toolCalls = store.queryOne(`
       SELECT COUNT(*) as cnt FROM events
-      WHERE session_id = ? AND kind = 'tool_call'
-    `, [s.session_id]);
+      WHERE session_id = ? AND kind = 'tool_call' ${eventSinceAnd}
+    `, [s.session_id, ...sinceP]);
 
     const vcCalls = store.queryOne(`
       SELECT COUNT(*) as cnt FROM events
       WHERE session_id = ? AND kind = 'tool_call'
-        AND payload LIKE '%"tool":"validate_code"%'
-    `, [s.session_id]);
+        AND payload LIKE '%"tool":"validate_code"%' ${eventSinceAnd}
+    `, [s.session_id, ...sinceP]);
 
     const diagCount = store.queryOne(`
       SELECT COUNT(*) as cnt FROM diagnostics
-      WHERE session_id = ?
-    `, [s.session_id]);
+      WHERE session_id = ? ${eventSinceAnd}
+    `, [s.session_id, ...sinceP]);
 
     const outcomeRow = store.queryOne(`
       SELECT COUNT(*) as total,
@@ -248,14 +324,14 @@ export function sessionSummaries(store) {
              SUM(CASE WHEN outcome = 'regressed' THEN 1 ELSE 0 END) as regressed
       FROM outcomes o
       JOIN windows w ON o.window_id = w.id
-      WHERE w.session_id = ?
-    `, [s.session_id]);
+      WHERE w.session_id = ? ${windowSinceAnd}
+    `, [s.session_id, ...sinceP]);
 
     const usedIntent = store.queryOne(`
       SELECT COUNT(*) as cnt FROM events
       WHERE session_id = ? AND kind = 'tool_call'
-        AND payload LIKE '%"tool":"validate_intent"%'
-    `, [s.session_id]);
+        AND payload LIKE '%"tool":"validate_intent"%' ${eventSinceAnd}
+    `, [s.session_id, ...sinceP]);
 
     return {
       session_id: s.session_id,
@@ -278,10 +354,12 @@ export function sessionSummaries(store) {
  *
  * @param {object} store
  * @param {number} [threshold=0.3] - Mislead rate threshold
+ * @param {object} [opts]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<{check, mislead_rate, recommendation}>}
  */
-export function recommendations(store, threshold = 0.3) {
-  const cards = checkScorecards(store, { minCohort: Math.max(MIN_COHORT, 5) });
+export function recommendations(store, threshold = 0.3, { since } = {}) {
+  const cards = checkScorecards(store, { minCohort: Math.max(MIN_COHORT, 5), since });
   const recs = [];
 
   for (const card of cards) {
@@ -304,17 +382,24 @@ export function recommendations(store, threshold = 0.3) {
  *
  * @param {object} store
  * @param {string} templateFp
+ * @param {object} [opts]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {{ template_fp, check, first_seen, last_seen, session_count, timeline }}
  */
-export function diagnosticJourney(store, templateFp) {
+export function diagnosticJourney(store, templateFp, { since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND ts >= ?' : '';
+  const sinceAndD = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const meta = store.queryOne(`
     SELECT check_name,
            MIN(ts) as first_seen,
            MAX(ts) as last_seen,
            COUNT(DISTINCT session_id) as session_count
     FROM diagnostics
-    WHERE template_fp = ? AND suppressed = 0
-  `, [templateFp]);
+    WHERE template_fp = ? AND suppressed = 0 ${sinceAnd}
+  `, [templateFp, ...sinceP]);
 
   if (!meta || !meta.check_name) {
     return { template_fp: templateFp, check: null, first_seen: null, last_seen: null, session_count: 0, timeline: [] };
@@ -332,9 +417,9 @@ export function diagnosticJourney(store, templateFp) {
            o.fix_applied
     FROM diagnostics d
     LEFT JOIN outcomes o ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
-    WHERE d.template_fp = ? AND d.suppressed = 0
+    WHERE d.template_fp = ? AND d.suppressed = 0 ${sinceAndD}
     ORDER BY d.ts ASC
-  `, [templateFp]);
+  `, [templateFp, ...sinceP]);
 
   const bySession = new Map();
   for (const row of timelineRows) {
@@ -417,9 +502,14 @@ export function diagnosticJourney(store, templateFp) {
  * @param {object} store
  * @param {object} [opts]
  * @param {number} [opts.buckets=10]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<{ bucket, predicted, actual_resolution, sample_size }>}
  */
-export function confidenceCalibration(store, { buckets = 10 } = {}) {
+export function confidenceCalibration(store, { buckets = 10, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   // Post-A2: every surviving diagnostic gets a default confidence in the
   // pipeline, so dropping the `confidence IS NOT NULL` guard widens the
   // calibration sample to cover non-rule-matched diagnostics too. Rows
@@ -429,8 +519,8 @@ export function confidenceCalibration(store, { buckets = 10 } = {}) {
     SELECT d.confidence, o.outcome
     FROM diagnostics d
     JOIN outcomes o ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
-    WHERE d.suppressed = 0 AND d.confidence IS NOT NULL
-  `);
+    WHERE d.suppressed = 0 AND d.confidence IS NOT NULL ${sinceAnd}
+  `, sinceP);
 
   if (rows.length === 0) return [];
 
@@ -463,39 +553,51 @@ export function confidenceCalibration(store, { buckets = 10 } = {}) {
  * through rule matching, fix proposal, adoption, and resolution.
  *
  * @param {object} store
+ * @param {object} [opts]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {{ emitted, rule_matched, fix_proposed, fix_adopted_verbatim,
  *             fix_adopted_partial, fix_ignored, resolved, regressed, unchanged }}
  */
-export function fixAdoptionFunnel(store) {
+export function fixAdoptionFunnel(store, { since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  // Same `ts` column on diagnostics; use plain `ts >=` outside the EXISTS.
+  const sinceAndPlain = sinceTs ? 'AND ts >= ?' : '';
+  // Inside EXISTS subqueries we alias diagnostics as `d`.
+  const sinceAndD = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const emittedRow = store.queryOne(`
-    SELECT COUNT(*) as cnt FROM diagnostics WHERE suppressed = 0
-  `);
+    SELECT COUNT(*) as cnt FROM diagnostics
+    WHERE suppressed = 0 ${sinceAndPlain}
+  `, sinceP);
   const emitted = emittedRow?.cnt ?? 0;
 
   const ruleMatchedRow = store.queryOne(`
     SELECT COUNT(*) as cnt FROM diagnostics
-    WHERE hint_rule_id IS NOT NULL AND hint_rule_id != 'unknown' AND suppressed = 0
-  `);
+    WHERE hint_rule_id IS NOT NULL AND hint_rule_id != 'unknown' AND suppressed = 0 ${sinceAndPlain}
+  `, sinceP);
   const rule_matched = ruleMatchedRow?.cnt ?? 0;
 
   const fixProposedRow = store.queryOne(`
     SELECT COUNT(DISTINCT pf.fp) as cnt
     FROM proposed_fixes pf
     JOIN diagnostics d ON pf.fp = d.fp
-    WHERE d.suppressed = 0
-  `);
+    WHERE d.suppressed = 0 ${sinceAndD}
+  `, sinceP);
   const fix_proposed = fixProposedRow?.cnt ?? 0;
 
   // Post-A1 (dedup): outcomes has one row per (session, file, fp). A plain
   // JOIN to diagnostics on fp cross-joins by emit count — use EXISTS to
-  // keep the count at one-per-outcome-row.
+  // keep the count at one-per-outcome-row. Baseline filter goes inside the
+  // EXISTS so an outcome only counts when its diagnostic falls in the
+  // reporting window.
   const fixAdoptionRows = store.query(`
     SELECT o.fix_applied, COUNT(*) as cnt
     FROM outcomes o
     WHERE o.fix_applied IS NOT NULL
-      AND EXISTS (SELECT 1 FROM diagnostics d WHERE d.fp = o.fp AND d.suppressed = 0)
+      AND EXISTS (SELECT 1 FROM diagnostics d WHERE d.fp = o.fp AND d.suppressed = 0 ${sinceAndD})
     GROUP BY o.fix_applied
-  `);
+  `, sinceP);
   let fix_adopted_verbatim = 0, fix_adopted_partial = 0, fix_ignored = 0;
   for (const row of fixAdoptionRows) {
     if (row.fix_applied === 'verbatim') fix_adopted_verbatim += row.cnt;
@@ -506,9 +608,9 @@ export function fixAdoptionFunnel(store) {
   const outcomeRows = store.query(`
     SELECT o.outcome, COUNT(*) as cnt
     FROM outcomes o
-    WHERE EXISTS (SELECT 1 FROM diagnostics d WHERE d.fp = o.fp AND d.suppressed = 0)
+    WHERE EXISTS (SELECT 1 FROM diagnostics d WHERE d.fp = o.fp AND d.suppressed = 0 ${sinceAndD})
     GROUP BY o.outcome
-  `);
+  `, sinceP);
   let resolved = 0, regressed = 0, unchanged = 0;
   for (const row of outcomeRows) {
     if (row.outcome === 'resolved') resolved += row.cnt;
@@ -534,9 +636,15 @@ export function fixAdoptionFunnel(store) {
  * commands, queries, graphql). Used by the heatmap visualization.
  *
  * @param {object} store
+ * @param {object} [opts]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<{ rule_id, check, category, outcomes, resolved, regressed, effectiveness }>}
  */
-export function ruleScoresByCategory(store) {
+export function ruleScoresByCategory(store, { since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const rows = store.query(`
     SELECT d.hint_rule_id as rule_id,
            d.check_name,
@@ -544,8 +652,8 @@ export function ruleScoresByCategory(store) {
            o.outcome
     FROM diagnostics d
     JOIN outcomes o ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
-    WHERE d.hint_rule_id IS NOT NULL AND d.hint_rule_id != 'unknown' AND d.suppressed = 0
-  `);
+    WHERE d.hint_rule_id IS NOT NULL AND d.hint_rule_id != 'unknown' AND d.suppressed = 0 ${sinceAnd}
+  `, sinceP);
 
   const buckets = new Map();
   for (const row of rows) {
@@ -584,19 +692,26 @@ function classifyFilePath(file) {
  * (diagnostics with no matching rule). Helps prioritize rule writing.
  *
  * @param {object} store
+ * @param {object} [opts]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<{ check, unmatched_count, total_emitted, coverage_rate, avg_resolution_rate }>}
  */
-export function knowledgeGaps(store) {
+export function knowledgeGaps(store, { since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND ts >= ?' : '';
+  const sinceAndD = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const checkRows = store.query(`
     SELECT check_name,
            COUNT(*) as total_emitted,
            SUM(CASE WHEN hint_rule_id IS NULL OR hint_rule_id = 'unknown' THEN 1 ELSE 0 END) as unmatched
     FROM diagnostics
-    WHERE suppressed = 0
+    WHERE suppressed = 0 ${sinceAnd}
     GROUP BY check_name
     HAVING COUNT(*) >= 3
     ORDER BY total_emitted DESC
-  `);
+  `, sinceP);
 
   return checkRows.map(row => {
     const resRow = store.queryOne(`
@@ -604,8 +719,8 @@ export function knowledgeGaps(store) {
              SUM(CASE WHEN o.outcome = 'resolved' THEN 1 ELSE 0 END) as resolved
       FROM outcomes o
       JOIN diagnostics d ON o.fp = d.fp AND o.session_id = d.session_id AND o.file = d.file
-      WHERE d.check_name = ? AND d.suppressed = 0
-    `, [row.check_name]);
+      WHERE d.check_name = ? AND d.suppressed = 0 ${sinceAndD}
+    `, [row.check_name, ...sinceP]);
 
     const totalOutcomes = resRow?.total ?? 0;
     const resolvedCount = resRow?.resolved ?? 0;
@@ -640,9 +755,14 @@ export function knowledgeGaps(store) {
  * @param {object} store
  * @param {object} [opts]
  * @param {number} [opts.minEmitted=1]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<RulePerformance>}
  */
-export function rulePerformance(store, { minEmitted = 1 } = {}) {
+export function rulePerformance(store, { minEmitted = 1, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND d.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const ruleRows = store.query(`
     SELECT d.hint_rule_id as rule_id,
            COUNT(*) as emitted,
@@ -651,9 +771,10 @@ export function rulePerformance(store, { minEmitted = 1 } = {}) {
     WHERE d.hint_rule_id IS NOT NULL
       AND d.hint_rule_id != 'unknown'
       AND d.suppressed = 0
+      ${sinceAnd}
     GROUP BY d.hint_rule_id
     HAVING COUNT(*) >= ?
-  `, [minEmitted]);
+  `, [...sinceP, minEmitted]);
 
   const scores = [];
 
@@ -663,10 +784,10 @@ export function rulePerformance(store, { minEmitted = 1 } = {}) {
       FROM outcomes o
       WHERE EXISTS (
         SELECT 1 FROM diagnostics d
-        WHERE d.fp = o.fp AND d.hint_rule_id = ? AND d.suppressed = 0
+        WHERE d.fp = o.fp AND d.hint_rule_id = ? AND d.suppressed = 0 ${sinceAnd}
       )
       GROUP BY o.outcome, o.fix_applied
-    `, [row.rule_id]);
+    `, [row.rule_id, ...sinceP]);
 
     let resolved = 0, regressed = 0, unchanged = 0, moved = 0;
     let adopted = 0, totalOutcomes = 0;
@@ -711,8 +832,19 @@ export function rulePerformance(store, { minEmitted = 1 } = {}) {
  * Rule drilldown — detailed diagnostic samples for a specific rule.
  * Returns recent instances where this rule fired, with outcomes, fix status,
  * and file distribution. Used by the dashboard drill-down panel.
+ *
+ * @param {object} store
+ * @param {string} ruleId
+ * @param {object} [opts]
+ * @param {number} [opts.limit=30]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  */
-export function ruleDrilldown(store, ruleId, { limit = 30 } = {}) {
+export function ruleDrilldown(store, ruleId, { limit = 30, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAndD  = sinceTs ? 'AND d.ts >= ?'  : '';
+  const sinceAndD2 = sinceTs ? 'AND d2.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   // Each diagnostic row gets at most one outcome via correlated subqueries,
   // avoiding the cartesian product from a plain LEFT JOIN on fp.
   const samples = store.query(`
@@ -725,45 +857,47 @@ export function ruleDrilldown(store, ruleId, { limit = 30 } = {}) {
            (SELECT pf.range_json FROM proposed_fixes pf WHERE pf.fp = d.fp AND pf.session_id = d.session_id LIMIT 1) as fix_range_json,
            (SELECT pf.rule_id FROM proposed_fixes pf WHERE pf.fp = d.fp AND pf.session_id = d.session_id LIMIT 1) as fix_rule_id
     FROM diagnostics d
-    WHERE d.hint_rule_id = ? AND d.suppressed = 0
+    WHERE d.hint_rule_id = ? AND d.suppressed = 0 ${sinceAndD}
     GROUP BY d.fp, d.session_id
     ORDER BY d.ts DESC
     LIMIT ?
-  `, [ruleId, limit]);
+  `, [ruleId, ...sinceP, limit]);
 
-  // File stats: count distinct fps per file, then count outcomes per fp (not per join row)
+  // File stats: count distinct fps per file, then count outcomes per fp (not per join row).
+  // Inner subqueries also filter by `since` so file-resolved/regressed counts stay
+  // consistent with the outer file emit count when the operator narrows the window.
   const fileStats = store.query(`
     SELECT d.file,
            COUNT(DISTINCT d.fp) as emitted,
            (SELECT COUNT(DISTINCT o.fp) FROM outcomes o
             JOIN diagnostics d2 ON o.fp = d2.fp
-            WHERE d2.hint_rule_id = ? AND d2.file = d.file AND o.outcome = 'resolved') as resolved,
+            WHERE d2.hint_rule_id = ? AND d2.file = d.file AND o.outcome = 'resolved' ${sinceAndD2}) as resolved,
            (SELECT COUNT(DISTINCT o.fp) FROM outcomes o
             JOIN diagnostics d2 ON o.fp = d2.fp
-            WHERE d2.hint_rule_id = ? AND d2.file = d.file AND o.outcome = 'regressed') as regressed
+            WHERE d2.hint_rule_id = ? AND d2.file = d.file AND o.outcome = 'regressed' ${sinceAndD2}) as regressed
     FROM diagnostics d
-    WHERE d.hint_rule_id = ? AND d.suppressed = 0
+    WHERE d.hint_rule_id = ? AND d.suppressed = 0 ${sinceAndD}
     GROUP BY d.file
     ORDER BY emitted DESC
     LIMIT 10
-  `, [ruleId, ruleId, ruleId]);
+  `, [ruleId, ...sinceP, ruleId, ...sinceP, ruleId, ...sinceP]);
 
   const templateStats = store.query(`
     SELECT d.template_fp,
            COUNT(DISTINCT d.fp) as count,
            (SELECT COUNT(DISTINCT o.fp) FROM outcomes o
             JOIN diagnostics d2 ON o.fp = d2.fp
-            WHERE d2.hint_rule_id = ? AND d2.template_fp = d.template_fp AND o.outcome = 'resolved') as resolved,
+            WHERE d2.hint_rule_id = ? AND d2.template_fp = d.template_fp AND o.outcome = 'resolved' ${sinceAndD2}) as resolved,
            (SELECT COUNT(DISTINCT o.fp) FROM outcomes o
             JOIN diagnostics d2 ON o.fp = d2.fp
-            WHERE d2.hint_rule_id = ? AND d2.template_fp = d.template_fp AND o.outcome = 'regressed') as regressed,
+            WHERE d2.hint_rule_id = ? AND d2.template_fp = d.template_fp AND o.outcome = 'regressed' ${sinceAndD2}) as regressed,
            MIN(d.file) as sample_file
     FROM diagnostics d
-    WHERE d.hint_rule_id = ? AND d.suppressed = 0
+    WHERE d.hint_rule_id = ? AND d.suppressed = 0 ${sinceAndD}
     GROUP BY d.template_fp
     ORDER BY count DESC
     LIMIT 10
-  `, [ruleId, ruleId, ruleId]);
+  `, [ruleId, ...sinceP, ruleId, ...sinceP, ruleId, ...sinceP]);
 
   return {
     rule_id: ruleId,
@@ -815,22 +949,27 @@ export function ruleDrilldown(store, ruleId, { limit = 30 } = {}) {
  * @param {object} store
  * @param {object} [opts]
  * @param {number} [opts.minProposed=1]
+ * @param {string|null} [opts.since] - Reporting baseline. See resolveSince().
  * @returns {Array<{
  *   rule_id, source, fix_kind,
  *   proposed, outcomes, adopted_verbatim, adopted_partial,
  *   adoption_rate, resolution_rate,
  * }>}
  */
-export function fixRulePerformance(store, { minProposed = 1 } = {}) {
+export function fixRulePerformance(store, { minProposed = 1, since } = {}) {
+  const sinceTs = resolveSince(store, since);
+  const sinceAnd = sinceTs ? 'AND pf.ts >= ?' : '';
+  const sinceP = sinceTs ? [sinceTs] : [];
+
   const rows = store.query(`
     SELECT pf.rule_id,
            MIN(pf.kind)  AS fix_kind,
            COUNT(*)      AS proposed
     FROM proposed_fixes pf
-    WHERE pf.rule_id IS NOT NULL
+    WHERE pf.rule_id IS NOT NULL ${sinceAnd}
     GROUP BY pf.rule_id
     HAVING COUNT(*) >= ?
-  `, [minProposed]);
+  `, [...sinceP, minProposed]);
 
   const out = [];
   for (const r of rows) {
@@ -839,10 +978,10 @@ export function fixRulePerformance(store, { minProposed = 1 } = {}) {
       FROM outcomes o
       WHERE EXISTS (
         SELECT 1 FROM proposed_fixes pf
-        WHERE pf.fp = o.fp AND pf.session_id = o.session_id AND pf.rule_id = ?
+        WHERE pf.fp = o.fp AND pf.session_id = o.session_id AND pf.rule_id = ? ${sinceAnd}
       )
       GROUP BY o.outcome, o.fix_applied
-    `, [r.rule_id]);
+    `, [r.rule_id, ...sinceP]);
 
     let resolved = 0, regressed = 0, unchanged = 0, moved = 0;
     let adopted_verbatim = 0, adopted_partial = 0, adopted_none = 0, total = 0;

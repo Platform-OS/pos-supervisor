@@ -74,9 +74,58 @@ describe('UnknownFilter.generic', () => {
 });
 
 describe('UnknownFilter — edge cases', () => {
-  test('returns null when filter param is missing', () => {
+  test('falls through to .default when filter param is missing', () => {
     const facts = { graph, tagsIndex: mockTagsIndex, filtersIndex: mockFiltersIndex };
     const diag = { check: 'UnknownFilter', params: {} };
-    expect(runRules(diag, facts)).toBeNull();
+    const result = runRules(diag, facts);
+    expect(result).not.toBeNull();
+    expect(result.rule_id).toBe('UnknownFilter.default');
+  });
+});
+
+describe('UnknownFilter.default catch-all', () => {
+  test('does NOT preempt .tag_confusion', () => {
+    const facts = { graph, tagsIndex: mockTagsIndex, filtersIndex: mockFiltersIndex };
+    const diag = { check: 'UnknownFilter', params: { filter: 'render' } };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UnknownFilter.tag_confusion');
+  });
+
+  test('does NOT preempt .shopify_filter', () => {
+    const facts = { graph, tagsIndex: mockTagsIndex, filtersIndex: mockFiltersIndex };
+    const diag = { check: 'UnknownFilter', params: { filter: 'money' } };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UnknownFilter.shopify_filter');
+  });
+
+  test('does NOT preempt .suggest_nearest', () => {
+    const facts = { graph, tagsIndex: { isTag: () => false }, filtersIndex: mockFiltersIndex };
+    const diag = { check: 'UnknownFilter', params: { filter: 'downcase' } };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UnknownFilter.suggest_nearest');
+  });
+
+  test('does NOT preempt .generic when filter name was extracted', () => {
+    const noMatchIndex = { loaded: true, lookup: () => null, closestMatch: () => null };
+    const facts = { graph, tagsIndex: { isTag: () => false }, filtersIndex: noMatchIndex };
+    const diag = { check: 'UnknownFilter', params: { filter: 'zzz_nonexistent' } };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UnknownFilter.generic');
+  });
+
+  test('fires when extraction failed entirely', () => {
+    const facts = { graph, tagsIndex: mockTagsIndex, filtersIndex: mockFiltersIndex };
+    const diag = { check: 'UnknownFilter' };
+    const result = runRules(diag, facts);
+    expect(result).not.toBeNull();
+    expect(result.rule_id).toBe('UnknownFilter.default');
+  });
+
+  test('hint covers typo + Shopify-only escape hatches', () => {
+    const facts = { graph, tagsIndex: mockTagsIndex, filtersIndex: mockFiltersIndex };
+    const diag = { check: 'UnknownFilter', params: {} };
+    const result = runRules(diag, facts);
+    expect(result.hint_md).toContain('lookup');
+    expect(result.hint_md).toContain('Shopify');
   });
 });

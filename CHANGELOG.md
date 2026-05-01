@@ -1,5 +1,129 @@
 # Changelog
 
+## 0.7.3 — 2026-04-30
+
+Reporting baseline + sample-size-gated labels — operator-set checkpoint
+that filters every dashboard widget and exported Markdown report by a
+chosen "stats since" timestamp, plus a presentation-layer label gate
+that replaces nonsense `AT RISK -100%` / `HARMFUL` headlines on N<5
+samples with `INSUFFICIENT_DATA`. Engine state (auto-disable, case-base
+scoring, CAC predictor, adaptive-mode probation) is **never** baselined
+— it always sees full history. Default behaviour with no baseline set
+is identical to 0.7.2.
+
+### Added — `src/core/analytics-store.js` baseline helpers
+
+Two new meta keys (`analytics_baseline_ts`, `analytics_baseline_set_at`)
+plus four helpers: `getBaselineTs()`, `getBaselineMeta()`,
+`setBaselineTs(iso | null)`, `clearBaseline()`. Stored in the existing
+`meta` table — no schema migration. `setBaselineTs` validates ISO input
+and rejects malformed strings with `TypeError` so the HTTP layer can
+return 400 cleanly. The baseline survives `rebuild()` (rebuild only
+clears derived data, not meta).
+
+### Added — `src/core/analytics-labels.js`
+
+Pure, side-effect-free presentation module owning the GOOD / OK / LOW /
+HARMFUL, AT RISK / UNMATCHED, and INSUFFICIENT_DATA labels. The
+`LABEL_MIN_OUTCOMES = 5` gate is the load-bearing change: a rule with a
+single regression no longer headlines as AT RISK -100%, it lands in
+INSUFFICIENT_DATA. Exports `checkLabel`, `ruleLabel`, `harmfulSummary`,
+`withCheckLabels`, `withRuleLabels`. The HTTP layer wraps every
+scorecard / rule-performance response with `withCheckLabels` /
+`withRuleLabels` so the dashboard reads `.label` directly without
+recomputing client-side. Inline label calculations in dashboard.js are
+preserved as fallbacks for un-labelled responses.
+
+### Added — `since` parameter across reporting queries
+
+Tri-state contract on every reporting query in
+`src/core/analytics-queries.js` (`checkScorecards`, `rulePerformance`,
+`fixRulePerformance`, `fixAdoptionFunnel`, `knowledgeGaps`,
+`confidenceCalibration`, `ruleScoresByCategory`, `sessionSummaries`,
+`toolSequenceBigrams`, `diagnosticJourney`, `ruleDrilldown`,
+`recommendations`) and the reporting paths in `src/core/case-base.js`
+(`retrieveCases`, `retrieveCasesByCheck`, `ruleScores`, `suggestedRules`,
+`synthesizeGuardPredicate`):
+
+- `since: undefined` → reads the operator-set baseline from
+  `meta.analytics_baseline_ts`. Absent meta ⇒ no filter ⇒ full history.
+  This is the dashboard / report default.
+- `since: null` → explicit bypass. Reserved for engine-state callers
+  that must see full history regardless of baseline.
+  `server.js:syncDisabledRules` and `tools/server-status.js` were
+  updated to pass this. `scoreRule` and `cac-predictor` providers and
+  `resolveProbation` keep no `since` parameter at all — they cannot
+  accept a baseline argument by design.
+- `since: '<ISO>'` → explicit override. Used by the dashboard's "Stats
+  since" dropdown for 24h / 7d / custom selections.
+
+### Added — HTTP endpoints + `?since=` parameter
+
+Two new endpoints on `src/http-server.js`:
+
+- `GET /api/analytics/baseline` → `{ baseline_ts, set_at }`.
+- `POST /api/analytics/baseline` body `{ baseline_ts: ISO | null }` →
+  sets / clears, echoes the resolved meta. 400 on malformed ISO.
+
+Every existing analytics endpoint accepts `?since=<ISO>` (explicit
+override), `?since=all` (engine bypass), or omits `since` (meta
+default). The exported `parseSinceParam` helper has unit-test coverage
+pinning the tri-state contract. Responses include a `since` echo field
+so the dashboard renders the "Stats since" status pill without a
+separate roundtrip.
+
+### Added — Dashboard "Stats since" controls
+
+The Analytics tab's refresh bar gains a select + "Set baseline now" /
+"Clear baseline" buttons + an inline state pill. The dropdown's
+"Since baseline (default)" option mirrors the report's behaviour;
+"All time" bypasses; "Last 24 hours" / "Last 7 days" / "Custom" do what
+they say. Custom takes a free-form ISO string. Setting / clearing the
+baseline triggers a full analytics refresh so every widget reflects the
+change. The Markdown report header gains a "Stats since: …" field that
+echoes whichever filter the report was generated under, so an old
+export remains self-documenting.
+
+### Changed — Sample-size gate replaces inline label calcs
+
+Three Markdown-report rendering sites in `src/dashboard.js` (executive
+summary HARMFUL list, scorecard table, rule-performance table) and the
+live HTML rule-performance table now read `.label` from the server
+response and fall back to inline calculations only when the server
+didn't attach one. The previous behaviour of computing labels from raw
+effectiveness without a sample-size guard is gone.
+
+### Engine state — explicit bypass
+
+`src/server.js:syncDisabledRules` and `src/tools/server-status.js`
+auto-disable / disabled-rules snapshot now pass `since: null`
+explicitly. `resolveSince` recognises `null` as the engine bypass
+marker and returns it unchanged regardless of any operator baseline.
+This keeps the auto-disable loop and case-base scoring stable across
+baseline edits — operators can experiment with reporting windows
+without affecting the runtime engine state.
+
+### Tests
+
+- `tests/unit/analytics-store.test.js` — 7 new tests covering
+  baseline get / set / clear / persistence / rebuild-survival /
+  validation.
+- `tests/unit/analytics-labels.test.js` (new) — 27 tests pinning the
+  label contract, the sample-size gate at the threshold boundary, the
+  `unmatched` precedence, and the `withCheckLabels` / `withRuleLabels`
+  immutability.
+- `tests/unit/analytics-queries.test.js` — 14 new `since`-variant
+  tests, one per filterable function plus precedence cases.
+- `tests/unit/case-base.test.js` — 8 new tests covering the case-base
+  reporting paths plus a deliberate test that `scoreRule` has no
+  `since` parameter (engine-path invariant).
+- `tests/unit/http-since-param.test.js` (new) — 8 tests pinning the
+  HTTP-layer `?since=` parser tri-state contract.
+
+Total: 64 new tests. Full unit suite passes (1 pre-existing failure
+in `load-development-guide` expectation drift, unrelated to this
+change).
+
 ## 0.7.2 — 2026-04-28
 
 CAC predictor — opt-in 4th gating axis for the diagnostic emit

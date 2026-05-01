@@ -173,7 +173,7 @@ describe('UnknownProperty rules', () => {
       expect(result.hint_md).toContain('doc');
     });
 
-    it('returns null when params are missing', () => {
+    it('falls through to .default when params are missing', () => {
       const graph = buildMinimalGraph();
       const diag = {
         check: 'UnknownProperty',
@@ -182,7 +182,81 @@ describe('UnknownProperty rules', () => {
         file: 'test.liquid',
       };
       const result = runRules(diag, { graph });
-      expect(result).toBeNull();
+      expect(result).not.toBeNull();
+      expect(result.rule_id).toBe('UnknownProperty.default');
+    });
+  });
+
+  describe('default catch-all (priority 1000)', () => {
+    it('does NOT preempt .schema_property', () => {
+      const graph = buildGraphWithSchema();
+      const diag = {
+        check: 'UnknownProperty',
+        params: { property: 'tittle', object: 'blog_post' },
+        message: "Property 'tittle' does not exist on 'blog_post'",
+        file: 'app/views/pages/blog.liquid',
+      };
+      const result = runRules(diag, { graph });
+      expect(result.rule_id).toBe('UnknownProperty.schema_property');
+    });
+
+    it('does NOT preempt .context_property', () => {
+      const graph = buildMinimalGraph();
+      const objectsIndex = {
+        loaded: true,
+        contextObjects: () => [{ handle: 'context.current_user', properties: ['id', 'email'] }],
+      };
+      const diag = {
+        check: 'UnknownProperty',
+        params: { property: 'emai', object: 'context.current_user' },
+        message: "Property 'emai' does not exist on 'context.current_user'",
+        file: 'test.liquid',
+      };
+      const result = runRules(diag, { graph, objectsIndex });
+      expect(result.rule_id).toBe('UnknownProperty.context_property');
+    });
+
+    it('does NOT preempt .generic when both params are extracted', () => {
+      const graph = buildMinimalGraph();
+      const diag = {
+        check: 'UnknownProperty',
+        params: { property: 'foo', object: 'bar' },
+        message: "Property 'foo' does not exist on 'bar'",
+        file: 'test.liquid',
+      };
+      const result = runRules(diag, { graph });
+      expect(result.rule_id).toBe('UnknownProperty.generic');
+    });
+
+    it('fires when only one of property/object was extracted', () => {
+      const graph = buildMinimalGraph();
+      const diag = {
+        check: 'UnknownProperty',
+        params: { property: 'foo' },        // missing object
+        message: "Property 'foo' does not exist",
+        file: 'test.liquid',
+      };
+      const result = runRules(diag, { graph });
+      expect(result).not.toBeNull();
+      expect(result.rule_id).toBe('UnknownProperty.default');
+    });
+
+    it('fires when extraction failed entirely', () => {
+      const graph = buildMinimalGraph();
+      const diag = { check: 'UnknownProperty' };
+      const result = runRules(diag, { graph });
+      expect(result).not.toBeNull();
+      expect(result.rule_id).toBe('UnknownProperty.default');
+      expect(result.confidence).toBeLessThan(0.5);
+    });
+
+    it('hint covers typo / schema / partial-@param escape hatches', () => {
+      const graph = buildMinimalGraph();
+      const diag = { check: 'UnknownProperty' };
+      const result = runRules(diag, { graph });
+      expect(result.hint_md).toContain('schema');
+      expect(result.hint_md).toContain('@param');
+      expect(result.hint_md).toContain('lookup');
     });
   });
 });

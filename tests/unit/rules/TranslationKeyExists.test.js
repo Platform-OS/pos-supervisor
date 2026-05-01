@@ -113,9 +113,51 @@ describe('TranslationKeyExists.array_index_misuse', () => {
 });
 
 describe('TranslationKeyExists — edge cases', () => {
-  test('returns null when key param is missing', () => {
+  test('falls through to .default when key param is missing', () => {
     const diag = { check: 'TranslationKeyExists', params: {} };
-    expect(runRules(diag, facts)).toBeNull();
+    const result = runRules(diag, facts);
+    expect(result).not.toBeNull();
+    expect(result.rule_id).toBe('TranslationKeyExists.default');
+  });
+});
+
+describe('TranslationKeyExists.default catch-all', () => {
+  test('does NOT preempt .array_index_misuse', () => {
+    const diag = {
+      check: 'TranslationKeyExists',
+      params: { key: 'app.title[0]' },
+      message: "'app.title[0]' does not have a matching translation entry",
+    };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('TranslationKeyExists.array_index_misuse');
+  });
+
+  test('does NOT preempt .suggest_nearest', () => {
+    const diag = { check: 'TranslationKeyExists', params: { key: 'app.titl' } };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('TranslationKeyExists.suggest_nearest');
+  });
+
+  test('does NOT preempt .create_key for a brand-new key with no near matches', () => {
+    const diag = { check: 'TranslationKeyExists', params: { key: 'a.completely.disjoint.brand_new.key' } };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('TranslationKeyExists.create_key');
+  });
+
+  test('fires when extraction failed entirely', () => {
+    const diag = { check: 'TranslationKeyExists' };
+    const result = runRules(diag, facts);
+    expect(result).not.toBeNull();
+    expect(result.rule_id).toBe('TranslationKeyExists.default');
+    expect(result.confidence).toBeLessThanOrEqual(0.5);
+  });
+
+  test('hint warns against locale-prefix typos and points at app/translations/', () => {
+    const diag = { check: 'TranslationKeyExists' };
+    const result = runRules(diag, facts);
+    expect(result.hint_md).toContain('app/translations/');
+    expect(result.hint_md).toContain('| t');
+    expect(result.hint_md).toContain('locale');
   });
 });
 

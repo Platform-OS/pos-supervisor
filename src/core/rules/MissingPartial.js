@@ -7,6 +7,12 @@
  *   20 — file_exists: target exists on disk but LSP still flags → guidance
  *   30 — suggest_nearest: did-you-mean via Levenshtein on reachable partials
  *   40 — create_file: generate create_file fix with scaffold
+ * 1000 — default: catch-all that fires when none of the above guards matched
+ *        (missing extractor params, unrecognised path shape, etc.). Without
+ *        this rule the diagnostic would land as `MissingPartial.unmatched` and
+ *        the agent would see the bare LSP message — every `.unmatched` row in
+ *        the dashboard analytics. The default is intentionally guidance-only,
+ *        confidence 0.5, so it never preempts a more specific rule.
  */
 import { classifyPath, nearestByLevenshtein, partialNames, partialsReachableFrom } from './queries.js';
 import {
@@ -283,6 +289,47 @@ export const rules = [
           description: `Create missing ${type}: \`${targetPath}\``,
         }],
         confidence: 0.8,
+      };
+    },
+  },
+
+  // Last-resort catch-all. Fires when none of the specialised guards above
+  // matched — typically because the LSP message did not parse into a
+  // `params.partial` (an upstream message-shape change), or because the path
+  // shape (`type` from classifyPath) did not fit any existing rule. Hint
+  // surfaces the three canonical resolutions with no false specifics, so the
+  // agent gets actionable guidance instead of `.unmatched` + bare LSP text.
+  {
+    id: 'MissingPartial.default',
+    check: 'MissingPartial',
+    priority: 1000,
+    when: () => true,
+    apply: (diag) => {
+      const name = diag.params?.partial ?? null;
+      const ref = name ? `\`${name}\`` : 'this reference';
+      return {
+        rule_id: 'MissingPartial.default',
+        hint_md:
+          `${ref} does not resolve to any partial, command, or query in the project. ` +
+          `Three canonical resolutions:\n` +
+          `  • **Typo** — fix the path in the \`{% render %}\` / \`{% function %}\` tag.\n` +
+          `  • **Missing file** — create the target. Partials live under \`app/views/partials/\`, ` +
+          `commands under \`app/lib/commands/\`, queries under \`app/lib/queries/\`.\n` +
+          `  • **Wrong prefix** — \`function\` paths resolve from \`app/lib/\`, so \`lib/commands/X\` ` +
+          `expands to \`app/lib/lib/commands/X\` and never resolves. Drop the leading \`lib/\`.\n\n` +
+          `Run \`project_map\` to enumerate the partials, commands, and queries this project actually has.`,
+        fixes: [{
+          type: 'guidance',
+          description: name
+            ? `Verify the path \`${name}\` against \`project_map\` output, then either correct the typo, drop a leading \`lib/\` if present, or create the file at the canonical location.`
+            : `Run \`project_map\` to enumerate available partials, commands, and queries; reconcile the failing reference against the live list.`,
+        }],
+        confidence: 0.5,
+        see_also: {
+          tool: 'project_map',
+          args: {},
+          reason: 'project_map lists every partial, command, and query the project serves — the authoritative source for resolving a missing reference.',
+        },
       };
     },
   },

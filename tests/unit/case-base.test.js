@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { openAnalyticsStore } from '../../src/core/analytics-store.js';
-import { retrieveCases, retrieveCasesByCheck, ruleScores, scoreRule, suggestedRules, generateRuleTemplate } from '../../src/core/case-base.js';
+import { retrieveCases, retrieveCasesByCheck, ruleScores, scoreRule, suggestedRules, generateRuleTemplate, synthesizeGuardPredicate } from '../../src/core/case-base.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -379,3 +379,174 @@ describe('Case base — F3: generateRuleTemplate', () => {
 });
 
 function RULE_DISABLE_THRESHOLD() { return 0.15; }
+
+// ── Reporting baseline (`since`) ─────────────────────────────────────────
+//
+// case-base reporting paths (retrieveCases*, ruleScores, suggestedRules,
+// synthesizeGuardPredicate) accept `opts.since`. Engine paths
+// (`scoreRule`, internal `resolveProbation`) MUST NOT — verified by
+// observing that scoreRule has no since parameter and engine call sites
+// in server.js / server-status.js pass `since: null` explicitly.
+
+describe('Case base — reporting baseline (`since`)', () => {
+  let store, dbPath;
+
+  const OLD = '2026-04-01T00:00:00.000Z';
+  const NEW = '2026-04-30T00:00:00.000Z';
+  const MID = '2026-04-15T00:00:00.000Z';
+
+  beforeEach(() => {
+    dbPath = tmpPath();
+    store = openAnalyticsStore(dbPath);
+  });
+  afterEach(() => { store.close(); });
+
+  function seedTwoEras() {
+    // Use seedStore's default session_id 'sess-1' / file 'test.liquid' for
+    // both diagnostics and the implicit window — case-base joins outcomes
+    // back to diagnostics on (fp, session_id, file) so they must match.
+    seedStore(store,
+      [
+        { fp: 'old1', template_fp: 'tpl1', check_name: 'UnknownFilter', hint_rule_id: 'UnknownFilter.typo', ts: OLD },
+        { fp: 'old2', template_fp: 'tpl1', check_name: 'UnknownFilter', hint_rule_id: 'UnknownFilter.typo', ts: OLD },
+        { fp: 'new1', template_fp: 'tpl1', check_name: 'UnknownFilter', hint_rule_id: 'UnknownFilter.typo', ts: NEW },
+      ],
+      {
+        windows: [{ id: 1 }],
+        outcomes: [
+          { fp: 'old1', outcome: 'regressed' },
+          { fp: 'old2', outcome: 'regressed' },
+          { fp: 'new1', outcome: 'resolved', fix_applied: 'verbatim' },
+        ],
+      }
+    );
+  }
+
+  test('retrieveCases: ISO since narrows the case set', () => {
+    seedTwoEras();
+    const all = retrieveCases(store, 'UnknownFilter', 'tpl1', { minCases: 1 });
+    expect(all.total).toBe(3);
+    const post = retrieveCases(store, 'UnknownFilter', 'tpl1', { minCases: 1, since: MID });
+    expect(post.total).toBe(1);
+  });
+
+  test('retrieveCases: meta baseline applies when since omitted', () => {
+    seedTwoEras();
+    store.setBaselineTs(MID);
+    const post = retrieveCases(store, 'UnknownFilter', 'tpl1', { minCases: 1 });
+    expect(post.total).toBe(1);
+    store.clearBaseline();
+    const all = retrieveCases(store, 'UnknownFilter', 'tpl1', { minCases: 1 });
+    expect(all.total).toBe(3);
+  });
+
+  test('retrieveCases: since=null bypasses meta baseline', () => {
+    seedTwoEras();
+    store.setBaselineTs(MID);
+    const all = retrieveCases(store, 'UnknownFilter', 'tpl1', { minCases: 1, since: null });
+    expect(all.total).toBe(3);
+    store.clearBaseline();
+  });
+
+  test('retrieveCasesByCheck: forwards since through to retrieveCases', () => {
+    seedTwoEras();
+    const all = retrieveCasesByCheck(store, 'UnknownFilter', { minCases: 1 });
+    expect(all[0].total).toBe(3);
+    const post = retrieveCasesByCheck(store, 'UnknownFilter', { minCases: 1, since: MID });
+    expect(post[0].total).toBe(1);
+  });
+
+  test('ruleScores: ISO since filters emit + outcome counts', () => {
+    seedTwoEras();
+    const all = ruleScores(store, { minEmitted: 1 });
+    expect(all[0].emitted).toBe(3);
+    expect(all[0].total_outcomes).toBe(3);
+
+    const post = ruleScores(store, { minEmitted: 1, since: MID });
+    expect(post[0].emitted).toBe(1);
+    expect(post[0].total_outcomes).toBe(1);
+    expect(post[0].resolved).toBe(1);
+  });
+
+  test('ruleScores: since=null is the engine-state bypass', () => {
+    seedTwoEras();
+    store.setBaselineTs(MID);
+    // Default (meta-resolved) sees only post-baseline.
+    expect(ruleScores(store, { minEmitted: 1 })[0].emitted).toBe(1);
+    // Explicit bypass sees full history — this is what server.js +
+    // tools/server-status.js MUST pass for auto-disable / health snapshot.
+    expect(ruleScores(store, { minEmitted: 1, since: null })[0].emitted).toBe(3);
+    store.clearBaseline();
+  });
+
+  test('ruleScores: meta baseline does NOT affect engine bypass call', () => {
+    // Belt-and-braces: even with a baseline set, since:null returns full data.
+    seedTwoEras();
+    store.setBaselineTs(NEW); // narrowest possible — would hide everything
+    const out = ruleScores(store, { minEmitted: 1, since: null });
+    expect(out[0].emitted).toBe(3);
+    store.clearBaseline();
+  });
+
+  test('suggestedRules: ISO since narrows candidate templates', () => {
+    // Seed a template whose post-baseline emits don't reach minCases — should
+    // disappear from suggestions when since=MID.
+    seedStore(store,
+      [
+        { fp: 'old-1', template_fp: 'tpl-old', check_name: 'OldOnlyCheck', hint_rule_id: 'unknown', ts: OLD },
+        { fp: 'old-2', template_fp: 'tpl-old', check_name: 'OldOnlyCheck', hint_rule_id: 'unknown', ts: OLD },
+        { fp: 'old-3', template_fp: 'tpl-old', check_name: 'OldOnlyCheck', hint_rule_id: 'unknown', ts: OLD },
+        { fp: 'old-4', template_fp: 'tpl-old', check_name: 'OldOnlyCheck', hint_rule_id: 'unknown', ts: OLD },
+        { fp: 'old-5', template_fp: 'tpl-old', check_name: 'OldOnlyCheck', hint_rule_id: 'unknown', ts: OLD },
+      ],
+      {
+        windows: [{ id: 1 }],
+        outcomes: [
+          { fp: 'old-1', outcome: 'resolved', fix_applied: 'verbatim' },
+          { fp: 'old-2', outcome: 'resolved', fix_applied: 'verbatim' },
+          { fp: 'old-3', outcome: 'resolved', fix_applied: 'verbatim' },
+          { fp: 'old-4', outcome: 'resolved', fix_applied: 'verbatim' },
+          { fp: 'old-5', outcome: 'resolved', fix_applied: 'verbatim' },
+        ],
+      }
+    );
+
+    const all = suggestedRules(store, new Set(), { minCases: 5, minResolutionRate: 0.5 });
+    expect(all.find(s => s.check === 'OldOnlyCheck')).toBeDefined();
+
+    const post = suggestedRules(store, new Set(), { minCases: 5, minResolutionRate: 0.5, since: MID });
+    expect(post.find(s => s.check === 'OldOnlyCheck')).toBeUndefined();
+  });
+
+  test('synthesizeGuardPredicate: ISO since narrows the inferred file_type set', () => {
+    // 5+ pages (would induce file_type=pages), then 0 post-baseline → no guard.
+    const diags = [];
+    for (let i = 0; i < 6; i++) {
+      diags.push({
+        fp: `g-${i}`, template_fp: 'tplG', check_name: 'GuardCheck',
+        file: `app/views/pages/p${i}.liquid`, ts: OLD, hint_rule_id: 'GuardCheck.r',
+      });
+    }
+    seedStore(store, diags, { windows: [], outcomes: [] });
+
+    // classifyFileType returns the singular form ('page', not 'pages').
+    const all = synthesizeGuardPredicate(store, 'GuardCheck', 'tplG', { minSamples: 5 });
+    expect(all.file_type).toBe('page');
+
+    const post = synthesizeGuardPredicate(store, 'GuardCheck', 'tplG', { minSamples: 5, since: MID });
+    expect(post.file_type).toBeUndefined();
+  });
+
+  test('scoreRule: NO since parameter — always sees full history', () => {
+    // scoreRule's signature deliberately has no since param. Even after the
+    // operator sets a baseline, scoreRule sees the full case set so live
+    // confidence-adjustment never deteriorates from a narrow window.
+    seedTwoEras();
+    store.setBaselineTs(NEW);
+    const adj = scoreRule(store, 'UnknownFilter.typo', 'tpl1');
+    expect(adj).not.toBeNull();
+    // 3 cases, 1 resolved, 2 regressed → regression rate 0.67 → harmful adjustment
+    expect(adj.adjustment).toBeLessThan(0);
+    store.clearBaseline();
+  });
+});
