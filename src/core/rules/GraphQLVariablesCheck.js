@@ -74,21 +74,74 @@ export const rules = [
 ];
 
 /**
- * True when the diagnostic looks like the multi-line truncation false-flag:
- *   • LSP fired `direction: required` (it sees no args at all).
- *   • Project graph has a graphql call from this file whose extracted
- *     `source_kind === 'liquid_multiline_truncated'`.
+ * True when the diagnostic looks like the multi-line truncation false-flag.
  *
- * `source_kind` is populated by `liquid-parser.classifyGraphqlSourceKind`
- * during scan — see liquid-parser.js for the detection criterion. Falsy
- * graphs / unindexed files / unrelated source kinds all fall through to the
- * downstream `.required` rule, so this predicate is purely additive.
+ * Two paths, either of which is sufficient:
+ *
+ *   1. **Disk-indexed** — Project graph already has a graphql call from this
+ *      file whose extracted `source_kind === 'liquid_multiline_truncated'`.
+ *      Populated by `liquid-parser.classifyGraphqlSourceKind` during scan.
+ *
+ *   2. **In-memory** — `facts.content` (the live editor buffer) contains the
+ *      truncation pattern. This path is essential for any file the agent has
+ *      JUST written or is iterating on without a reindex pass: the disk graph
+ *      lags behind the in-memory state, and the upstream LSP regression spiral
+ *      starts immediately on the first emit. Without this path we measured
+ *      4/4 regressions on `app/lib/commands/contacts/create.liquid` (DEMO,
+ *      2026-04 → 2026-05) — the agent kept adding the missing variable that
+ *      was already in source, every iteration tripping the same blind spot.
+ *
+ * The in-memory detector looks for the pattern:
+ *
+ *   {% liquid
+ *     graphql result = 'some/op',                  # comma at EOL
+ *       arg1: …                                    # truncated past here
+ *   %}
+ *
+ * inside any `{% liquid %}` block in `content`. Falsy content / no liquid
+ * blocks / non-comma graphql lines all fall through to the downstream
+ * `.required` rule, so this predicate is purely additive.
  */
 function isParserBlindSpot(diag, facts) {
   if (diag?.params?.direction !== 'required') return false;
+
+  // Path 1: project graph carries the source-kind flag.
   const node = facts?.graph?.nodeByPath?.(diag?.file);
   const calls = node?.graphql_calls ?? [];
-  return calls.some(c => c?.source_kind === 'liquid_multiline_truncated');
+  if (calls.some(c => c?.source_kind === 'liquid_multiline_truncated')) return true;
+
+  // Path 2: in-memory content scan.
+  if (typeof facts?.content === 'string' && contentHasTruncatedGraphqlCall(facts.content)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Detect the `{% liquid %}` multi-line graphql truncation by scanning the
+ * source for any block-level `graphql ...,` line ending in a trailing comma.
+ *
+ * The LSP truncates at the first newline-after-comma inside `{% liquid %}`.
+ * Outside `{% liquid %}` (i.e. tag-form `{% graphql ... %}`) commas don't
+ * truncate, so we must scope the scan to inside-block. The regex is
+ * deliberately tolerant: extra whitespace, the `if`/`assign`/etc. statements
+ * around the call, and chained continuations all still match because we
+ * look at one line at a time inside any `{% liquid %} ... %}` slice.
+ */
+function contentHasTruncatedGraphqlCall(content) {
+  // Iterate every {% liquid ... %} block. The `[\s\S]` form catches newlines
+  // because the `s` flag is unsupported in some bundlers we still target.
+  const blockRe = /\{%-?\s*liquid\b([\s\S]*?)-?%\}/g;
+  let m;
+  while ((m = blockRe.exec(content)) !== null) {
+    const body = m[1];
+    // Inside the body, any line that starts with `graphql` (after optional
+    // indent) AND ends with a `,` — possibly with trailing whitespace before
+    // the EOL — is the truncation pattern. We match per-line via /m so the
+    // `^` and `$` anchors operate on logical lines.
+    if (/^\s*graphql\b[^\n]*,\s*$/m.test(body)) return true;
+  }
+  return false;
 }
 
 function buildParserBlindSpotHint(diag, facts) {

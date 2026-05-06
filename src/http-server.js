@@ -12,7 +12,7 @@ import { getProjectMap } from './tools/project-map.js';
 import { buildDependencyGraph } from './core/dependency-graph.js';
 import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams, diagnosticJourney, confidenceCalibration, fixAdoptionFunnel, knowledgeGaps, ruleScoresByCategory, ruleDrilldown, rulePerformance, adaptiveModeImpact, fixRulePerformance } from './core/analytics-queries.js';
 import { ruleScores, suggestedRules, retrieveCasesByCheck, generateRuleTemplate, synthesizeGuardPredicate } from './core/case-base.js';
-import { withCheckLabels, withRuleLabels } from './core/analytics-labels.js';
+import { withCheckLabels, withRuleLabels, ruleLabel } from './core/analytics-labels.js';
 import { addPromotedRule, removePromotedRule, listPromotedRules } from './core/rules/promoted-rules.js';
 import { reloadRules, loadAllRules } from './core/rules/index.js';
 import { runRules, getDisabledRules, getAllChecksWithRules, getRulesForCheck, getDisabledRuleDetails, getForceEnabledRules, getForceDisabledRules } from './core/rules/engine.js';
@@ -1067,14 +1067,114 @@ const RULE_DEPS = {
   'GraphQLCheck.generic':              { needs: ['params'], graph_queries: [] },
 };
 
+// ── Rule source-location index ───────────────────────────────────────────
+//
+// Maps rule_id → { file, line } by statically scanning every rule module's
+// source for `id: 'X'` and `rule_id: 'X'` literals. Built lazily once per
+// server process; reset by `resetRuleSourceIndex()` from tests so a test that
+// adds rules can re-resolve.
+//
+// Template-literal id forms (e.g. DeprecatedTag's `id: \`${prefix(c)}.X\``)
+// can't be resolved to a line number statically, so they fall back to a
+// "first-segment guess" — `<First>.js` if it exists. The clickable link
+// degrades from file:line to file-only in that case.
+let _ruleSourceIndex = null;
+
+export function resetRuleSourceIndex() { _ruleSourceIndex = null; }
+
+function buildRuleSourceIndex() {
+  const index = new Map();
+  const dir = join(__dirname, 'core', 'rules');
+  if (!existsSync(dir)) return index;
+
+  const ID_PATTERN = /(?:^|[\s,])(?:id|rule_id):\s*['"]([\w.\-:]+)['"]/;
+
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith('.js')) continue;
+    const abs = join(dir, file);
+    let src;
+    try { src = readFileSync(abs, 'utf8'); }
+    catch { continue; }
+
+    const lines = src.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(ID_PATTERN);
+      if (!m) continue;
+      // First occurrence wins — typically the registration line precedes any
+      // re-emit inside `apply()`, which is the canonical location.
+      if (!index.has(m[1])) {
+        index.set(m[1], { file: `src/core/rules/${file}`, line: i + 1 });
+      }
+    }
+  }
+  return index;
+}
+
+function getRuleSource(ruleId) {
+  if (!_ruleSourceIndex) _ruleSourceIndex = buildRuleSourceIndex();
+  const hit = _ruleSourceIndex.get(ruleId);
+  if (hit) return hit;
+
+  // Template-literal fallback: the rule id was constructed dynamically (e.g.
+  // DeprecatedTag's `${prefix}.include`). Guess the file from the first dotted
+  // segment. Returns just `{ file, line: null }` so the inspector renders a
+  // file link without a line anchor.
+  const first = ruleId.split('.')[0];
+  if (!first) return null;
+  const guessAbs = join(__dirname, 'core', 'rules', `${first}.js`);
+  if (existsSync(guessAbs)) {
+    return { file: `src/core/rules/${first}.js`, line: null };
+  }
+  return null;
+}
+
+// ── /api/engine-map ─────────────────────────────────────────────────────
+//
+// Returns the structured rule-engine view consumed by the dashboard. The
+// payload is intentionally rich — every field below is something the
+// inspector / topology / dependency matrix renders directly without a
+// follow-up HTTP call.
+//
+// Per-rule fields:
+//   id, check (one of the checks this entry is registered against),
+//   checks[]    — every check name this rule_id is registered against. The
+//                 topology dedupes nodes by id and uses this to draw N links
+//                 when a rule serves multiple checks (e.g. DeprecatedTag).
+//   priority, needs[], graph_queries[],
+//   disabled    — true iff the engine's `_disabledRules` set contains this id,
+//   override    — { kind, reason }: kind ∈ 'auto_disabled' | 'force_enabled'
+//                 | 'force_disabled' | null. Surfaces operator overrides as
+//                 first-class state instead of buried analytics.
+//   source      — { file, line | null }: clickable to the rule's definition.
+//   score       — case-base aggregates extended with adoption_rate and label.
+//
+// Per-check fields:
+//   total_emits     — sum of emits across this check's rules (for ordering
+//                     and at-a-glance volume).
+//   unmatched_count — emits stamped `<check>.unmatched`. The single biggest
+//                     improvement signal for adding new rules.
+//   matched_count   — emits routed to a real rule_id. matched + unmatched
+//                     = total_emits.
+//   source_files    — every rule module that registers a rule for this check
+//                     (usually one, multi-check modules like DeprecatedTag
+//                     register the same file for both their checks).
+//   metadata_file   — `src/data/checks/<Check>.yml` if present.
+//   hint_files      — full hint markdown filenames + base check + variant
+//                     flag, replacing the older string-only `hints` field.
 function handleEngineMap(analyticsStore, res) {
   try {
     loadAllRules();
     const checks = getAllChecksWithRules();
     const disabledSet = getDisabledRules();
+    const disabledDetails = new Map(getDisabledRuleDetails().map(d => [d.rule_id, d]));
+    const forceEnabled = getForceEnabledRules();
+    const forceDisabled = getForceDisabledRules();
 
     const extractorChecks = [...KNOWN_EXTRACTOR_CHECKS];
 
+    // Hint files index. We carry the base_check + is_variant flags so the
+    // dashboard can filter by either the base check (`MissingPartial`) or a
+    // variant suffix (`MissingPartial-invalid_lib_prefix`).
     const hintFiles = [];
     const hintsDir = join(__dirname, 'data', 'hints');
     if (existsSync(hintsDir)) {
@@ -1088,11 +1188,109 @@ function handleEngineMap(analyticsStore, res) {
       }
     }
 
+    // Check metadata YAML. One file per check name; not every check has one.
+    const checkMetaDir = join(__dirname, 'data', 'checks');
+    const checkMetaPresent = new Set();
+    if (existsSync(checkMetaDir)) {
+      for (const f of readdirSync(checkMetaDir)) {
+        if (f.endsWith('.yml')) checkMetaPresent.add(f.replace(/\.yml$/, ''));
+      }
+    }
+
+    // Case-base scores keyed by rule_id. Without analytics this is empty
+    // (every rule node renders with score: null, label: 'INSUFFICIENT_DATA').
     let scores = [];
     if (analyticsStore) {
       try { scores = ruleScores(analyticsStore, { minEmitted: 1 }); } catch { /* no data yet */ }
     }
     const scoreMap = new Map(scores.map(s => [s.rule_id, s]));
+
+    // Inverse index: rule_id → list of checks it's registered against. This
+    // is the data that fixes the topology dedup bug — when a single rule_id
+    // is bound to two checks (DeprecatedTag pattern), the inspector lists
+    // both and the topology draws one node + two edges.
+    const checksByRuleId = new Map();
+    for (const check of checks) {
+      for (const r of getRulesForCheck(check)) {
+        if (!checksByRuleId.has(r.id)) checksByRuleId.set(r.id, []);
+        checksByRuleId.get(r.id).push(check);
+      }
+    }
+
+    // Per-check emit totals (matched vs unmatched). Populated only when an
+    // analytics store is available; otherwise both counts are 0.
+    const checkEmitTotals = new Map();      // checkName → total_emits
+    const checkUnmatched = new Map();       // checkName → unmatched_count
+    if (analyticsStore) {
+      try {
+        const rows = analyticsStore.query(`
+          SELECT check_name, hint_rule_id, COUNT(*) as cnt
+          FROM diagnostics
+          WHERE suppressed = 0
+          GROUP BY check_name, hint_rule_id
+        `, []);
+        for (const row of rows) {
+          const total = checkEmitTotals.get(row.check_name) ?? 0;
+          checkEmitTotals.set(row.check_name, total + row.cnt);
+          if (row.hint_rule_id && row.hint_rule_id.endsWith('.unmatched')) {
+            const u = checkUnmatched.get(row.check_name) ?? 0;
+            checkUnmatched.set(row.check_name, u + row.cnt);
+          }
+        }
+      } catch { /* analytics queries fail on an empty/locked DB — degrade */ }
+    }
+
+    function buildOverrideField(ruleId) {
+      // Force-disable wins over everything (operator kill-switch). Then
+      // force-enable (operator says "run even though analytics disabled it").
+      // Then the case-base auto-disable. Then null.
+      if (forceDisabled.has(ruleId)) {
+        return { kind: 'force_disabled', reason: 'Operator override (force-disable).' };
+      }
+      if (forceEnabled.has(ruleId)) {
+        const detail = disabledDetails.get(ruleId);
+        const reason = detail
+          ? `Operator override running a rule the case base auto-disabled (effectiveness ${(detail.effectiveness * 100).toFixed(0)}%, n=${detail.total_outcomes ?? 0}).`
+          : 'Operator override (force-enable).';
+        return { kind: 'force_enabled', reason };
+      }
+      const detail = disabledDetails.get(ruleId);
+      if (detail) {
+        const eff = Number.isFinite(detail.effectiveness) ? `${(detail.effectiveness * 100).toFixed(0)}%` : 'low';
+        const n = detail.total_outcomes ?? 0;
+        return {
+          kind: 'auto_disabled',
+          reason: `Case base auto-disabled — effectiveness ${eff} on n=${n} outcomes.`,
+        };
+      }
+      return null;
+    }
+
+    function buildScoreField(score) {
+      if (!score) return null;
+      const adoptionRate = Number.isFinite(score.adoption_rate) ? score.adoption_rate : 0;
+      const total_outcomes = score.total_outcomes ?? 0;
+      // ruleLabel takes a rule-shape with .effectiveness / .total_outcomes /
+      // .unmatched. Force false here — `<check>.unmatched` rule_ids have
+      // their own label path computed downstream by the check node, never
+      // by per-rule scoring.
+      const label = ruleLabel({ effectiveness: score.effectiveness, total_outcomes, unmatched: false });
+      return {
+        emitted: score.emitted,
+        resolved: score.resolved,
+        regressed: score.regressed,
+        unchanged: score.unchanged ?? 0,
+        moved: score.moved ?? 0,
+        adopted: score.adopted ?? 0,
+        total_outcomes,
+        resolution_rate: score.resolution_rate,
+        regression_rate: score.regression_rate,
+        adoption_rate: adoptionRate,
+        effectiveness: score.effectiveness,
+        label,
+        disabled: score.disabled,
+      };
+    }
 
     const checkNodes = checks.map(check => {
       const rules = getRulesForCheck(check);
@@ -1102,41 +1300,107 @@ function handleEngineMap(analyticsStore, res) {
       const ruleNodes = rules.map(r => {
         const deps = RULE_DEPS[r.id] || { needs: ['params'], graph_queries: [] };
         const score = scoreMap.get(r.id);
+        const sourceLoc = getRuleSource(r.id);
+        const allChecksForRule = checksByRuleId.get(r.id) ?? [check];
         return {
           id: r.id,
+          check,                              // legacy field — preserved
+          checks: allChecksForRule,           // NEW — every check this rule serves
           priority: r.priority,
           needs: deps.needs,
           graph_queries: deps.graph_queries,
           disabled: disabledSet.has(r.id),
-          score: score ? {
-            emitted: score.emitted,
-            resolved: score.resolved,
-            regressed: score.regressed,
-            resolution_rate: score.resolution_rate,
-            regression_rate: score.regression_rate,
-            effectiveness: score.effectiveness,
-            disabled: score.disabled,
-          } : null,
+          override: buildOverrideField(r.id),
+          source: sourceLoc,
+          score: buildScoreField(score),
         };
       });
+
+      // Source files for this check: the unique set of rule modules that
+      // register against it. Almost always one, but multi-check rule modules
+      // (DeprecatedTag) lift this to N.
+      const sourceFiles = [...new Set(
+        ruleNodes
+          .map(r => r.source?.file)
+          .filter(Boolean),
+      )];
+
+      const totalEmits = checkEmitTotals.get(check) ?? 0;
+      const unmatchedCount = checkUnmatched.get(check) ?? 0;
 
       return {
         check,
         has_extractor: hasExtractor,
         example_message: CHECK_EXAMPLES[check] || null,
-        hints: hints.map(h => h.name),
+        hints: hints.map(h => h.name),               // legacy — names only
+        hint_files: hints,                           // NEW — full descriptors
         rules: ruleNodes,
+        total_emits: totalEmits,
+        unmatched_count: unmatchedCount,
+        matched_count: Math.max(0, totalEmits - unmatchedCount),
+        source_files: sourceFiles,
+        metadata_file: checkMetaPresent.has(check)
+          ? `src/data/checks/${check}.yml`
+          : null,
       };
     });
 
+    // Pipeline step descriptors. The dashboard renders a card per step; the
+    // legacy string-only API is preserved as `pipeline_steps`, the richer
+    // descriptor list is `pipeline` for the new card view.
     const pipeline_steps = [
       'LSP Diagnostics',
       'Structural Warnings',
-      'Diagnostic Pipeline (9 steps)',
-      'Rule Engine (first-match)',
-      'Error Enricher (fallback)',
+      'Diagnostic Pipeline',
+      'Rule Engine',
+      'Error Enricher',
       'Fix Generator',
       'Scorecard',
+    ];
+
+    const pipeline = [
+      {
+        ord: 1,
+        name: 'LSP Diagnostics',
+        purpose: 'Ask pos-cli LSP for raw diagnostics on the open document. Falls back to pos-cli check run if the LSP is down.',
+        source_file: 'src/core/lsp-client.js',
+      },
+      {
+        ord: 2,
+        name: 'Structural Warnings',
+        purpose: 'AST-level checks the LSP does not provide (Shopify-object detection, GraphQL-in-partials, HTML-in-page, missing doc blocks).',
+        source_file: 'src/core/structural-warnings.js',
+      },
+      {
+        ord: 3,
+        name: 'Diagnostic Pipeline',
+        purpose: '17-step ordered post-processor: known-LSP-FP suppression, doc-param suppression, Shopify elevation, dedup, undocumented-target suppression, default-param suppression, module-helper suppression, orphan-partial suppression, pending-plan suppression (3 kinds), and disk-verification (4 kinds).',
+        source_file: 'src/core/diagnostic-pipeline.js',
+      },
+      {
+        ord: 4,
+        name: 'Rule Engine',
+        purpose: 'First-match-wins rule dispatch keyed by check name. Each match attaches hint, fixes, confidence, see-also, and (in adaptive mode) a case-base confidence adjustment.',
+        source_file: 'src/core/rules/engine.js',
+      },
+      {
+        ord: 5,
+        name: 'Error Enricher',
+        purpose: 'Fallback for checks without rule modules. Regex-extracts symbols from the LSP message and renders src/data/hints/<Check>.md templates.',
+        source_file: 'src/core/error-enricher.js',
+      },
+      {
+        ord: 6,
+        name: 'Fix Generator',
+        purpose: 'Materialises proposed_fixes for diagnostic shapes the rule layer cannot produce text edits for (insert, create_file, range-typed text_edit on parsed AST nodes).',
+        source_file: 'src/core/fix-generator.js',
+      },
+      {
+        ord: 7,
+        name: 'Scorecard',
+        purpose: 'Architectural quality score across doc-block coverage, layout correctness, slug formatting, etc. Stored on the response and surfaced under `scorecard:` for full mode.',
+        source_file: 'src/core/fix-generator.js',
+      },
     ];
 
     const coverage = {
@@ -1145,12 +1409,20 @@ function handleEngineMap(analyticsStore, res) {
       total_rules: checks.reduce((n, c) => n + getRulesForCheck(c).length, 0),
       total_hints: hintFiles.length,
       disabled_rules: disabledSet.size,
+      force_enabled_rules: forceEnabled.size,
+      force_disabled_rules: forceDisabled.size,
       rules_needing_graph: Object.values(RULE_DEPS).filter(d => d.needs.includes('graph')).length,
       rules_needing_indexes: Object.values(RULE_DEPS).filter(d => d.needs.includes('filtersIndex') || d.needs.includes('objectsIndex') || d.needs.includes('tagsIndex')).length,
       rules_params_only: Object.values(RULE_DEPS).filter(d => d.needs.length === 1 && d.needs[0] === 'params').length,
     };
 
-    sendJson(res, 200, { checks: checkNodes, pipeline_steps, coverage, hint_files: hintFiles });
+    sendJson(res, 200, {
+      checks: checkNodes,
+      pipeline_steps,                  // legacy
+      pipeline,                        // NEW — rich descriptors
+      coverage,
+      hint_files: hintFiles,
+    });
   } catch (e) {
     sendJson(res, 500, { error: e.message });
   }

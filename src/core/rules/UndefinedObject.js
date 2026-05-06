@@ -132,10 +132,55 @@ export const rules = [
     priority: 100,
     when: (diag) => !!diag.params?.variable,
     apply: (diag) => {
+      // By the time this rule runs, .context_prefix (priority 20) has
+      // already failed — i.e. the variable is NOT in the known context-props
+      // shortlist (params, session, current_user, page, location, environment,
+      // authenticity_token, headers, constants). The previous hint still
+      // suggested `context.X` in this branch, which sent agents down a
+      // regression spiral: applying `context.X` for an unknown X yields a
+      // fresh UnknownProperty diagnostic, not a fix. Measured 2/2 regressions
+      // on `app/views/pages/index.liquid` in DEMO (2026-04). The hint below
+      // names the real legitimate sources for the file's domain instead.
       const name = diag.params.variable;
+      const isPage = !!diag.file && /\/pages\//.test(diag.file);
+      const isLayout = !!diag.file && /\/layouts\//.test(diag.file);
+
+      let hint;
+      if (isPage) {
+        hint =
+          `Variable \`${name}\` is not defined. \`${name}\` is NOT a built-in context object — ` +
+          `\`context.\` only namespaces a fixed shortlist (\`params\`, \`session\`, \`current_user\`, ` +
+          `\`page\`, \`location\`, \`environment\`, \`authenticity_token\`, \`headers\`, \`constants\`). ` +
+          `Adding \`context.${name}\` would create a fresh \`UnknownProperty\` error. Pick one source:\n` +
+          `  • **URL / form param** → \`context.params.${name}\`.\n` +
+          `  • **Database** → \`{% graphql ${name} = '<op_name>' %}\` first, then access via \`${name}.records\`.\n` +
+          `  • **Module helper** → \`{% function ${name} = '<lib/path>' %}\`.\n` +
+          `  • **Computed locally** → \`{% assign ${name} = <expression> %}\` before the use site.\n` +
+          `  • **Forwarded by layout** → declare it in the page with \`{% content_for '${name}' %}…{% endcontent_for %}\` ` +
+          `and read in layout via \`{{ content_for.${name} }}\`.`;
+      } else if (isLayout) {
+        hint =
+          `Variable \`${name}\` is not defined in the layout scope. Layouts can only see ` +
+          `\`context.*\` (the same fixed shortlist as pages — \`${name}\` is not in it), ` +
+          `\`{{ content_for_layout }}\`, named \`{{ content_for.* }}\` slots, or values assigned ` +
+          `in the layout itself with \`{% assign %}\`. If the page should pass \`${name}\` down, ` +
+          `the page emits \`{% content_for '${name}' %}…{% endcontent_for %}\` and the layout reads ` +
+          `\`{{ content_for.${name} }}\`.`;
+      } else {
+        // Other surface (asset, partial that didn't match .declare_param,
+        // command/query without a containing partial). Generic guidance —
+        // explicitly NOT suggesting `context.${name}` since we know it's
+        // not a context property.
+        hint =
+          `Variable \`${name}\` is not defined in the current scope. Ensure it's assigned ` +
+          `before use with \`{% assign %}\`, \`{% graphql %}\`, or \`{% function %}\`. ` +
+          `In partials / commands / queries, declare it as a \`{% doc %} @param {<type>} ${name} {% enddoc %}\` ` +
+          `and pass it from the caller.`;
+      }
+
       return {
         rule_id: 'UndefinedObject.generic',
-        hint_md: `Variable \`${name}\` is not defined in the current scope. Use \`context.${name}\` for built-in objects, or ensure it's assigned before use with \`{% assign %}\`, \`{% graphql %}\`, or \`{% function %}\`.`,
+        hint_md: hint,
         fixes: [],
         confidence: 0.5,
       };

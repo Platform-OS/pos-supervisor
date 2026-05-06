@@ -88,6 +88,48 @@ describe('UndefinedObject.generic', () => {
     expect(result.rule_id).toBe('UndefinedObject.generic');
     expect(result.confidence).toBe(0.5);
   });
+
+  // Pre-fix the page hint recommended `context.<name>` even though by the
+  // time this rule runs we know the variable is NOT in the context-props
+  // shortlist. Agents applied that suggestion → fresh UnknownProperty
+  // error → 100% regression in DEMO. The hint may still NAME `context.<name>`
+  // when explicitly warning the agent off it, but must not list it as a
+  // recommended source.
+  test('does NOT recommend context.<name> for an unknown variable in a page', () => {
+    const diag = { check: 'UndefinedObject', params: { variable: 'voyager_pack' }, file: 'app/views/pages/index.liquid' };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UndefinedObject.generic');
+    // The pre-fix harmful phrasing is `Use \`context.<name>\` for built-in objects`.
+    // After the fix the hint must not include any "Use `context.<name>`" /
+    // "→ `context.<name>`" recommendation (i.e. the variable name appearing
+    // immediately after `context.` as a top-level property).
+    expect(result.hint_md).not.toMatch(/Use\s+`?context\.voyager_pack`?/);
+    expect(result.hint_md).not.toMatch(/→\s+`?context\.voyager_pack`?/);
+    // The hint should warn against the suggestion.
+    expect(result.hint_md).toMatch(/Adding `context\.voyager_pack`.*UnknownProperty/);
+    // And list the real legitimate sources for a page.
+    expect(result.hint_md).toContain('context.params.voyager_pack');
+    expect(result.hint_md).toContain('graphql');
+    expect(result.hint_md).toContain('assign');
+  });
+
+  test('layout hint points at content_for, not context.<name>', () => {
+    const diag = { check: 'UndefinedObject', params: { variable: 'site_title' }, file: 'app/views/layouts/theme.liquid' };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UndefinedObject.generic');
+    expect(result.hint_md).not.toMatch(/Use\s+`?context\.site_title`?/);
+    expect(result.hint_md).toContain('content_for');
+  });
+
+  test('non-page non-layout falls back to assign/graphql/function guidance without recommending context.<name>', () => {
+    // file is something the regex doesn't match — simulate a top-level asset.
+    const diag = { check: 'UndefinedObject', params: { variable: 'foo' }, file: 'app/assets/whatever.liquid' };
+    const result = runRules(diag, facts);
+    expect(result.rule_id).toBe('UndefinedObject.generic');
+    expect(result.hint_md).not.toMatch(/Use\s+`?context\.foo`?/);
+    expect(result.hint_md).toContain('assign');
+    expect(result.hint_md).toContain('@param');
+  });
 });
 
 describe('UndefinedObject — edge cases', () => {

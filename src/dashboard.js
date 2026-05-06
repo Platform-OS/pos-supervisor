@@ -978,6 +978,65 @@ export function buildDashboardHtml() {
   .em-inspector-badge.index { background: rgba(255,183,77,0.15); color: #ffb74d; border: 1px solid #ffb74d; }
   .em-inspector-badge.disabled { background: rgba(229,115,115,0.15); color: #e57373; border: 1px solid #e57373; }
   .em-inspector-badge.matched { background: rgba(129,199,132,0.15); color: #81c784; border: 1px solid #81c784; }
+  .em-inspector-badge.label-good { background: rgba(129,199,132,0.20); color: #81c784; border: 1px solid #81c784; }
+  .em-inspector-badge.label-ok { background: rgba(184,187,38,0.18); color: var(--yellow); border: 1px solid var(--yellow); }
+  .em-inspector-badge.label-low { background: rgba(254,128,25,0.18); color: var(--orange, #fe8019); border: 1px solid var(--orange, #fe8019); }
+  .em-inspector-badge.label-harmful { background: rgba(229,115,115,0.20); color: #e57373; border: 1px solid #e57373; }
+  .em-inspector-badge.label-at-risk { background: rgba(229,115,115,0.20); color: #e57373; border: 1px solid #e57373; }
+  .em-inspector-badge.label-unmatched { background: rgba(146,131,116,0.18); color: var(--muted); border: 1px solid var(--muted); }
+  .em-inspector-badge.label-insufficient { background: rgba(146,131,116,0.10); color: var(--muted); border: 1px dashed var(--muted); }
+  .em-inspector-badge.override-force-enabled { background: rgba(79,195,247,0.18); color: #4fc3f7; border: 1px solid #4fc3f7; }
+  .em-inspector-badge.override-force-disabled { background: rgba(229,115,115,0.18); color: #e57373; border: 1px solid #e57373; }
+  .em-inspector-badge.override-auto-disabled { background: rgba(254,128,25,0.18); color: var(--orange, #fe8019); border: 1px solid var(--orange, #fe8019); }
+  .em-inspector-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--surface2); }
+  .em-inspector-actions button { font-family: var(--mono); font-size: 9px; font-weight: bold; padding: 5px 10px; background: var(--bg); color: var(--text); border: 1px solid var(--border); cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px; }
+  .em-inspector-actions button:hover:not(:disabled) { background: var(--surface); border-color: var(--blue); color: var(--blue); }
+  .em-inspector-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .em-inspector-actions button.primary { border-color: var(--blue); color: var(--blue); }
+  .em-inspector-actions button.danger { border-color: #e57373; color: #e57373; }
+  .em-inspector-source { font-family: var(--mono); font-size: 10px; color: var(--green); cursor: pointer; word-break: break-all; }
+  .em-inspector-source:hover { text-decoration: underline; }
+  .em-inspector-checks { display: flex; flex-wrap: wrap; gap: 4px; }
+  .em-inspector-check-chip { font-size: 9px; font-weight: bold; padding: 2px 8px; background: rgba(131,165,152,0.15); color: var(--blue); border: 1px solid var(--blue); cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px; }
+  .em-inspector-check-chip:hover { background: var(--blue); color: var(--bg); }
+  .em-inspector-stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 10px; }
+  .em-inspector-stats-grid .stat-label { color: var(--muted); }
+  .em-inspector-stats-grid .stat-value { color: var(--text); font-weight: bold; text-align: right; font-family: var(--mono); }
+  .em-inspector-msg { background: var(--surface); padding: 6px 8px; font-size: 10px; color: var(--muted); font-family: var(--mono); white-space: pre-wrap; word-break: break-word; text-transform: none; }
+
+  /* ── Pipeline cards (replaces tight SVG truncation) ───────────────── */
+  .em-pipeline-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+  .em-pipeline-card { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--blue); padding: 10px; }
+  .em-pipeline-card.step-1 { border-left-color: #458588; }
+  .em-pipeline-card.step-2 { border-left-color: #689d6a; }
+  .em-pipeline-card.step-3 { border-left-color: #98971a; }
+  .em-pipeline-card.step-4 { border-left-color: #d79921; }
+  .em-pipeline-card.step-5 { border-left-color: #d65d0e; }
+  .em-pipeline-card.step-6 { border-left-color: #cc241d; }
+  .em-pipeline-card.step-7 { border-left-color: #b16286; }
+  .em-pipeline-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .em-pipeline-card-ord { font-family: var(--mono); font-size: 10px; color: var(--muted); font-weight: bold; }
+  .em-pipeline-card-name { font-size: 12px; font-weight: bold; color: var(--text); text-transform: uppercase; letter-spacing: 0.5px; }
+  .em-pipeline-card-purpose { font-size: 11px; color: var(--muted); line-height: 1.4; }
+  .em-pipeline-card-source { display: block; font-family: var(--mono); font-size: 9px; color: var(--green); margin-top: 8px; cursor: pointer; }
+  .em-pipeline-card-source:hover { text-decoration: underline; }
+
+  /* ── Dependency Matrix table ──────────────────────────────────────── */
+  .em-dep-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+  .em-dep-table thead th { font-size: 9px; text-transform: uppercase; color: var(--muted); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; }
+  .em-dep-table thead th:hover { color: var(--blue); }
+  .em-dep-table thead th.sorted::after { content: ' \\25B2'; font-size: 7px; color: var(--blue); }
+  .em-dep-table thead th.sorted.desc::after { content: ' \\25BC'; }
+  .em-dep-table tbody tr { border-bottom: 1px solid var(--surface2); cursor: pointer; }
+  .em-dep-table tbody tr:hover { background: var(--surface); }
+  .em-dep-table tbody tr.selected { background: var(--surface); border-left: 3px solid var(--blue); }
+  .em-dep-table td { padding: 6px 8px; vertical-align: middle; }
+  .em-dep-table .col-rule { font-family: var(--mono); font-weight: bold; color: var(--text); white-space: nowrap; }
+  .em-dep-table .col-check { font-size: 9px; color: var(--blue); text-transform: uppercase; }
+  .em-dep-table .col-prio { font-family: var(--mono); color: var(--muted); text-align: right; }
+  .em-dep-table .col-eff { font-family: var(--mono); text-align: right; font-weight: bold; }
+  .em-dep-table .col-samples { font-family: var(--mono); color: var(--muted); text-align: right; font-size: 9px; }
+  .em-dep-table .col-dots { display: flex; gap: 3px; align-items: center; }
   .em-dep-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid var(--surface2); font-size: 10px; text-transform: uppercase; }
   .em-dep-row:last-child { border-bottom: none; }
   .em-dep-rule { flex: 1; font-weight: bold; color: var(--text); min-width: 200px; }
@@ -1672,8 +1731,8 @@ export function buildDashboardHtml() {
   <div class="em-panels">
     <div class="em-panel">
       <div class="em-section-title">Pipeline Flow</div>
-      <div class="an-legend">Diagnostic processing stages from LSP through rule engine to output.</div>
-      <svg id="em-pipeline" width="100%" height="120"></svg>
+      <div class="an-legend">Diagnostic processing stages from LSP through rule engine to output. Click a step to copy its source path.</div>
+      <div id="em-pipeline-cards" class="em-pipeline-grid"></div>
     </div>
   </div>
 
@@ -6439,15 +6498,37 @@ function renderEmGraph(checks) {
 
   const nodes = [];
   const links = [];
+  // Dedupe rule nodes by id so a rule_id registered against multiple checks
+  // (the DeprecatedTag pattern: same rule lives under both DeprecatedTag
+  // and pos-supervisor:DeprecatedTag) renders as ONE node connected to N
+  // check nodes, not N standalone duplicates. The earlier code pushed a
+  // node per (check, rule) pair, so duplicates with the same id orphaned
+  // each other inside d3-force's link resolver.
+  const ruleNodeById = new Map();
 
-  checks.forEach((c, ci) => {
+  checks.forEach((c) => {
     const checkNode = { id: 'check:' + c.check, label: c.check, type: 'check', data: c, fx: null, fy: null };
     nodes.push(checkNode);
 
-    c.rules.forEach((r, ri) => {
-      const ruleNode = { id: 'rule:' + r.id, label: r.id.split('.')[1], type: 'rule', data: r, check: c.check };
-      nodes.push(ruleNode);
-      links.push({ source: checkNode.id, target: ruleNode.id, type: 'check-rule' });
+    c.rules.forEach((r) => {
+      const ruleNodeId = 'rule:' + r.id;
+      let ruleNode = ruleNodeById.get(ruleNodeId);
+      if (!ruleNode) {
+        ruleNode = {
+          id: ruleNodeId,
+          // Rule-id labels are dotted (MissingPartial.invalid_lib_prefix).
+          // Drop the leading namespace and rejoin the rest so a hypothetical
+          // future Foo.bar.baz doesn't lose .baz to a single-split.
+          label: r.id.split('.').slice(1).join('.'),
+          type: 'rule',
+          data: r,
+          checks: [],
+        };
+        ruleNodeById.set(ruleNodeId, ruleNode);
+        nodes.push(ruleNode);
+      }
+      ruleNode.checks.push(c.check);
+      links.push({ source: checkNode.id, target: ruleNodeId, type: 'check-rule' });
     });
   });
 
@@ -6544,9 +6625,17 @@ function renderEmGraph(checks) {
 
   // hover
   node.on('mouseover', function(e, d) {
-    const tip = d.type === 'check'
-      ? d.data.check + ': ' + d.data.rules.length + ' rules, ' + d.data.hints.length + ' hints'
-      : d.data.id + ' (P' + d.data.priority + ') — needs: ' + d.data.needs.join(', ');
+    let tip;
+    if (d.type === 'check') {
+      const c = d.data;
+      tip = c.check + ': ' + c.rules.length + ' rules, ' + c.hints.length + ' hints' +
+        (c.total_emits ? ' · ' + c.total_emits + ' emits' : '') +
+        (c.unmatched_count ? ' (' + c.unmatched_count + ' unmatched)' : '');
+    } else {
+      const r = d.data;
+      const checks = (d.checks && d.checks.length > 1) ? ' [' + d.checks.length + ' checks]' : '';
+      tip = r.id + ' (P' + r.priority + ')' + checks + ' — needs: ' + r.needs.join(', ');
+    }
     showTip(e, tip);
   }).on('mouseleave', hideTip);
 
@@ -6561,125 +6650,213 @@ function renderEmGraph(checks) {
 }
 
 // ── Pipeline Flow ──────────────────────────────────────────────────────
+//
+// Replaced an SVG with truncated 18-char labels with a responsive card grid.
+// Each card carries the step name in full, a one-sentence purpose, and a
+// click-to-copy source path. Falls back to the legacy pipeline_steps
+// string array when the server does not return the richer pipeline
+// descriptor list (older builds, or server-side error).
+function renderEmPipeline(legacySteps) {
+  const el = document.getElementById('em-pipeline-cards');
+  if (!el) return;
 
-function renderEmPipeline(steps) {
-  const svg = d3.select('#em-pipeline');
-  svg.selectAll('*').remove();
+  const rich = engineMapData?.pipeline;
+  const steps = (Array.isArray(rich) && rich.length > 0)
+    ? rich
+    : (legacySteps || []).map((name, i) => ({ ord: i + 1, name, purpose: '', source_file: null }));
 
-  const container = svg.node().parentElement;
-  const width = container.clientWidth - 24;
-  const height = 120;
-  svg.attr('viewBox', '0 0 ' + width + ' ' + height);
+  el.innerHTML = steps.map(s => {
+    const stepClass = 'step-' + (((s.ord - 1) % 7) + 1);
+    const purposeHtml = s.purpose
+      ? '<div class="em-pipeline-card-purpose">' + escHtml(s.purpose) + '</div>'
+      : '';
+    const sourceHtml = s.source_file
+      ? '<span class="em-pipeline-card-source" data-copy="' + escHtml(s.source_file) +
+        '" title="Click to copy path">' + escHtml(s.source_file) + '</span>'
+      : '';
+    return '<div class="em-pipeline-card ' + stepClass + '">' +
+      '<div class="em-pipeline-card-head">' +
+      '<span class="em-pipeline-card-name">' + escHtml(s.name) + '</span>' +
+      '<span class="em-pipeline-card-ord">STEP ' + s.ord + '</span>' +
+      '</div>' +
+      purposeHtml + sourceHtml +
+      '</div>';
+  }).join('');
 
-  const stepW = Math.min(140, (width - 40) / steps.length);
-  const gap = (width - stepW * steps.length) / (steps.length + 1);
-  const y = height / 2;
-
-  const pipeColors = ['#458588', '#689d6a', '#98971a', '#d79921', '#d65d0e', '#cc241d', '#b16286'];
-
-  steps.forEach((step, i) => {
-    const x = gap + i * (stepW + gap) + stepW / 2;
-
-    // connector arrow
-    if (i > 0) {
-      const prevX = gap + (i - 1) * (stepW + gap) + stepW / 2;
-      svg.append('line')
-        .attr('x1', prevX + stepW / 2 - 4)
-        .attr('y1', y)
-        .attr('x2', x - stepW / 2 + 4)
-        .attr('y2', y)
-        .attr('stroke', '#504945')
-        .attr('stroke-width', 2)
-        .attr('marker-end', 'url(#em-arrow)');
-    }
-
-    // box
-    svg.append('rect')
-      .attr('x', x - stepW / 2)
-      .attr('y', y - 22)
-      .attr('width', stepW)
-      .attr('height', 44)
-      .attr('rx', 3)
-      .attr('fill', 'none')
-      .attr('stroke', pipeColors[i % pipeColors.length])
-      .attr('stroke-width', 1.5);
-
-    // label
-    const label = step.length > 18 ? step.slice(0, 16) + '..' : step;
-    svg.append('text')
-      .attr('x', x)
-      .attr('y', y + 1)
-      .attr('text-anchor', 'middle')
-      .attr('dominant-baseline', 'middle')
-      .attr('fill', pipeColors[i % pipeColors.length])
-      .attr('font-size', '8px')
-      .attr('font-weight', 'bold')
-      .attr('font-family', 'var(--mono)')
-      .text(label);
-
-    // step number
-    svg.append('text')
-      .attr('x', x)
-      .attr('y', y - 30)
-      .attr('text-anchor', 'middle')
-      .attr('fill', '#928374')
-      .attr('font-size', '8px')
-      .attr('font-family', 'var(--mono)')
-      .text((i + 1));
+  // Wire copy-to-clipboard for source paths.
+  el.querySelectorAll('[data-copy]').forEach(node => {
+    node.addEventListener('click', () => {
+      const text = node.getAttribute('data-copy');
+      if (!text) return;
+      navigator.clipboard?.writeText(text).then(
+        () => { node.style.color = 'var(--blue)'; setTimeout(() => { node.style.color = ''; }, 600); },
+        () => {},
+      );
+    });
   });
-
-  // arrow marker
-  svg.append('defs').append('marker')
-    .attr('id', 'em-arrow')
-    .attr('viewBox', '0 0 10 10')
-    .attr('refX', 10)
-    .attr('refY', 5)
-    .attr('markerWidth', 6)
-    .attr('markerHeight', 6)
-    .attr('orient', 'auto')
-    .append('path')
-    .attr('d', 'M 0 0 L 10 5 L 0 10 z')
-    .attr('fill', '#504945');
 }
 
 // ── Dependency Matrix ──────────────────────────────────────────────────
+//
+// Re-engineered as a sortable table keyed by rule_id (multi-check rules
+// render once, listing both checks). Columns: rule, check(s), priority,
+// dependency dots, label, effectiveness, sample size. Rows are clickable —
+// clicking focuses the rule in the inspector and (where possible) selects
+// the corresponding node in the topology graph.
+//
+// Sort state is module-local so re-renders preserve it. Default sort: by
+// emit volume (descending) so high-traffic rules float to the top.
+
+const DEP_TYPES = ['params', 'graph', 'filtersIndex', 'objectsIndex', 'tagsIndex'];
+const DEP_LABELS = { params: 'P', graph: 'G', filtersIndex: 'F', objectsIndex: 'O', tagsIndex: 'T' };
+const DEP_COLORS = { params: '#4fc3f7', graph: '#81c784', filtersIndex: '#ffb74d', objectsIndex: '#ffb74d', tagsIndex: '#ffb74d' };
+
+let _emDepSort = { col: 'emitted', desc: true };
+
+const EM_DEP_COLS = [
+  { key: 'rule', label: 'Rule' },
+  { key: 'check', label: 'Check' },
+  { key: 'priority', label: 'P' },
+  { key: 'deps', label: 'Deps', sortable: false },
+  { key: 'label', label: 'Label' },
+  { key: 'effectiveness', label: 'Eff%' },
+  { key: 'emitted', label: 'Emits' },
+];
+
+function compareEmDepRows(a, b, sort) {
+  const dir = sort.desc ? -1 : 1;
+  const k = sort.col;
+  if (k === 'rule')         return a.id.localeCompare(b.id) * dir;
+  if (k === 'check')        return a.checks[0].localeCompare(b.checks[0]) * dir;
+  if (k === 'priority')     return (a.priority - b.priority) * dir;
+  if (k === 'effectiveness')return ((a.effectiveness ?? -2) - (b.effectiveness ?? -2)) * dir;
+  if (k === 'emitted')      return ((a.emitted ?? 0) - (b.emitted ?? 0)) * dir;
+  if (k === 'label') {
+    // Lexical sort over labels with a deterministic tiebreaker.
+    return ((a.label ?? '').localeCompare(b.label ?? '') || a.id.localeCompare(b.id)) * dir;
+  }
+  return 0;
+}
 
 function renderEmDepMatrix(checks) {
   const el = document.getElementById('em-dep-matrix');
-  const depTypes = ['params', 'graph', 'filtersIndex', 'objectsIndex', 'tagsIndex'];
-  const depLabels = { params: 'P', graph: 'G', filtersIndex: 'F', objectsIndex: 'O', tagsIndex: 'T' };
-  const depColors = { params: '#4fc3f7', graph: '#81c784', filtersIndex: '#ffb74d', objectsIndex: '#ffb74d', tagsIndex: '#ffb74d' };
 
+  // Flatten + dedupe: one row per rule_id. checks[] preserved.
+  const byRuleId = new Map();
+  for (const c of checks) {
+    for (const r of c.rules) {
+      let row = byRuleId.get(r.id);
+      if (!row) {
+        row = {
+          id: r.id,
+          subname: r.id.split('.').slice(1).join('.') || r.id,
+          checks: [...(r.checks || [c.check])],
+          priority: r.priority,
+          needs: r.needs || [],
+          disabled: r.disabled,
+          override: r.override,
+          score: r.score,
+          label: r.score?.label || (r.id.endsWith('.unmatched') ? 'UNMATCHED' : 'INSUFFICIENT_DATA'),
+          effectiveness: r.score?.effectiveness ?? null,
+          emitted: r.score?.emitted ?? 0,
+          color: depColor(r),
+        };
+        byRuleId.set(r.id, row);
+      } else if (!row.checks.includes(c.check)) {
+        row.checks.push(c.check);
+      }
+    }
+  }
+  const rows = [...byRuleId.values()];
+  rows.sort((a, b) => compareEmDepRows(a, b, _emDepSort));
+
+  // Legend
   let html = '<div style="display:flex;gap:12px;margin-bottom:8px;font-size:9px;text-transform:uppercase;color:var(--muted)">';
   html += '<span><span style="color:#4fc3f7;font-weight:bold">P</span>=Params</span>';
   html += '<span><span style="color:#81c784;font-weight:bold">G</span>=Graph</span>';
   html += '<span><span style="color:#ffb74d;font-weight:bold">F</span>=Filters</span>';
   html += '<span><span style="color:#ffb74d;font-weight:bold">O</span>=Objects</span>';
   html += '<span><span style="color:#ffb74d;font-weight:bold">T</span>=Tags</span>';
+  html += '<span style="margin-left:auto">' + rows.length + ' rules · click row to focus</span>';
   html += '</div>';
 
-  for (const c of checks) {
-    html += '<div style="font-size:10px;font-weight:bold;color:var(--blue);margin:8px 0 4px;text-transform:uppercase">' + escHtml(c.check) + '</div>';
-    for (const r of c.rules) {
-      html += '<div class="em-dep-row">';
-      html += '<span class="em-dep-rule">' + escHtml(r.id.split('.')[1]) + ' <span style="color:var(--muted);font-weight:normal">P' + r.priority + '</span></span>';
-      html += '<div class="em-dep-dots">';
-      for (const dt of depTypes) {
-        const active = r.needs.includes(dt);
-        const color = active ? depColors[dt] : 'var(--surface2)';
-        html += '<div class="em-dep-dot' + (active ? ' active' : '') + '" style="color:' + color + '">' + (active ? depLabels[dt] : '·') + '</div>';
-      }
-      html += '</div>';
-      if (r.disabled) html += '<span class="em-inspector-badge disabled">OFF</span>';
-      if (r.score) {
-        const eff = r.score.effectiveness;
-        const effColor = eff > 0.5 ? 'var(--green)' : eff > 0.15 ? 'var(--yellow)' : 'var(--red)';
-        html += '<span style="font-size:9px;color:' + effColor + ';min-width:36px;text-align:right">' + (eff * 100).toFixed(0) + '%</span>';
-      }
-      html += '</div>';
+  // Table
+  html += '<table class="em-dep-table"><thead><tr>';
+  for (const col of EM_DEP_COLS) {
+    if (col.sortable === false) {
+      html += '<th>' + col.label + '</th>';
+    } else {
+      const sortedCls = _emDepSort.col === col.key ? ' sorted' + (_emDepSort.desc ? ' desc' : '') : '';
+      html += '<th class="' + sortedCls + '" data-sort="' + col.key + '">' + col.label + '</th>';
     }
   }
+  html += '</tr></thead><tbody>';
+
+  for (const row of rows) {
+    const dotsHtml = DEP_TYPES.map(dt => {
+      const active = row.needs.includes(dt);
+      const color = active ? DEP_COLORS[dt] : 'var(--surface2)';
+      return '<div class="em-dep-dot' + (active ? ' active' : '') + '" style="color:' + color + '">' +
+        (active ? DEP_LABELS[dt] : '·') + '</div>';
+    }).join('');
+
+    const labelCls = LABEL_BADGE_CLASS[row.label] || 'label-insufficient';
+    const labelHtml = '<span class="em-inspector-badge ' + labelCls + '">' + escHtml(row.label) + '</span>';
+    const overrideHtml = row.override?.kind === 'force_enabled'
+      ? ' <span class="em-inspector-badge override-force-enabled">FE</span>'
+      : row.override?.kind === 'force_disabled'
+      ? ' <span class="em-inspector-badge override-force-disabled">FD</span>'
+      : row.override?.kind === 'auto_disabled'
+      ? ' <span class="em-inspector-badge override-auto-disabled">AD</span>'
+      : '';
+
+    const effCellHtml = row.effectiveness != null
+      ? (function() {
+          const eff = row.effectiveness;
+          const color = eff > 0.5 ? 'var(--green)' : eff > 0.15 ? 'var(--yellow)' : eff >= 0 ? 'var(--orange, #fe8019)' : 'var(--red)';
+          return '<span style="color:' + color + '">' + (eff * 100).toFixed(0) + '%</span>';
+        })()
+      : '<span style="color:var(--muted)">—</span>';
+
+    const checksHtml = row.checks.length === 1
+      ? escHtml(row.checks[0])
+      : '<span title="' + escHtml(row.checks.join(', ')) + '">' + escHtml(row.checks[0]) + ' +' + (row.checks.length - 1) + '</span>';
+
+    html += '<tr data-rule-id="' + escHtml(row.id) + '">';
+    html += '<td class="col-rule" style="color:' + row.color + (row.disabled ? ';text-decoration:line-through' : '') + '">' +
+      escHtml(row.subname) + '</td>';
+    html += '<td class="col-check">' + checksHtml + '</td>';
+    html += '<td class="col-prio">P' + row.priority + '</td>';
+    html += '<td><div class="col-dots">' + dotsHtml + '</div></td>';
+    html += '<td>' + labelHtml + overrideHtml + '</td>';
+    html += '<td class="col-eff">' + effCellHtml + '</td>';
+    html += '<td class="col-samples">' + row.emitted + '</td>';
+    html += '</tr>';
+  }
+
+  html += '</tbody></table>';
   el.innerHTML = html;
+
+  // Wire header sort
+  el.querySelectorAll('thead th[data-sort]').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.getAttribute('data-sort');
+      if (_emDepSort.col === col) _emDepSort.desc = !_emDepSort.desc;
+      else { _emDepSort.col = col; _emDepSort.desc = (col === 'emitted' || col === 'effectiveness'); }
+      renderEmDepMatrix(checks);
+    });
+  });
+
+  // Wire row click → focus rule in inspector
+  el.querySelectorAll('tbody tr').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const ruleId = tr.getAttribute('data-rule-id');
+      if (!ruleId) return;
+      el.querySelectorAll('tbody tr.selected').forEach(t => t.classList.remove('selected'));
+      tr.classList.add('selected');
+      emFocusRuleById(ruleId);
+    });
+  });
 }
 
 // ── Coverage Gaps ──────────────────────────────────────────────────────
@@ -6738,57 +6915,414 @@ function renderEmGaps(data) {
 }
 
 // ── Inspector ──────────────────────────────────────────────────────────
+//
+// One node click → one inspector render. Two render paths (rule / check)
+// share a kit of small builders (badge, source link, action button) so the
+// markup grows in one place when fields are added.
+
+const LABEL_BADGE_CLASS = {
+  GOOD: 'label-good',
+  OK: 'label-ok',
+  LOW: 'label-low',
+  HARMFUL: 'label-harmful',
+  'AT RISK': 'label-at-risk',
+  UNMATCHED: 'label-unmatched',
+  INSUFFICIENT_DATA: 'label-insufficient',
+};
+
+function emInspectorBadge(label) {
+  const cls = LABEL_BADGE_CLASS[label] || 'label-insufficient';
+  return '<span class="em-inspector-badge ' + cls + '">' + escHtml(label) + '</span>';
+}
+
+function emInspectorSourceLink(source) {
+  if (!source || !source.file) return '<span style="color:var(--muted);font-size:10px">unknown</span>';
+  const lineFrag = source.line ? ':' + source.line : '';
+  const display = escHtml(source.file + lineFrag);
+  // No editor protocol assumed; clipboard-copy is the most-portable action.
+  return '<span class="em-inspector-source" data-copy="' + escHtml(source.file + lineFrag) +
+    '" title="Click to copy path">' + display + '</span>';
+}
+
+function emInspectorItem(label, value) {
+  return '<div class="em-inspector-item">' +
+    '<div class="em-inspector-label">' + escHtml(label) + '</div>' +
+    '<div class="em-inspector-value">' + value + '</div>' +
+    '</div>';
+}
+
+let emCurrentRuleId = null;       // for action buttons
+let emCurrentCheck = null;        // for check-scope action buttons
 
 function showEmInspector(d) {
   const el = document.getElementById('em-inspector');
   let html = '';
+  emCurrentRuleId = null;
+  emCurrentCheck = null;
 
-  if (d.type === 'check') {
-    const c = d.data;
-    html += '<div class="em-inspector-item"><div class="em-inspector-label">Check</div><div class="em-inspector-value" style="color:var(--blue)">' + escHtml(c.check) + '</div></div>';
-    html += '<div class="em-inspector-item"><div class="em-inspector-label">Rules (' + c.rules.length + ')</div><div class="em-inspector-value">';
-    for (const r of c.rules) {
-      const color = depColor(r);
-      html += '<div style="margin:3px 0"><span style="color:' + color + ';font-weight:bold">' + escHtml(r.id.split('.')[1]) + '</span> <span style="color:var(--muted);font-size:9px">P' + r.priority + '</span>';
-      if (r.disabled) html += ' <span class="em-inspector-badge disabled">disabled</span>';
-      html += '</div>';
-    }
-    html += '</div></div>';
-    html += '<div class="em-inspector-item"><div class="em-inspector-label">Extractor</div><div class="em-inspector-value">' + (c.has_extractor ? '<span style="color:var(--green)">YES</span>' : '<span style="color:var(--red)">NO</span>') + '</div></div>';
-    html += '<div class="em-inspector-item"><div class="em-inspector-label">Hints</div><div class="em-inspector-value">' + (c.hints.length > 0 ? c.hints.map(h => escHtml(h)).join(', ') : '<span style="color:var(--muted)">none</span>') + '</div></div>';
-    if (c.example_message) {
-      html += '<div class="em-inspector-item"><div class="em-inspector-label">Example</div><div class="em-inspector-value" style="font-size:10px;text-transform:none;color:var(--muted)">' + escHtml(c.example_message) + '</div></div>';
-    }
-  } else if (d.type === 'rule') {
-    const r = d.data;
-    html += '<div class="em-inspector-item"><div class="em-inspector-label">Rule</div><div class="em-inspector-value" style="color:' + depColor(r) + '">' + escHtml(r.id) + '</div></div>';
-    html += '<div class="em-inspector-item"><div class="em-inspector-label">Priority</div><div class="em-inspector-value">' + r.priority + ' <span style="color:var(--muted);font-size:9px">(lower = higher priority)</span></div></div>';
-    html += '<div class="em-inspector-item"><div class="em-inspector-label">Dependencies</div><div class="em-inspector-value">';
-    for (const n of r.needs) {
-      const badgeClass = n === 'graph' ? 'graph' : n === 'params' ? 'params' : 'index';
-      html += '<span class="em-inspector-badge ' + badgeClass + '">' + escHtml(n) + '</span>';
-    }
-    html += '</div></div>';
-    if (r.graph_queries.length > 0) {
-      html += '<div class="em-inspector-item"><div class="em-inspector-label">Graph Queries</div><div class="em-inspector-value" style="font-size:10px">' + r.graph_queries.map(q => '<code style="color:var(--green)">' + escHtml(q) + '</code>').join(' ') + '</div></div>';
-    }
-    if (r.disabled) {
-      html += '<div class="em-inspector-item"><div class="em-inspector-label">Status</div><div class="em-inspector-value"><span class="em-inspector-badge disabled">DISABLED</span> Case base flagged this rule.</div></div>';
-    }
-    if (r.score) {
-      const s = r.score;
-      html += '<div class="em-inspector-item"><div class="em-inspector-label">Analytics</div><div class="em-inspector-value" style="font-size:10px">';
-      html += 'Emitted: ' + s.emitted + ' · Resolved: ' + s.resolved + ' · Regressed: ' + s.regressed + '<br>';
-      const effColor = s.effectiveness > 0.5 ? 'var(--green)' : s.effectiveness > 0.15 ? 'var(--yellow)' : 'var(--red)';
-      html += 'Resolution: ' + (s.resolution_rate * 100).toFixed(0) + '% · Regression: ' + (s.regression_rate * 100).toFixed(0) + '%<br>';
-      html += '<span style="color:' + effColor + ';font-weight:bold">Effectiveness: ' + (s.effectiveness * 100).toFixed(0) + '%</span>';
-      html += '</div></div>';
-    } else {
-      html += '<div class="em-inspector-item"><div class="em-inspector-label">Analytics</div><div class="em-inspector-value" style="color:var(--muted)">No data yet</div></div>';
-    }
-  }
+  if (d.type === 'check') html = renderCheckInspector(d.data);
+  else if (d.type === 'rule') html = renderRuleInspector(d.data, d.checks);
 
   el.innerHTML = html;
+
+  // Wire action buttons + source-copy + check chips. Selectors live inside
+  // this rendered fragment, so the listeners are scoped to it.
+  el.querySelectorAll('[data-copy]').forEach(node => {
+    node.addEventListener('click', () => {
+      const text = node.getAttribute('data-copy');
+      if (!text) return;
+      navigator.clipboard?.writeText(text).then(
+        () => { node.style.color = 'var(--blue)'; setTimeout(() => { node.style.color = ''; }, 600); },
+        () => {},
+      );
+    });
+  });
+
+  el.querySelectorAll('[data-em-action]').forEach(btn => {
+    btn.addEventListener('click', () => emInspectorAction(btn.getAttribute('data-em-action'), btn));
+  });
+
+  el.querySelectorAll('[data-em-focus-check]').forEach(node => {
+    node.addEventListener('click', () => emFocusCheck(node.getAttribute('data-em-focus-check')));
+  });
+}
+
+function renderRuleInspector(r, checksFromGraph) {
+  emCurrentRuleId = r.id;
+  let html = '';
+
+  // Header — rule_id + label + override pill
+  const score = r.score;
+  const label = score?.label || (r.id.endsWith('.unmatched') ? 'UNMATCHED' : 'INSUFFICIENT_DATA');
+  const labelHtml = emInspectorBadge(label);
+  let overrideBadge = '';
+  if (r.override?.kind === 'force_enabled')  overrideBadge = '<span class="em-inspector-badge override-force-enabled">FORCE-ENABLED</span>';
+  else if (r.override?.kind === 'force_disabled') overrideBadge = '<span class="em-inspector-badge override-force-disabled">FORCE-DISABLED</span>';
+  else if (r.override?.kind === 'auto_disabled')  overrideBadge = '<span class="em-inspector-badge override-auto-disabled">AUTO-DISABLED</span>';
+
+  html += emInspectorItem('Rule',
+    '<div style="color:' + depColor(r) + ';font-weight:bold;font-family:var(--mono);text-transform:none">' +
+    escHtml(r.id) + '</div>' +
+    '<div style="margin-top:4px">' + labelHtml + ' ' + overrideBadge + '</div>'
+  );
+
+  // Checks served — chips, click-to-focus
+  const checks = r.checks || checksFromGraph || (r.check ? [r.check] : []);
+  if (checks.length > 0) {
+    const chips = checks.map(c =>
+      '<span class="em-inspector-check-chip" data-em-focus-check="' + escHtml(c) + '">' + escHtml(c) + '</span>'
+    ).join('');
+    const noun = checks.length === 1 ? 'Check' : 'Checks (' + checks.length + ')';
+    html += emInspectorItem(noun, '<div class="em-inspector-checks">' + chips + '</div>');
+  }
+
+  // Priority + deps
+  html += emInspectorItem('Priority',
+    '<span style="font-family:var(--mono)">' + r.priority + '</span> ' +
+    '<span style="color:var(--muted);font-size:9px;text-transform:none">(lower = matched first)</span>'
+  );
+
+  const depBadges = (r.needs || []).map(n => {
+    const cls = n === 'graph' ? 'graph' : n === 'params' ? 'params' : 'index';
+    return '<span class="em-inspector-badge ' + cls + '">' + escHtml(n) + '</span>';
+  }).join('');
+  html += emInspectorItem('Dependencies', depBadges || '<span style="color:var(--muted)">none</span>');
+
+  if (r.graph_queries && r.graph_queries.length > 0) {
+    const qs = r.graph_queries.map(q =>
+      '<code style="color:var(--green);text-transform:none">' + escHtml(q) + '</code>'
+    ).join(' · ');
+    html += emInspectorItem('Graph queries', '<div style="font-size:10px">' + qs + '</div>');
+  }
+
+  // Source location
+  html += emInspectorItem('Source', emInspectorSourceLink(r.source));
+
+  // Override status / reason — full sentence, not just the pill
+  if (r.override) {
+    html += emInspectorItem('Override status',
+      '<div style="font-size:11px;text-transform:none;color:var(--muted);line-height:1.4">' +
+      escHtml(r.override.reason || '') + '</div>'
+    );
+  } else if (r.disabled) {
+    // Disabled but no override-detail row in the response — best effort message.
+    html += emInspectorItem('Status',
+      '<div style="font-size:11px;text-transform:none;color:var(--muted);line-height:1.4">' +
+      'Case base auto-disabled this rule. Open the drill-down for details.</div>'
+    );
+  }
+
+  // Analytics — full breakdown
+  if (score) {
+    const eff = (score.effectiveness * 100).toFixed(0) + '%';
+    const effColor = score.effectiveness > 0.5 ? 'var(--green)'
+      : score.effectiveness > 0.15 ? 'var(--yellow)'
+      : score.effectiveness >= 0 ? 'var(--orange, #fe8019)'
+      : 'var(--red)';
+    const stats =
+      '<div class="em-inspector-stats-grid">' +
+      '<div class="stat-label">Emitted</div><div class="stat-value">' + score.emitted + '</div>' +
+      '<div class="stat-label">Outcomes</div><div class="stat-value">' + (score.total_outcomes ?? 0) + '</div>' +
+      '<div class="stat-label">Resolved</div><div class="stat-value" style="color:var(--green)">' +
+      score.resolved + ' (' + (score.resolution_rate * 100).toFixed(0) + '%)</div>' +
+      '<div class="stat-label">Regressed</div><div class="stat-value" style="color:var(--red)">' +
+      score.regressed + ' (' + (score.regression_rate * 100).toFixed(0) + '%)</div>' +
+      '<div class="stat-label">Unchanged</div><div class="stat-value">' + (score.unchanged ?? 0) + '</div>' +
+      '<div class="stat-label">Moved</div><div class="stat-value">' + (score.moved ?? 0) + '</div>' +
+      '<div class="stat-label">Adopted (verbatim)</div><div class="stat-value">' +
+      (score.adopted ?? 0) + ' (' + ((score.adoption_rate ?? 0) * 100).toFixed(0) + '%)</div>' +
+      '<div class="stat-label">Effectiveness</div><div class="stat-value" style="color:' + effColor + '">' + eff + '</div>' +
+      '</div>';
+    html += emInspectorItem('Analytics', stats);
+  } else {
+    html += emInspectorItem('Analytics',
+      '<span style="color:var(--muted);font-size:10px;text-transform:none">No outcomes recorded yet for this rule_id.</span>'
+    );
+  }
+
+  // Action buttons
+  const overrideKind = r.override?.kind;
+  const enableDisabled = overrideKind === 'force_enabled' ? 'disabled' : '';
+  const disableDisabled = overrideKind === 'force_disabled' ? 'disabled' : '';
+  const clearDisabled = (overrideKind === 'force_enabled' || overrideKind === 'force_disabled') ? '' : 'disabled';
+  html += '<div class="em-inspector-actions">' +
+    '<button class="primary" data-em-action="force_enable" ' + enableDisabled + '>Force enable</button>' +
+    '<button class="danger" data-em-action="force_disable" ' + disableDisabled + '>Force disable</button>' +
+    '<button data-em-action="clear_override" ' + clearDisabled + '>Clear override</button>' +
+    '<button data-em-action="open_drilldown">Open drill-down</button>' +
+    '</div>';
+
+  return html;
+}
+
+function renderCheckInspector(c) {
+  emCurrentCheck = c.check;
+  let html = '';
+
+  // Header — check name + a tiny coverage summary
+  html += emInspectorItem('Check',
+    '<div style="color:var(--blue);font-family:var(--mono);font-weight:bold;text-transform:none">' +
+    escHtml(c.check) + '</div>'
+  );
+
+  // Coverage stats
+  const total = c.total_emits ?? 0;
+  const matched = c.matched_count ?? 0;
+  const unmatched = c.unmatched_count ?? 0;
+  const coverage = total > 0 ? Math.round(100 * matched / total) : null;
+  const coverageStats =
+    '<div class="em-inspector-stats-grid">' +
+    '<div class="stat-label">Total emits</div><div class="stat-value">' + total + '</div>' +
+    '<div class="stat-label">Matched rule_id</div><div class="stat-value">' +
+    matched + (coverage != null ? ' (' + coverage + '%)' : '') + '</div>' +
+    '<div class="stat-label">Unmatched</div><div class="stat-value" style="color:' +
+    (unmatched > 0 ? 'var(--red)' : 'var(--muted)') + '">' + unmatched + '</div>' +
+    '<div class="stat-label">Rules</div><div class="stat-value">' + c.rules.length + '</div>' +
+    '<div class="stat-label">Disabled rules</div><div class="stat-value" style="color:' +
+    (c.rules.filter(r => r.disabled).length > 0 ? 'var(--orange, #fe8019)' : 'var(--muted)') + '">' +
+    c.rules.filter(r => r.disabled).length + '</div>' +
+    '<div class="stat-label">Has extractor</div><div class="stat-value" style="color:' +
+    (c.has_extractor ? 'var(--green)' : 'var(--red)') + '">' + (c.has_extractor ? 'YES' : 'NO') + '</div>' +
+    '</div>';
+  html += emInspectorItem('Coverage', coverageStats);
+
+  // Rules list
+  if (c.rules.length > 0) {
+    let rulesHtml = '';
+    for (const r of c.rules) {
+      const color = depColor(r);
+      const subname = r.id.split('.').slice(1).join('.') || r.id;
+      const overrideTag = r.override?.kind === 'force_enabled' ? '<span class="em-inspector-badge override-force-enabled">FE</span>'
+        : r.override?.kind === 'force_disabled' ? '<span class="em-inspector-badge override-force-disabled">FD</span>'
+        : r.override?.kind === 'auto_disabled' ? '<span class="em-inspector-badge override-auto-disabled">AD</span>'
+        : '';
+      rulesHtml += '<div style="margin:3px 0;font-family:var(--mono);text-transform:none">' +
+        '<span style="color:' + color + ';font-weight:bold">' + escHtml(subname) + '</span> ' +
+        '<span style="color:var(--muted);font-size:9px">P' + r.priority + '</span> ' + overrideTag +
+        '</div>';
+    }
+    html += emInspectorItem('Rules (' + c.rules.length + ')', rulesHtml);
+  }
+
+  // Hints + source files
+  const hintsHtml = c.hints.length > 0
+    ? c.hints.map(h => '<code style="color:var(--green);text-transform:none">' + escHtml(h) + '.md</code>').join(' · ')
+    : '<span style="color:var(--muted)">none</span>';
+  html += emInspectorItem('Hint files', '<div style="font-size:10px">' + hintsHtml + '</div>');
+
+  if (c.source_files && c.source_files.length > 0) {
+    const links = c.source_files.map(f =>
+      '<span class="em-inspector-source" data-copy="' + escHtml(f) + '" title="Click to copy path">' +
+      escHtml(f) + '</span>'
+    ).join('<br>');
+    html += emInspectorItem('Source modules', links);
+  }
+
+  if (c.metadata_file) {
+    html += emInspectorItem('Metadata YAML',
+      '<span class="em-inspector-source" data-copy="' + escHtml(c.metadata_file) + '" title="Click to copy path">' +
+      escHtml(c.metadata_file) + '</span>'
+    );
+  }
+
+  if (c.example_message) {
+    html += emInspectorItem('Example message',
+      '<div class="em-inspector-msg">' + escHtml(c.example_message) + '</div>'
+    );
+  }
+
+  // Action buttons
+  html += '<div class="em-inspector-actions">' +
+    '<button data-em-action="open_check_drilldown">Open drill-down for check</button>' +
+    '</div>';
+
+  return html;
+}
+
+async function emInspectorAction(action, btn) {
+  if (action === 'force_enable' || action === 'force_disable' || action === 'clear_override') {
+    if (!emCurrentRuleId) return;
+    const apiAction = action === 'clear_override' ? 'clear' : action;
+    btn.disabled = true;
+    try {
+      const res = await fetch(BASE + '/api/engine/rule-overrides', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: apiAction, rule_id: emCurrentRuleId, reason: 'dashboard inspector' }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert('Override failed: ' + (err.error || res.status));
+      } else {
+        // Re-fetch the engine map so the inspector + topology see the new state.
+        engineMapLoaded = false;
+        await fetchEngineMap();
+        // Refocus the rule we just acted on so the user sees the result.
+        emFocusRuleById(emCurrentRuleId);
+      }
+    } catch (e) {
+      alert('Override request failed: ' + e.message);
+    }
+    return;
+  }
+  if (action === 'open_drilldown') {
+    if (!emCurrentRuleId) return;
+    emOpenRuleDrilldown(emCurrentRuleId);
+    return;
+  }
+  if (action === 'open_check_drilldown') {
+    if (!emCurrentCheck) return;
+    emOpenCheckDrilldown(emCurrentCheck);
+    return;
+  }
+}
+
+function emFocusCheck(checkName) {
+  if (!engineMapData) return;
+  const check = engineMapData.checks.find(c => c.check === checkName);
+  if (!check) return;
+  showEmInspector({ type: 'check', data: check });
+}
+
+function emFocusRuleById(ruleId) {
+  if (!engineMapData) return;
+  for (const c of engineMapData.checks) {
+    const r = c.rules.find(x => x.id === ruleId);
+    if (r) { showEmInspector({ type: 'rule', data: r, checks: r.checks }); return; }
+  }
+}
+
+// Switch to a named tab by simulating a click on its [data-tab] element.
+// initTabs() wires the click handler that calls TAB_LOADERS[name](), so this
+// is the cleanest way to trigger lazy data fetches for the destination tab.
+// Returns a Promise that resolves once the destination's load hook (if any)
+// has had a chance to schedule its fetches.
+function emSwitchToTab(name) {
+  const tab = document.querySelector('.tab[data-tab="' + name + '"]');
+  if (!tab) return Promise.resolve();
+  tab.click();
+  // The TAB_LOADERS entry returns synchronously after kicking off async
+  // fetches. Yield once so any awaiters (e.g. analyticsData population)
+  // have a tick to populate state we will read next.
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+// Switch to Analytics, ensure the rule scores have loaded (so the drilldown
+// can find the rule's check name from analyticsData if needed), and call
+// the existing showRuleDrilldown(ruleId, check) entry point. Reads the
+// check name from the rule node first; falls back to looking it up in the
+// engine map; bails with an error message if neither yields a check.
+async function emOpenRuleDrilldown(ruleId) {
+  if (!ruleId) return;
+
+  // Resolve the check name from the engine-map data we already have. Prefer
+  // the multi-check checks[] field (defaults to the first), then fall back
+  // to the legacy single check field. Without a check name, showRuleDrilldown
+  // throws "Cannot read properties of undefined (reading includes)" when it
+  // computes the base check.
+  let checkName = null;
+  if (engineMapData?.checks) {
+    for (const c of engineMapData.checks) {
+      const r = c.rules.find(x => x.id === ruleId);
+      if (r) {
+        checkName = (r.checks && r.checks[0]) || r.check || c.check;
+        break;
+      }
+    }
+  }
+  if (!checkName) {
+    // The rule_id usually starts with the check name (MissingPartial.x).
+    // For multi-check rules with stripped prefixes (DeprecatedTag.include
+    // bound to both DeprecatedTag and pos-supervisor:DeprecatedTag), this
+    // resolves to DeprecatedTag which is a valid base check for
+    // showRuleDrilldown's check.includes(.) guard.
+    checkName = ruleId.split('.')[0];
+  }
+
+  await emSwitchToTab('analytics');
+
+  if (typeof showRuleDrilldown === 'function') {
+    // showRuleDrilldown toggles when called with the same ruleId twice in a
+    // row; null-out activeDrilldownRuleId first so the cross-tab open always
+    // OPENs (rather than accidentally closing a panel from a previous click).
+    if (typeof activeDrilldownRuleId !== 'undefined' && activeDrilldownRuleId === ruleId) {
+      activeDrilldownRuleId = null;
+    }
+    showRuleDrilldown(ruleId, checkName);
+    // Scroll the panel into view so the user actually sees what just opened.
+    setTimeout(() => {
+      const panel = document.getElementById('an-rule-drilldown');
+      panel?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 100);
+  }
+}
+
+// "Open drill-down for check" jumps to Analytics and highlights the check's
+// row in the scorecards table. The drilldown panel itself is rule_id-scoped
+// (one rule_id, not one check), so we don't open it for a check — instead
+// we surface the check's per-rule breakdown in the scorecard view, which is
+// the natural starting point for "investigate this check".
+async function emOpenCheckDrilldown(checkName) {
+  if (!checkName) return;
+  await emSwitchToTab('analytics');
+
+  // Highlight the row for this check in the scorecards table. Many of the
+  // analytics tables key rows by data-check; we flash whichever first matches.
+  setTimeout(() => {
+    const candidates = document.querySelectorAll('tr[data-check="' + cssEscape(checkName) + '"]');
+    if (candidates.length === 0) return;
+    const first = candidates[0];
+    first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    first.classList.add('rd-active');
+    setTimeout(() => first.classList.remove('rd-active'), 1500);
+  }, 100);
+}
+
+// Minimal CSS.escape polyfill for older browsers — covers the characters
+// platformOS check names actually use (alnum, dash, colon, dot).
+function cssEscape(s) {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(s);
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
 }
 
 // wire button
