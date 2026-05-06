@@ -90,7 +90,7 @@ slug: registrations
 method: post
 ---
 {% liquid
-  function result = 'lib/commands/registrations/create', params: context.params
+  function result = 'commands/registrations/create', params: context.params
   if result.errors != blank
     render 'registrations/form', errors: result.errors, params: context.params
     break

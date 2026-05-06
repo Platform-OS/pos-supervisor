@@ -1,5 +1,5 @@
 [platformOS:commands] Commands use build/check/execute pattern: _build creates data, _check validates, _execute runs side effects.
-MUST NOT execute if _check returns errors. Invoke via function tag: {% function result = 'lib/commands/my_cmd/execute', arg: value %}
+MUST NOT execute if _check returns errors. Invoke via function tag: {% function result = 'commands/my_cmd/execute', arg: value %} (no `lib/` prefix — `function` paths resolve under app/lib/)
 Never use graphql tag to invoke a command — always use function tag.
 → domain_guide({ domain: "commands", section: "patterns" }) and domain_guide({ domain: "commands", section: "api" })
 ⚠️ MUST NOT create command files manually for CRUD resources. Run via bash:

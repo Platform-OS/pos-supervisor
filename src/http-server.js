@@ -1,18 +1,32 @@
 import { createServer } from 'node:http';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, statSync } from 'node:fs';
+import { join, resolve, relative, isAbsolute, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import yaml from 'js-yaml';
 import { getToolList, dispatchTool } from './tools.js';
 import { ToolError } from './core/tool-error.js';
 import { HTTP_MAX_BODY } from './core/constants.js';
 import { buildDashboardHtml } from './dashboard.js';
+import { getProjectMap } from './tools/project-map.js';
+import { buildDependencyGraph } from './core/dependency-graph.js';
+import { checkScorecards, sessionSummaries, recommendations, toolSequenceBigrams, diagnosticJourney, confidenceCalibration, fixAdoptionFunnel, knowledgeGaps, ruleScoresByCategory, ruleDrilldown, rulePerformance, adaptiveModeImpact, fixRulePerformance } from './core/analytics-queries.js';
+import { ruleScores, suggestedRules, retrieveCasesByCheck, generateRuleTemplate, synthesizeGuardPredicate } from './core/case-base.js';
+import { withCheckLabels, withRuleLabels } from './core/analytics-labels.js';
+import { addPromotedRule, removePromotedRule, listPromotedRules } from './core/rules/promoted-rules.js';
+import { reloadRules, loadAllRules } from './core/rules/index.js';
+import { runRules, getDisabledRules, getAllChecksWithRules, getRulesForCheck, getDisabledRuleDetails, getForceEnabledRules, getForceDisabledRules } from './core/rules/engine.js';
+import { loadOverrides, addForceEnable, addForceDisable, removeOverride } from './core/rule-overrides.js';
+import { loadCacConfig, updateCacConfig, defaultCacConfig, VALID_MODES, VALID_ACTIONS } from './core/cac-config.js';
+import { getRecentCacDecisions } from './core/cac-predictor.js';
+import { extractParams, templateOf, KNOWN_EXTRACTOR_CHECKS } from './core/diagnostic-record.js';
+import { buildFactGraph } from './core/project-fact-graph.js';
 
 /**
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
  * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir }) {
+export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild, onOverridesChanged, onCacConfigChanged, switchEngineMode, getEngineMode }) {
   if (!port) return null;
 
   const dashboardHtml = buildDashboardHtml();
@@ -33,6 +47,11 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
         'Content-Length': Buffer.byteLength(dashboardHtml),
       });
       return res.end(dashboardHtml);
+    }
+
+    // ── Vendor static files ─────────────────────────────────────────────
+    if (method === 'GET' && url.pathname.startsWith('/vendor/')) {
+      return handleVendorFile(url.pathname, res);
     }
 
     // ── GET routes ──────────────────────────────────────────────────────
@@ -70,8 +89,51 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       return handleGetEnvs(projectDir, res);
     }
 
-    // ── POST routes (need body parsing) ─────────────────────────────────
+    if (method === 'GET' && url.pathname === '/api/suppressions') {
+      return handleGetSuppressions(projectDir, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/engine/mode') {
+      return sendJson(res, 200, { mode: getEngineMode?.() ?? 'static' });
+    }
+
+    if (method === 'GET' && url.pathname === '/api/sessions') {
+      return handleGetSessions(sessionsDir, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/file') {
+      return handleGetFile(projectDir, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/dependency-tree') {
+      return handleGetDependencyTree(projectDir, getStatus, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/rules/promoted') {
+      return handleGetPromotedRules(projectDir, res);
+    }
+
+    // ── DELETE routes ──────────────────────────────────────────────────────
+    if (method === 'DELETE' && url.pathname === '/api/rules/promote') {
+      return handleDeletePromotedRule(projectDir, url, res);
+    }
+
+    // ── POST routes (no body) ────────────────────────────────────────────
     if (method === 'POST') {
+      if (url.pathname === '/api/lsp/restart') {
+        return handleLspRestart(restartLsp, res);
+      }
+
+      if (url.pathname === '/api/sessions/save') {
+        if (saveSessionSummary) { saveSessionSummary(); }
+        return sendJson(res, 200, { ok: true });
+      }
+
+      if (url.pathname === '/api/analytics/rebuild') {
+        return handleAnalyticsRebuild(analyticsStore, sessionsDir, onAnalyticsRebuild, res);
+      }
+
+      // ── POST routes (need body parsing) ───────────────────────────────
       let body;
       try {
         body = await readJsonBody(req);
@@ -83,8 +145,8 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
         return handleCall(registry, body, res);
       }
 
-      if (url.pathname === '/api/lsp/restart') {
-        return handleLspRestart(restartLsp, res);
+      if (url.pathname === '/api/analytics/baseline') {
+        return handleAnalyticsBaselineSet(analyticsStore, body, res);
       }
 
       if (url.pathname === '/api/pos-cli/data-clean') {
@@ -94,7 +156,140 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       if (url.pathname === '/api/pos-cli/deploy') {
         return handlePosCliCommand(posCliPath, projectDir, body, 'deploy', log, res);
       }
+
+      if (url.pathname === '/api/rules/promote') {
+        return handlePromoteRule(projectDir, body, res);
+      }
+
+      if (url.pathname === '/api/engine/mode') {
+        return handleSetEngineMode(switchEngineMode, body, log, res);
+      }
+
+      if (url.pathname === '/api/health-score') {
+        return handlePostHealthScore(analyticsStore, body, res);
+      }
+
+      if (url.pathname === '/api/suppressions') {
+        return handlePostSuppression(projectDir, body, log, res);
+      }
+
+      if (url.pathname === '/api/rules/test') {
+        return handleRuleTest(body, res, analyticsStore, projectDir);
+      }
+
+      if (url.pathname === '/api/engine/rule-overrides') {
+        return handleRuleOverridesMutate(projectDir, body, res, log, onOverridesChanged);
+      }
+
+      if (url.pathname === '/api/cac/config') {
+        return handleCacConfigMutate(projectDir, body, res, log, onCacConfigChanged);
+      }
     }
+
+    // ── Analytics GET routes ──────────────────────────────────────────────
+    if (method === 'GET' && url.pathname === '/api/analytics/stats') {
+      if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+      return sendJson(res, 200, analyticsStore.stats());
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/baseline') {
+      return handleAnalyticsBaselineGet(analyticsStore, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/scorecards') {
+      return handleAnalyticsScorecards(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/sessions') {
+      return handleAnalyticsSessions(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/recommendations') {
+      return handleAnalyticsRecommendations(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/bigrams') {
+      return handleAnalyticsBigrams(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/rule-scores') {
+      return handleRuleScores(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/rule-performance') {
+      return handleRulePerformance(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/fix-rule-performance') {
+      return handleFixRulePerformance(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/rule-drilldown') {
+      return handleRuleDrilldown(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/suggested-rules') {
+      return handleSuggestedRules(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/cases') {
+      return handleCases(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/health-scores') {
+      return handleGetHealthScores(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/journey') {
+      return handleDiagnosticJourney(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/calibration') {
+      return handleConfidenceCalibration(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/funnel') {
+      return handleFixAdoptionFunnel(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/knowledge-gaps') {
+      return handleKnowledgeGaps(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/analytics/rule-heatmap') {
+      return handleRuleHeatmap(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/rules/checks') {
+      return handleRuleChecks(res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/engine-map') {
+      return handleEngineMap(analyticsStore, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/blob') {
+      return handleBlobRead(blobStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/engine/impact') {
+      return handleEngineImpact(analyticsStore, url, res);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/engine/rule-overrides') {
+      return handleRuleOverridesList(projectDir, res, log);
+    }
+    // POST on this path is dispatched inside the POST block above so the
+    // shared body-parser isn't read twice.
+
+    if (method === 'GET' && url.pathname === '/api/cac/config') {
+      return handleCacConfigGet(projectDir, res, log);
+    }
+
+    if (method === 'GET' && url.pathname === '/api/cac/decisions') {
+      return handleCacDecisions(url, res);
+    }
+    // POST /api/cac/config is dispatched inside the POST block above.
 
     // ── Fallback ────────────────────────────────────────────────────────
     sendJson(res, 404, { error: 'Not found' });
@@ -219,19 +414,127 @@ function handleGetKnowledge(dataRoot, res) {
   }
 }
 
+/**
+ * Two coexisting hint subsystems are joined here:
+ *   • static  — `src/data/hints/<Check>.md` rendered into the diagnostic by
+ *               error-enricher.js. Legacy LSP checks; one fixed blob each.
+ *   • rule    — `src/core/rules/<Check>.js` builds the hint dynamically per
+ *               diagnostic. No md file exists; the registry is the source.
+ *
+ * Pre-fix the endpoint only knew about (1) and 404'd on every (2). The
+ * dashboard drilldown silently broke for the 12+ rule-driven checks
+ * (GraphQLVariablesCheck, PartialCallArguments, NonGetRenderingPage, …).
+ *
+ * Response shape:
+ *   GET /api/hints
+ *     { hints: [name, …],            // backward-compat: union of both kinds
+ *       checks: [{ name, sources: ['static'|'rule', …] }, …] }
+ *   GET /api/hints?name=<X>
+ *     { name, content, source: 'static' }                              // md found
+ *     { name, content, source: 'rule', rule_ids: [...] }               // synthesized from registry
+ *     404 only when both lookups miss.
+ */
 function handleGetHints(dataRoot, url, res) {
   if (!dataRoot) return sendJson(res, 503, { error: 'Data dir not available' });
   const hintsDir = join(dataRoot, 'hints');
   const name = url.searchParams.get('name');
-  try {
-    if (name) {
-      const content = readFileSync(join(hintsDir, `${name}.md`), 'utf-8');
-      return sendJson(res, 200, { name, content });
+
+  // Populate the rule registry once. Idempotent — guarded by `_loaded`.
+  loadAllRules();
+
+  if (name) {
+    const file = join(hintsDir, `${name}.md`);
+    if (existsSync(file)) {
+      try {
+        const content = readFileSync(file, 'utf-8');
+        return sendJson(res, 200, { name, content, source: 'static' });
+      } catch (e) {
+        // Fall through — let the rule registry resolve it if possible.
+      }
     }
-    const files = readdirSync(hintsDir).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''));
-    sendJson(res, 200, { hints: files });
-  } catch (e) {
-    sendJson(res, 404, { error: e.message });
+    const rules = getRulesForCheck(name);
+    if (rules.length > 0) {
+      return sendJson(res, 200, {
+        name,
+        content: synthesizeRuleHintDoc(name, rules),
+        source: 'rule',
+        rule_ids: rules.map(r => r.id),
+      });
+    }
+    return sendJson(res, 404, { error: `No hint or rule for ${name}` });
+  }
+
+  let staticNames = [];
+  try {
+    staticNames = readdirSync(hintsDir).filter(f => f.endsWith('.md')).map(f => f.replace('.md', ''));
+  } catch {
+    // hints dir may be missing on a fresh checkout — still return rule names.
+  }
+  const ruleNames = getAllChecksWithRules();
+  const staticSet = new Set(staticNames);
+  const ruleSet = new Set(ruleNames);
+  const all = Array.from(new Set([...staticNames, ...ruleNames])).sort();
+  const checks = all.map(n => {
+    const sources = [];
+    if (staticSet.has(n)) sources.push('static');
+    if (ruleSet.has(n)) sources.push('rule');
+    return { name: n, sources };
+  });
+  sendJson(res, 200, { hints: all, checks });
+}
+
+/**
+ * Render a markdown reference doc for a rule-driven check by introspecting
+ * the registry. Lists each sub-rule with its priority and the source of its
+ * `when()` predicate (truncated). Surfaces the file path the developer must
+ * edit to change the hint at runtime.
+ */
+function synthesizeRuleHintDoc(name, rules) {
+  const sorted = [...rules].sort((a, b) => a.priority - b.priority);
+  const moduleBase = name.replace(/^pos-supervisor:/, '');
+  const lines = [];
+  lines.push(`# ${name}`);
+  lines.push('');
+  lines.push(
+    `*Rule-driven check.* Hints are generated dynamically by ` +
+    `\`src/core/rules/${moduleBase}.js\` at validation time. There is no static ` +
+    `\`.md\` for this check — agents see whatever \`apply()\` returns from the ` +
+    `first matching sub-rule below.`
+  );
+  lines.push('');
+  lines.push(`## Sub-rules (${sorted.length})`);
+  lines.push('');
+  lines.push('Engine returns the first match in priority order (lower = higher priority).');
+  lines.push('');
+  for (const r of sorted) {
+    lines.push(`### \`${r.id}\` — priority ${r.priority}`);
+    lines.push('');
+    const whenSrc = stringifyRulePredicate(r.when);
+    if (whenSrc) {
+      lines.push('```js');
+      lines.push(`when: ${whenSrc}`);
+      lines.push('```');
+      lines.push('');
+    }
+  }
+  lines.push('---');
+  lines.push('');
+  lines.push(
+    `To change the hint shown to agents, edit the relevant \`apply()\` in ` +
+    `\`src/core/rules/${moduleBase}.js\`. Each \`apply()\` returns ` +
+    `\`{ rule_id, hint_md, fixes, confidence, see_also? }\` which the validator ` +
+    `embeds into the diagnostic.`
+  );
+  return lines.join('\n');
+}
+
+function stringifyRulePredicate(fn) {
+  if (typeof fn !== 'function') return null;
+  try {
+    const src = fn.toString();
+    return src.length > 240 ? `${src.slice(0, 237)}...` : src;
+  } catch {
+    return null;
   }
 }
 
@@ -266,6 +569,771 @@ function handleSse(subscribeToEvents, req, res) {
   });
 }
 
+// ── Suppression file (A3 — false positive manager) ───────────────────────
+
+const SUPPRESS_FILE = '.pos-supervisor-ignore.yml';
+
+function handleGetSuppressions(projectDir, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  const filePath = join(projectDir, SUPPRESS_FILE);
+  if (!existsSync(filePath)) return sendJson(res, 200, { suppressions: [] });
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    const parsed = yaml.load(content);
+    sendJson(res, 200, { suppressions: parsed?.suppressions || [] });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handlePostSuppression(projectDir, body, log, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  const { check, file_pattern, reason, action } = body;
+
+  if (!check || typeof check !== 'string') {
+    return sendJson(res, 400, { error: 'Missing or invalid "check" field' });
+  }
+
+  const filePath = join(projectDir, SUPPRESS_FILE);
+  let existing = { suppressions: [] };
+  if (existsSync(filePath)) {
+    try {
+      existing = yaml.load(readFileSync(filePath, 'utf-8')) || { suppressions: [] };
+    } catch { existing = { suppressions: [] }; }
+  }
+  if (!existing.suppressions) existing.suppressions = [];
+
+  if (action === 'remove') {
+    existing.suppressions = existing.suppressions.filter(s =>
+      !(s.check === check && (s.file_pattern || '') === (file_pattern || ''))
+    );
+  } else {
+    const dup = existing.suppressions.find(s =>
+      s.check === check && (s.file_pattern || '') === (file_pattern || '')
+    );
+    if (!dup) {
+      const entry = { check };
+      if (file_pattern) entry.file_pattern = file_pattern;
+      if (reason) entry.reason = reason;
+      entry.added_at = new Date().toISOString();
+      existing.suppressions.push(entry);
+    }
+  }
+
+  try {
+    writeFileSync(filePath, yaml.dump(existing, { lineWidth: 120 }));
+    log?.(`Suppression ${action === 'remove' ? 'removed' : 'added'}: ${check}${file_pattern ? ' (' + file_pattern + ')' : ''}`);
+    sendJson(res, 200, { ok: true, suppressions: existing.suppressions });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Session history (D3 — comparative session view) ──────────────────────
+
+function handleGetSessions(sessionsDir, res) {
+  if (!sessionsDir) return sendJson(res, 200, { sessions: [] });
+  if (!existsSync(sessionsDir)) return sendJson(res, 200, { sessions: [] });
+  try {
+    const files = readdirSync(sessionsDir).filter(f => f.endsWith('.json')).sort().reverse();
+    const sessions = files.slice(0, 50).map(f => {
+      try { return JSON.parse(readFileSync(join(sessionsDir, f), 'utf-8')); }
+      catch { return null; }
+    }).filter(Boolean);
+    sendJson(res, 200, { sessions });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Project file reader (D1 — live diagnostic console) ──────────────────
+
+const FILE_READ_MAX_BYTES = 512 * 1024;
+const FILE_READ_EXTS = new Set(['.liquid', '.graphql', '.yml', '.yaml', '.md', '.html', '.css', '.js', '.json']);
+
+function handleGetFile(projectDir, url, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  const rel = url.searchParams.get('path');
+  if (!rel || typeof rel !== 'string') return sendJson(res, 400, { error: 'Missing path parameter' });
+  if (isAbsolute(rel)) return sendJson(res, 400, { error: 'Path must be relative to project root' });
+
+  const projectRoot = resolve(projectDir);
+  const target = resolve(projectRoot, rel);
+  const relCheck = relative(projectRoot, target);
+  if (relCheck.startsWith('..') || isAbsolute(relCheck)) {
+    return sendJson(res, 403, { error: 'Path escapes project root' });
+  }
+
+  const dotIdx = target.lastIndexOf('.');
+  const ext = dotIdx >= 0 ? target.slice(dotIdx).toLowerCase() : '';
+  if (!FILE_READ_EXTS.has(ext)) {
+    return sendJson(res, 415, { error: 'File extension not allowed for preview: ' + ext });
+  }
+
+  if (!existsSync(target)) return sendJson(res, 404, { error: 'File not found' });
+
+  try {
+    const st = statSync(target);
+    if (!st.isFile()) return sendJson(res, 400, { error: 'Not a regular file' });
+    if (st.size > FILE_READ_MAX_BYTES) {
+      return sendJson(res, 413, { error: 'File too large (max 512 KB)' });
+    }
+    const content = readFileSync(target, 'utf-8');
+    sendJson(res, 200, { path: rel, ext, content });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Dependency impact tree ───────────────────────────────────────────────
+
+async function handleGetDependencyTree(projectDir, getStatus, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  try {
+    const projectMap = await getProjectMap(projectDir);
+    const graph = buildDependencyGraph(projectMap);
+
+    const fileHistory = getStatus ? (getStatus()?.fileHistory || []) : [];
+    const stateByPath = Object.create(null);
+    for (const f of fileHistory) {
+      const errors = f.lastErrorCount || 0;
+      const warnings = f.lastWarningCount || 0;
+      const state = errors > 0 ? 'dirty'
+                  : warnings > 0 ? 'warned'
+                  : (f.calls || 0) > 1 ? 'fixed'
+                  : 'clean';
+      stateByPath[f.path] = { state, calls: f.calls || 0, errors, warnings, streak: f.consecutiveNonDecreasing || 0 };
+    }
+
+    const nodes = {};
+    for (const [path, edges] of Object.entries(graph)) {
+      nodes[path] = {
+        depends_on: edges.depends_on,
+        referenced_by: edges.referenced_by,
+        validation: stateByPath[path] || null,
+      };
+    }
+
+    sendJson(res, 200, { nodes, total: Object.keys(nodes).length, generated_at: new Date().toISOString() });
+  } catch (err) {
+    sendJson(res, 500, { error: err.message });
+  }
+}
+
+// ── Engine mode handler ─────────────────────────────────────────────────────
+
+function handleSetEngineMode(switchEngineMode, body, log, res) {
+  if (!switchEngineMode) return sendJson(res, 503, { error: 'Engine mode switching not available' });
+  const { mode } = body ?? {};
+  if (!mode || (mode !== 'adaptive' && mode !== 'static')) {
+    return sendJson(res, 400, { error: 'Invalid mode. Must be "adaptive" or "static".' });
+  }
+  try {
+    const newMode = switchEngineMode(mode);
+    log?.(`engine-mode: switched to ${newMode} via HTTP`);
+    sendJson(res, 200, { mode: newMode });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Promoted rules handlers (Phase J) ─────────────────────────────────────
+
+function handleGetPromotedRules(projectDir, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  try {
+    const rules = listPromotedRules(projectDir);
+    sendJson(res, 200, { rules });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handlePromoteRule(projectDir, body, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+
+  const { id, check, priority, when, apply } = body;
+  if (!id || typeof id !== 'string') return sendJson(res, 400, { error: 'Missing or invalid "id" field' });
+  if (!check || typeof check !== 'string') return sendJson(res, 400, { error: 'Missing or invalid "check" field' });
+  if (!apply?.hint_md) return sendJson(res, 400, { error: 'Missing "apply.hint_md" field' });
+
+  const entry = {
+    id,
+    check,
+    priority: priority ?? 55,
+    origin: 'promoted',
+    promoted_at: new Date().toISOString(),
+    probation: true,
+    when: when ?? {},
+    apply,
+  };
+
+  try {
+    const supervisorDir = join(projectDir, '.pos-supervisor');
+    if (!existsSync(supervisorDir)) mkdirSync(supervisorDir, { recursive: true });
+    addPromotedRule(projectDir, entry);
+    reloadRules(projectDir);
+    sendJson(res, 201, { ok: true, rule: entry });
+  } catch (e) {
+    const status = e.message.includes('already exists') ? 409 : 500;
+    sendJson(res, status, { error: e.message });
+  }
+}
+
+function handleDeletePromotedRule(projectDir, url, res) {
+  if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
+  const ruleId = url.searchParams.get('id');
+  if (!ruleId) return sendJson(res, 400, { error: 'Missing "id" query parameter' });
+
+  try {
+    removePromotedRule(projectDir, ruleId);
+    reloadRules(projectDir);
+    sendJson(res, 200, { ok: true, removed: ruleId });
+  } catch (e) {
+    const status = e.message.includes('not found') ? 404 : 500;
+    sendJson(res, status, { error: e.message });
+  }
+}
+
+// ── Analytics query handlers (Phase K2-K5) ────────────────────────────────
+
+function handleDiagnosticJourney(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    let templateFp = url.searchParams.get('template_fp');
+    const check = url.searchParams.get('check');
+    if (!templateFp && check) {
+      const row = analyticsStore.queryOne(
+        `SELECT template_fp, COUNT(*) as cnt FROM diagnostics WHERE check_name = ? AND template_fp IS NOT NULL GROUP BY template_fp ORDER BY cnt DESC LIMIT 1`,
+        [check],
+      );
+      templateFp = row?.template_fp;
+    }
+    if (!templateFp) return sendJson(res, 400, { error: 'template_fp or check parameter required' });
+    const journey = diagnosticJourney(analyticsStore, templateFp, { since });
+    sendJson(res, 200, { ...journey, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleConfidenceCalibration(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const buckets = parseInt(url.searchParams.get('buckets') || '10', 10);
+    const calibration = confidenceCalibration(analyticsStore, {
+      buckets: Math.min(Math.max(buckets, 2), 20),
+      since,
+    });
+    sendJson(res, 200, { calibration, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleFixAdoptionFunnel(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const funnel = fixAdoptionFunnel(analyticsStore, { since });
+    sendJson(res, 200, { ...funnel, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleKnowledgeGaps(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const gaps = knowledgeGaps(analyticsStore, { since });
+    sendJson(res, 200, { gaps, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleRuleHeatmap(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const cells = ruleScoresByCategory(analyticsStore, { since });
+    sendJson(res, 200, { cells, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+const CHECK_EXAMPLES = {
+  UnknownFilter:   'Unknown filter "to_json"',
+  UndefinedObject: "Variable 'product' is undefined",
+  UnusedAssign:    "The variable 'x' is assigned but not used",
+  MissingPartial:  "'forms/login' does not exist",
+  TranslationKeyExists: "Translation key 'a.b.c' not found. Did you mean 'a.b.cd'?",
+  UnknownProperty: "Unknown property `name` on `current_user`",
+  MissingRenderPartialArguments: "Missing required argument 'email' in render tag for partial 'sessions/form'",
+  MetadataParamsCheck: 'Required parameter clear must be passed to function call',
+  GraphQLCheck:    'Variable "$id" is never used in operation "x"',
+  DeprecatedTag:   "Tag 'include' is deprecated, use 'render'",
+};
+
+function handleRuleChecks(res) {
+  try {
+    loadAllRules();
+    const checks = getAllChecksWithRules();
+    const result = checks.map(check => {
+      const rules = getRulesForCheck(check);
+      return {
+        check,
+        rule_count: rules.length,
+        rule_ids: rules.map(r => r.id),
+        has_extractor: KNOWN_EXTRACTOR_CHECKS.includes(check),
+        example_message: CHECK_EXAMPLES[check] || null,
+      };
+    }).sort((a, b) => a.check.localeCompare(b.check));
+    sendJson(res, 200, { checks: result });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+async function handleRuleTest(body, res, analyticsStore, projDir) {
+  try {
+    const { check, message, file } = body;
+    if (!check || !message) {
+      return sendJson(res, 400, { error: 'Missing required fields: check, message' });
+    }
+
+    loadAllRules();
+    const params = extractParams(check, message);
+    const tmplFp = templateOf(check, message);
+    const diag = { check, params, message, file: file || 'app/views/pages/test.liquid', line: 1, template_fp: tmplFp };
+
+    let graph = null;
+    let graphAvailable = false;
+    try {
+      if (projDir) {
+        const projectMap = await getProjectMap(projDir);
+        if (projectMap) {
+          graph = buildFactGraph(projectMap);
+          graphAvailable = true;
+        }
+      }
+    } catch { /* project map unavailable — run without graph */ }
+
+    const facts = { graph, filtersIndex: null, objectsIndex: null, tagsIndex: null, schemaIndex: null, analyticsStore };
+
+    const matched = runRules(diag, facts);
+    const allMatches = runRules(diag, facts, { multiMatch: true });
+    const disabledRules = [...getDisabledRules()];
+
+    const candidates = getRulesForCheck(check);
+    const ruleEval = candidates.map(rule => {
+      if (disabledRules.includes(rule.id)) return { rule_id: rule.id, status: 'disabled' };
+      try {
+        const whenResult = rule.when(diag, facts);
+        if (!whenResult) return { rule_id: rule.id, status: 'guard_failed' };
+        const applyResult = rule.apply(diag, facts);
+        if (!applyResult) return { rule_id: rule.id, status: 'apply_returned_null' };
+        return { rule_id: rule.id, status: 'matched' };
+      } catch (e) {
+        return { rule_id: rule.id, status: 'error', error: e.message };
+      }
+    });
+
+    const CHECKS_NEEDING_INDEXES = ['UnknownFilter', 'UnknownProperty'];
+    const notes = [];
+    if (!graphAvailable) notes.push('Project map unavailable — rules requiring graph data cannot fire.');
+    if (!facts.filtersIndex && CHECKS_NEEDING_INDEXES.includes(check)) notes.push('LSP indexes (filters, objects, tags) unavailable — some rules skipped.');
+
+    sendJson(res, 200, {
+      input: { check, message, file: diag.file },
+      extracted_params: params,
+      template_fp: tmplFp,
+      graph_available: graphAvailable,
+      matched_rule: matched ? {
+        rule_id: matched.rule_id,
+        hint_md: matched.hint_md,
+        confidence: matched.confidence,
+        fixes: matched.fixes || [],
+        see_also: matched.see_also || null,
+      } : null,
+      all_matches: (allMatches || []).map(r => ({
+        rule_id: r.rule_id,
+        hint_md: r.hint_md,
+        confidence: r.confidence,
+      })),
+      rule_evaluation: ruleEval,
+      disabled_rules: disabledRules,
+      note: notes.length > 0 ? notes.join(' ') : null,
+    });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Health score handlers (Phase K1) ──────────────────────────────────────
+
+function handlePostHealthScore(analyticsStore, body, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  const { score, mode, dimensions } = body;
+  if (typeof score !== 'number' || score < 0 || score > 100) {
+    return sendJson(res, 400, { error: 'Invalid score — must be a number 0-100' });
+  }
+  if (!mode || typeof mode !== 'string') {
+    return sendJson(res, 400, { error: 'Missing or invalid "mode" field' });
+  }
+  try {
+    analyticsStore.insertHealthScore({ score, mode, dimensions: dimensions ?? {} });
+    sendJson(res, 201, { ok: true });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleGetHealthScores(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '30', 10), 200);
+    const mode = url.searchParams.get('mode') || undefined;
+    const scores = analyticsStore.getHealthScores({ limit, mode });
+    sendJson(res, 200, { scores });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Vendor static files ──────────────────────────────────────────────────
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const VENDOR_DIR = join(__dirname, 'vendor');
+const VENDOR_MIME = { '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json' };
+
+function handleVendorFile(pathname, res) {
+  const filename = pathname.replace('/vendor/', '');
+  if (filename.includes('..') || filename.includes('/')) {
+    return sendJson(res, 403, { error: 'Forbidden' });
+  }
+  const filePath = join(VENDOR_DIR, filename);
+  if (!existsSync(filePath)) return sendJson(res, 404, { error: 'Not found' });
+  try {
+    const content = readFileSync(filePath);
+    const ext = filename.slice(filename.lastIndexOf('.'));
+    res.writeHead(200, {
+      'Content-Type': VENDOR_MIME[ext] || 'application/octet-stream',
+      'Content-Length': content.length,
+      'Cache-Control': 'public, max-age=86400',
+    });
+    res.end(content);
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── Engine Map ──────────────────────────────────────────────────────────
+
+const RULE_DEPS = {
+  'MissingPartial.module_path':        { needs: ['params'], graph_queries: [] },
+  'MissingPartial.file_exists':        { needs: ['params', 'graph'], graph_queries: ['hasNode'] },
+  'MissingPartial.suggest_nearest':    { needs: ['params', 'graph'], graph_queries: ['nodesByType', 'dependsOn', 'nodeByPath'] },
+  'MissingPartial.create_file':        { needs: ['params', 'graph'], graph_queries: ['hasNode'] },
+  'UndefinedObject.shopify_object':    { needs: ['params'], graph_queries: [] },
+  'UndefinedObject.context_prefix':    { needs: ['params'], graph_queries: [] },
+  'UndefinedObject.declare_param':     { needs: ['params'], graph_queries: [] },
+  'UndefinedObject.generic':           { needs: ['params'], graph_queries: [] },
+  'UnknownFilter.tag_confusion':       { needs: ['params', 'tagsIndex'], graph_queries: [] },
+  'UnknownFilter.shopify_filter':      { needs: ['params'], graph_queries: [] },
+  'UnknownFilter.suggest_nearest':     { needs: ['params', 'filtersIndex'], graph_queries: [] },
+  'UnknownFilter.generic':             { needs: ['params'], graph_queries: [] },
+  'TranslationKeyExists.suggest_nearest': { needs: ['params', 'graph'], graph_queries: ['nodesByType'] },
+  'TranslationKeyExists.create_key':   { needs: ['params'], graph_queries: [] },
+  'UnusedAssign.passed_to_render':     { needs: ['params', 'graph'], graph_queries: ['renderCallsFrom'] },
+  'UnusedAssign.passed_to_function':   { needs: ['params', 'graph'], graph_queries: ['nodeByPath'] },
+  'UnusedAssign.generic':              { needs: ['params'], graph_queries: [] },
+  'MissingRenderPartialArguments.doc_block_mismatch': { needs: ['params', 'graph'], graph_queries: ['partialSignature'] },
+  'MissingRenderPartialArguments.chain_satisfied':    { needs: ['params', 'graph'], graph_queries: ['nodeByPath'] },
+  'MissingRenderPartialArguments.generic':            { needs: ['params'], graph_queries: [] },
+  'UnknownProperty.schema_property':   { needs: ['params', 'graph'], graph_queries: ['nodesByType'] },
+  'UnknownProperty.context_property':  { needs: ['params', 'objectsIndex'], graph_queries: [] },
+  'UnknownProperty.generic':           { needs: ['params'], graph_queries: [] },
+  'MetadataParamsCheck.module_contract':    { needs: ['params'], graph_queries: [] },
+  'MetadataParamsCheck.doc_block_params':   { needs: ['params', 'graph'], graph_queries: ['partialSignature'] },
+  'MetadataParamsCheck.generic':            { needs: ['params'], graph_queries: [] },
+  'GraphQLCheck.unknown_field':        { needs: ['params', 'graph'], graph_queries: ['nodesByType'] },
+  'GraphQLCheck.unused_variable':      { needs: ['params'], graph_queries: [] },
+  'GraphQLCheck.type_mismatch':        { needs: ['params'], graph_queries: [] },
+  'GraphQLCheck.generic':              { needs: ['params'], graph_queries: [] },
+};
+
+function handleEngineMap(analyticsStore, res) {
+  try {
+    loadAllRules();
+    const checks = getAllChecksWithRules();
+    const disabledSet = getDisabledRules();
+
+    const extractorChecks = [...KNOWN_EXTRACTOR_CHECKS];
+
+    const hintFiles = [];
+    const hintsDir = join(__dirname, 'data', 'hints');
+    if (existsSync(hintsDir)) {
+      for (const f of readdirSync(hintsDir)) {
+        if (f.endsWith('.md')) {
+          const name = f.replace('.md', '');
+          const isVariant = name.includes('-');
+          const baseCheck = isVariant ? name.split('-')[0] : name;
+          hintFiles.push({ file: f, name, base_check: baseCheck, is_variant: isVariant });
+        }
+      }
+    }
+
+    let scores = [];
+    if (analyticsStore) {
+      try { scores = ruleScores(analyticsStore, { minEmitted: 1 }); } catch { /* no data yet */ }
+    }
+    const scoreMap = new Map(scores.map(s => [s.rule_id, s]));
+
+    const checkNodes = checks.map(check => {
+      const rules = getRulesForCheck(check);
+      const hasExtractor = extractorChecks.includes(check);
+      const hints = hintFiles.filter(h => h.base_check === check);
+
+      const ruleNodes = rules.map(r => {
+        const deps = RULE_DEPS[r.id] || { needs: ['params'], graph_queries: [] };
+        const score = scoreMap.get(r.id);
+        return {
+          id: r.id,
+          priority: r.priority,
+          needs: deps.needs,
+          graph_queries: deps.graph_queries,
+          disabled: disabledSet.has(r.id),
+          score: score ? {
+            emitted: score.emitted,
+            resolved: score.resolved,
+            regressed: score.regressed,
+            resolution_rate: score.resolution_rate,
+            regression_rate: score.regression_rate,
+            effectiveness: score.effectiveness,
+            disabled: score.disabled,
+          } : null,
+        };
+      });
+
+      return {
+        check,
+        has_extractor: hasExtractor,
+        example_message: CHECK_EXAMPLES[check] || null,
+        hints: hints.map(h => h.name),
+        rules: ruleNodes,
+      };
+    });
+
+    const pipeline_steps = [
+      'LSP Diagnostics',
+      'Structural Warnings',
+      'Diagnostic Pipeline (9 steps)',
+      'Rule Engine (first-match)',
+      'Error Enricher (fallback)',
+      'Fix Generator',
+      'Scorecard',
+    ];
+
+    const coverage = {
+      checks_with_rules: checks.length,
+      checks_with_extractors: extractorChecks.length,
+      total_rules: checks.reduce((n, c) => n + getRulesForCheck(c).length, 0),
+      total_hints: hintFiles.length,
+      disabled_rules: disabledSet.size,
+      rules_needing_graph: Object.values(RULE_DEPS).filter(d => d.needs.includes('graph')).length,
+      rules_needing_indexes: Object.values(RULE_DEPS).filter(d => d.needs.includes('filtersIndex') || d.needs.includes('objectsIndex') || d.needs.includes('tagsIndex')).length,
+      rules_params_only: Object.values(RULE_DEPS).filter(d => d.needs.length === 1 && d.needs[0] === 'params').length,
+    };
+
+    sendJson(res, 200, { checks: checkNodes, pipeline_steps, coverage, hint_files: hintFiles });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleBlobRead(blobStore, url, res) {
+  if (!blobStore) return sendJson(res, 503, { error: 'blob store not available' });
+  const hash = url.searchParams.get('hash');
+  if (!hash || !/^[0-9a-f]{64}$/i.test(hash)) {
+    return sendJson(res, 400, { error: 'hash must be a 64-char hex SHA256 string' });
+  }
+  const text = blobStore.getText(hash);
+  if (text == null) return sendJson(res, 404, { error: 'blob not found' });
+  return sendJson(res, 200, { text });
+}
+
+/**
+ * GET /api/engine/impact
+ *
+ * Returns the adaptive-mode impact summary: what rules are currently
+ * disabled/promoted/overridden, window-scoped emit counts and the split
+ * between rules that *would* fire under static mode (currently disabled)
+ * vs adaptive (currently firing). Payload is a merge of the live engine
+ * state (not in the DB) and adaptiveModeImpact() (DB-derived window query).
+ */
+function handleEngineImpact(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const windowMs = parseInt(url.searchParams.get('window_ms') || String(86_400_000), 10);
+    const impact = adaptiveModeImpact(analyticsStore, { windowMs });
+
+    const disabled = getDisabledRuleDetails();
+    const forceEnabled = [...getForceEnabledRules()];
+    const forceDisabled = [...getForceDisabledRules()];
+
+    // Counterfactual: sum window emits that hit currently-disabled rule_ids.
+    // These are the diagnostics the operator would have seen under static
+    // mode. A rule in force_enabled is disabled-by-data but running anyway,
+    // so it still contributes to the adaptive view — exclude it from the
+    // suppressed sum.
+    let suppressed_by_disabled = 0;
+    const per_rule_suppressed = {};
+    for (const row of disabled) {
+      if (row.force_enabled) continue;
+      const hits = impact.emits_by_rule[row.rule_id] ?? 0;
+      if (hits > 0) {
+        suppressed_by_disabled += hits;
+        per_rule_suppressed[row.rule_id] = hits;
+      }
+    }
+
+    return sendJson(res, 200, {
+      window: {
+        ms: impact.window_ms,
+        start: impact.window_start,
+        end: impact.window_end,
+      },
+      emits_in_window: impact.emits_in_window,
+      rule_matched_in_window: impact.rule_matched_in_window,
+      confidence: impact.confidence,
+      disabled_rules: disabled,
+      force_enabled: forceEnabled,
+      force_disabled: forceDisabled,
+      counterfactual: {
+        suppressed_by_disabled,
+        per_rule_suppressed,
+      },
+    });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleRuleOverridesList(projectDir, res, log) {
+  try {
+    const state = loadOverrides(projectDir, { log });
+    sendJson(res, 200, state);
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+/**
+ * POST /api/engine/rule-overrides
+ *
+ * Body: `{ action: 'force_enable' | 'force_disable' | 'clear', rule_id: string, reason?: string }`.
+ *
+ * clear → removes any override for the rule. The `onOverridesChanged` hook
+ * re-reads the file into the engine and runs `syncDisabledRules` so the
+ * effect is visible immediately without restart.
+ */
+function handleRuleOverridesMutate(projectDir, body, res, log, onOverridesChanged) {
+  const { action, rule_id, reason } = body ?? {};
+  if (!rule_id || typeof rule_id !== 'string') {
+    return sendJson(res, 400, { error: 'rule_id required' });
+  }
+  try {
+    let state;
+    if (action === 'force_enable')       state = addForceEnable(projectDir, rule_id, reason ?? '', { log });
+    else if (action === 'force_disable') state = addForceDisable(projectDir, rule_id, reason ?? '', { log });
+    else if (action === 'clear')         state = removeOverride(projectDir, rule_id, { log });
+    else return sendJson(res, 400, { error: 'action must be force_enable | force_disable | clear' });
+
+    try { onOverridesChanged?.(); } catch (e) { log(`onOverridesChanged failed: ${e.message}`); }
+    sendJson(res, 200, state);
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ── CAC predictor (Cohen's Agentic Conjecture) ───────────────────────────
+//
+// Opt-in 4th gating axis. The validator behaves identically to a build
+// without the predictor when `enabled: false`. These endpoints expose the
+// persisted config + recent decision telemetry to the dashboard.
+
+function handleCacConfigGet(projectDir, res, log) {
+  try {
+    const state = loadCacConfig(projectDir, { log });
+    sendJson(res, 200, {
+      config: state,
+      defaults: defaultCacConfig(),
+      valid_modes: VALID_MODES,
+      valid_actions: VALID_ACTIONS,
+    });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+/**
+ * POST /api/cac/config
+ *
+ * Body: any subset of `{ enabled, mode, threshold, action, min_samples }`.
+ * Unknown keys are dropped; out-of-range values are coerced to defaults.
+ * The `onCacConfigChanged` hook re-reads the file into the live ref so the
+ * change takes effect immediately for in-flight validate_code calls
+ * (without requiring a server restart).
+ */
+function handleCacConfigMutate(projectDir, body, res, log, onCacConfigChanged) {
+  if (!body || typeof body !== 'object') {
+    return sendJson(res, 400, { error: 'body required' });
+  }
+  try {
+    const state = updateCacConfig(projectDir, body, { log });
+    try { onCacConfigChanged?.(); } catch (e) { log?.(`onCacConfigChanged failed: ${e.message}`); }
+    sendJson(res, 200, { config: state });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleCacDecisions(url, res) {
+  const limit = clampInt(url.searchParams.get('limit'), 1, 200, 50);
+  try {
+    const decisions = getRecentCacDecisions(limit);
+    sendJson(res, 200, {
+      count: decisions.length,
+      decisions,
+      summary: summarizeCacDecisions(decisions),
+    });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function summarizeCacDecisions(decisions) {
+  const out = { allow: 0, downgrade: 0, suppress: 0, by_feature: {}, by_mode: {} };
+  for (const d of decisions) {
+    const dec = d.decision || 'allow';
+    out[dec] = (out[dec] ?? 0) + 1;
+    out.by_feature[d.feature] = (out.by_feature[d.feature] ?? 0) + 1;
+    out.by_mode[d.mode] = (out.by_mode[d.mode] ?? 0) + 1;
+  }
+  return out;
+}
+
+function clampInt(raw, min, max, fallback) {
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 function sendJson(res, status, data) {
@@ -289,6 +1357,234 @@ function readLogTail(logPath, limit) {
   } catch {
     return [];
   }
+}
+
+// ── Analytics handlers (Phase B) ───────────────────────────────────────────
+
+/**
+ * Parse the `since` query parameter into the value the analytics-queries +
+ * case-base reporting paths accept:
+ *
+ *   - `?since=all`            → null  (explicit bypass — operator clicked
+ *                                       "All time" in the dashboard)
+ *   - `?since=ISO`            → string (explicit override)
+ *   - `?since` absent / empty → undefined (function looks up meta baseline)
+ *
+ * Validates the ISO string by attempting Date parse; rejects with a thrown
+ * Error so the surrounding try/catch returns 400. Strict validation is the
+ * point — silently accepting garbage means an operator typing a bad date
+ * sees stats they don't expect with no error.
+ *
+ * Exported so unit tests can pin the parsing contract without spinning up
+ * the HTTP server. (Server startup uses bun:sqlite via analytics-store,
+ * which fails under integration tests that spawn `node bin/...`.)
+ */
+export function parseSinceParam(url) {
+  const raw = url.searchParams.get('since');
+  if (raw == null || raw === '') return undefined;
+  if (raw === 'all') return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`since must be 'all' or a valid ISO timestamp; got '${raw}'`);
+  }
+  return raw;
+}
+
+function handleAnalyticsBaselineGet(analyticsStore, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    sendJson(res, 200, analyticsStore.getBaselineMeta());
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleAnalyticsBaselineSet(analyticsStore, body, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    // Body shape: { baseline_ts: ISO } to set, { baseline_ts: null } to clear.
+    if (!body || typeof body !== 'object') {
+      return sendJson(res, 400, { error: 'request body must be an object' });
+    }
+    if (!('baseline_ts' in body)) {
+      return sendJson(res, 400, { error: 'missing required field: baseline_ts (ISO string or null)' });
+    }
+    analyticsStore.setBaselineTs(body.baseline_ts);
+    sendJson(res, 200, { ok: true, ...analyticsStore.getBaselineMeta() });
+  } catch (e) {
+    // setBaselineTs throws TypeError on invalid input — surface as 400.
+    const status = e instanceof TypeError ? 400 : 500;
+    sendJson(res, status, { error: e.message });
+  }
+}
+
+function handleAnalyticsRebuild(analyticsStore, sessionsDir, onAnalyticsRebuild, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  if (!sessionsDir) return sendJson(res, 400, { error: 'sessions dir not configured' });
+  try {
+    const result = analyticsStore.rebuild(sessionsDir);
+    try { onAnalyticsRebuild?.(); } catch {}
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (e) {
+    sendJson(res, 500, { error: e.message });
+  }
+}
+
+function handleAnalyticsScorecards(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const sessionId = url.searchParams.get('session_id') || undefined;
+    const minCohort = parseInt(url.searchParams.get('min_cohort') || '10', 10);
+    const cards = checkScorecards(analyticsStore, { sessionId, minCohort, since });
+    sendJson(res, 200, { scorecards: withCheckLabels(cards), since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleAnalyticsSessions(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const summaries = sessionSummaries(analyticsStore, { since });
+    sendJson(res, 200, { sessions: summaries, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleAnalyticsRecommendations(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const threshold = parseFloat(url.searchParams.get('threshold') || '0.3');
+    const recs = recommendations(analyticsStore, threshold, { since });
+    sendJson(res, 200, { recommendations: recs, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleAnalyticsBigrams(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const sessionId = url.searchParams.get('session_id') || undefined;
+    const bigrams = toolSequenceBigrams(analyticsStore, { sessionId, since });
+    sendJson(res, 200, { bigrams, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleRuleScores(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const minEmitted = parseInt(url.searchParams.get('min_emitted') || '5', 10);
+    const scores = ruleScores(analyticsStore, { minEmitted, since });
+    sendJson(res, 200, { scores: withRuleLabels(scores), since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleRulePerformance(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const minEmitted = parseInt(url.searchParams.get('min_emitted') || '1', 10);
+    const scores = rulePerformance(analyticsStore, { minEmitted, since });
+    sendJson(res, 200, { scores: withRuleLabels(scores), since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleFixRulePerformance(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const minProposed = parseInt(url.searchParams.get('min_proposed') || '1', 10);
+    const scores = fixRulePerformance(analyticsStore, { minProposed, since });
+    sendJson(res, 200, { scores, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleRuleDrilldown(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const ruleId = url.searchParams.get('rule_id');
+    if (!ruleId) return sendJson(res, 400, { error: 'rule_id parameter required' });
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '30', 10), 100);
+    const data = ruleDrilldown(analyticsStore, ruleId, { limit, since });
+    sendJson(res, 200, { ...data, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleSuggestedRules(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const suggestions = suggestedRules(analyticsStore, new Set(), { since }).map(s => {
+      // Forward the same since to guard synthesis so the inferred guard
+      // window matches the suggestion window.
+      const guards = synthesizeGuardPredicate(analyticsStore, s.check, s.template_fp, { since });
+      return {
+        ...s,
+        when: guards,
+        template: generateRuleTemplate(s, guards),
+      };
+    });
+    sendJson(res, 200, { suggestions, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+function handleCases(analyticsStore, url, res) {
+  if (!analyticsStore) return sendJson(res, 503, { error: 'analytics store not available' });
+  try {
+    const since = parseSinceParam(url);
+    const check = url.searchParams.get('check');
+    if (!check) return sendJson(res, 400, { error: 'check parameter required' });
+    const cases = retrieveCasesByCheck(analyticsStore, check, { minCases: 1, since });
+    sendJson(res, 200, { cases, since: resolvedSinceForResponse(analyticsStore, since) });
+  } catch (e) {
+    sendJson(res, sinceErrorStatus(e), { error: e.message });
+  }
+}
+
+/**
+ * Surface what the queries actually filtered by. When `since` was undefined
+ * (meta default), this returns the meta value so the dashboard can show a
+ * "Stats since: <ISO>" banner without a separate round-trip. When the
+ * caller explicitly passed `?since=all`, returns null. Tolerates errors so
+ * a missing baseline meta column never breaks the analytics response.
+ */
+function resolvedSinceForResponse(store, sinceArg) {
+  if (sinceArg === null) return null;
+  if (typeof sinceArg === 'string') return sinceArg;
+  try {
+    return store.getBaselineTs?.() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `parseSinceParam` throws on a malformed `since` query param; surface as
+ * 400 (client error). Anything else propagates the existing 500 path.
+ */
+function sinceErrorStatus(err) {
+  if (err && typeof err.message === 'string' && err.message.includes("since must be")) return 400;
+  return 500;
 }
 
 function readJsonBody(req) {

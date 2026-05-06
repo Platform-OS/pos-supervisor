@@ -21,6 +21,7 @@ describe('computeBlockingFiles', () => {
     expect(result[0].lint_errors).toBe(2);
     expect(result[0].integrity_errors).toBe(0);
     expect(result[0].total).toBe(2);
+    expect(result[0].checks).toEqual([]);
   });
 
   it('includes files with integrity errors only', () => {
@@ -32,6 +33,7 @@ describe('computeBlockingFiles', () => {
     expect(result[0].path).toBe('app/views/partials/x.liquid');
     expect(result[0].lint_errors).toBe(0);
     expect(result[0].integrity_errors).toBe(1);
+    expect(result[0].checks).toEqual(['broken_render']);
   });
 
   it('merges lint and integrity errors for the same file', () => {
@@ -47,6 +49,8 @@ describe('computeBlockingFiles', () => {
     expect(result[0].lint_errors).toBe(1);
     expect(result[0].integrity_errors).toBe(2);
     expect(result[0].total).toBe(3);
+    expect(result[0].checks).toContain('missing_graphql');
+    expect(result[0].checks).toContain('broken_render');
   });
 
   it('ignores integrity warnings', () => {
@@ -71,6 +75,46 @@ describe('computeBlockingFiles', () => {
       { path: 'app/a.liquid', errors: 0, warnings: 5 },
     ];
     expect(computeBlockingFiles(fileResults, [])).toHaveLength(0);
+  });
+
+  it('extracts check names from allResults when provided', () => {
+    const fileResults = [
+      { path: 'app/views/layouts/application.liquid', errors: 1, warnings: 0 },
+    ];
+    const allResults = {
+      errors: [
+        { severity: 'error', _filePath: '/project/app/views/layouts/application.liquid', check: 'MetadataParamsCheck', message: 'Required parameter clear must be passed' },
+      ],
+    };
+    const result = computeBlockingFiles(fileResults, [], allResults);
+    expect(result).toHaveLength(1);
+    expect(result[0].checks).toEqual(['MetadataParamsCheck']);
+  });
+
+  it('collects multiple distinct check names per file', () => {
+    const fileResults = [
+      { path: 'app/views/pages/broken.liquid', errors: 3, warnings: 0 },
+    ];
+    const allResults = {
+      errors: [
+        { severity: 'error', _filePath: '/p/app/views/pages/broken.liquid', check: 'MetadataParamsCheck', message: 'a' },
+        { severity: 'error', _filePath: '/p/app/views/pages/broken.liquid', check: 'MetadataParamsCheck', message: 'b' },
+        { severity: 'error', _filePath: '/p/app/views/pages/broken.liquid', check: 'SyntaxError', message: 'c' },
+      ],
+    };
+    const result = computeBlockingFiles(fileResults, [], allResults);
+    expect(result[0].checks).toHaveLength(2);
+    expect(result[0].checks).toContain('MetadataParamsCheck');
+    expect(result[0].checks).toContain('SyntaxError');
+  });
+
+  it('works without allResults (backward compat)', () => {
+    const fileResults = [
+      { path: 'app/a.liquid', errors: 1, warnings: 0 },
+    ];
+    const result = computeBlockingFiles(fileResults, []);
+    expect(result).toHaveLength(1);
+    expect(result[0].checks).toEqual([]);
   });
 });
 

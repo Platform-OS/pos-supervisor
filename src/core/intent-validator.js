@@ -809,7 +809,7 @@ export function validatePolicy(changes, projectMap) {
 
     // P5: Orphan partial — created but not referenced in plan or project.
     //     Uses the shared predicate so we agree with analyze_project and the
-    //     dep-graph dead-code detector.
+    //     dep-graph orphaned-file detector.
     if (role === 'partial' && action === 'create') {
       const name = partialPathToName(path);
       if (isOrphanPartial(name, projectMap, { planReferencedPartials: referencedPartials })) {

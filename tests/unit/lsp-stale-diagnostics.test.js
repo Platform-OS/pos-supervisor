@@ -88,20 +88,19 @@ describe('awaitDiagnostics barrier + settle pattern', () => {
     client.stop();
   });
 
-  it('post-barrier diagnostics replace pre-barrier ones', async () => {
+  it('later diagnostics replace earlier ones via settle window', async () => {
     const { client, send, captured } = startClient();
     const uri = 'file:///test/app/stale.liquid';
 
     const promise = client.awaitDiagnostics(uri, 'line1\nline2\n', 2000);
     const hoverReq = captured.find(m => m.method === 'textDocument/hover');
 
-    // Pre-barrier diagnostics — stored but settle not started yet
-    send(diagNotification(uri, [diag(9, 'PreBarrierCheck', 'from old analysis')]));
+    // Early diagnostics accepted, settle timer starts
+    send(diagNotification(uri, [diag(9, 'EarlyCheck', 'from old analysis')]));
 
-    // Barrier response — if we have diags, settle timer starts
     send(hoverResponse(hoverReq.id));
 
-    // Fresh diagnostics arrive AFTER barrier — replace pre-barrier ones, reset settle
+    // Later diagnostics replace earlier ones, settle timer resets
     send(diagNotification(uri, [diag(0, 'FreshCheck', 'from new content')]));
 
     const result = await promise;
@@ -110,24 +109,40 @@ describe('awaitDiagnostics barrier + settle pattern', () => {
     client.stop();
   });
 
-  it('handles pre-barrier + barrier + post-barrier in rapid sequence', async () => {
+  it('handles rapid sequence of diagnostics — settle picks latest', async () => {
     const { client, send, captured } = startClient();
     const uri = 'file:///test/app/onechunk.liquid';
 
     const promise = client.awaitDiagnostics(uri, 'a\nb\n', 2000);
     const hoverReq = captured.find(m => m.method === 'textDocument/hover');
 
-    // Write all three messages rapidly — #drain processes them sequentially
-    // 1. pre-barrier diag → stored, settle deferred
-    // 2. hover response → barrier passes, settle starts
-    // 3. post-barrier diag → replaces pre-barrier, settle resets
-    send(diagNotification(uri, [diag(10, 'PreBarrierCheck')]));
+    // All three messages arrive rapidly — settle picks the last batch
+    send(diagNotification(uri, [diag(10, 'EarlyCheck')]));
     send(hoverResponse(hoverReq.id));
     send(diagNotification(uri, [diag(0, 'FreshCheck')]));
 
     const result = await promise;
     expect(result).toHaveLength(1);
     expect(result[0].code).toBe('FreshCheck');
+    client.stop();
+  });
+
+  it('accepts diagnostics that arrive before barrier hover responds', async () => {
+    const { client, send, captured } = startClient();
+    const uri = 'file:///test/app/fast-lsp.liquid';
+
+    const promise = client.awaitDiagnostics(uri, '{{ x | bad_filter }}\n', 2000);
+    const hoverReq = captured.find(m => m.method === 'textDocument/hover');
+
+    // LSP emits diagnostics BEFORE responding to hover (fast analysis)
+    send(diagNotification(uri, [diag(0, 'UnknownFilter', 'Unknown filter bad_filter')]));
+
+    // Hover response arrives later
+    send(hoverResponse(hoverReq.id));
+
+    const result = await promise;
+    expect(result).toHaveLength(1);
+    expect(result[0].code).toBe('UnknownFilter');
     client.stop();
   });
 
@@ -156,18 +171,16 @@ describe('awaitDiagnostics barrier + settle pattern', () => {
     client.stop();
   });
 
-  it('accepts diagnostics after barrier timeout (barrier gate opens on timeout)', async () => {
+  it('accepts diagnostics even when barrier hover never responds', async () => {
     const { client, send } = startClient();
     const uri = 'file:///test/app/late-barrier.liquid';
 
-    // Use a longer main timeout so diagnostics can arrive after barrier timeout
     const promise = client.awaitDiagnostics(uri, 'content\n', 5000);
 
-    // Don't respond to barrier — it will time out after 3s (min of timeout, 3000)
-    // But diagnostics arrive after the barrier timeout
+    // Don't respond to barrier hover — diagnostics still accepted
     setTimeout(() => {
       send(diagNotification(uri, [diag(0, 'LateCheck')]));
-    }, 3100);
+    }, 100);
 
     const result = await promise;
     expect(result).toHaveLength(1);
@@ -187,17 +200,14 @@ describe('awaitDiagnostics barrier + settle pattern', () => {
     client.stop();
   });
 
-  it('barrier gate opens on hover error response', async () => {
+  it('accepts diagnostics when hover responds with error', async () => {
     const { client, send, captured } = startClient();
     const uri = 'file:///test/app/hover-error.liquid';
 
     const promise = client.awaitDiagnostics(uri, 'content\n', 2000);
     const hoverReq = captured.find(m => m.method === 'textDocument/hover');
 
-    // LSP responds with error (e.g., unsupported file type)
     send({ jsonrpc: '2.0', id: hoverReq.id, error: { code: -32601, message: 'not supported' } });
-
-    // Fresh diagnostics should still be accepted
     send(diagNotification(uri, [diag(0, 'FreshAfterError')]));
 
     const result = await promise;
@@ -219,19 +229,18 @@ describe('awaitDiagnostics barrier + settle pattern', () => {
     expect(r1).toHaveLength(1);
     expect(r1[0].code).toBe('V1Check');
 
-    // Second call — new barrier
+    // Second call — settle window picks the latest batch
     captured.length = 0;
     const p2 = client.awaitDiagnostics(uri, 'v2\n', 2000);
     const hover2 = captured.find(m => m.method === 'textDocument/hover');
     expect(hover2).toBeDefined();
 
-    // Pre-barrier diagnostics from v1 analysis still arriving
-    send(diagNotification(uri, [diag(0, 'PreBarrierV1')]));
+    // Stale v1 diagnostics arrive first
+    send(diagNotification(uri, [diag(0, 'StaleV1')]));
 
-    // Barrier passes
     send(hoverResponse(hover2.id));
 
-    // Fresh v2 diagnostics replace pre-barrier ones
+    // Fresh v2 diagnostics replace stale ones via settle window
     send(diagNotification(uri, [diag(0, 'V2Check')]));
 
     const r2 = await p2;

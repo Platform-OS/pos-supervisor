@@ -1,5 +1,5 @@
 import { realpath } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, watch } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -13,9 +13,19 @@ import { toUri } from './core/utils.js';
 import { startFsWatcher } from './core/fs-watcher.js';
 import { invalidateProjectMap } from './tools/project-map.js';
 import { createToolRegistry } from './tools.js';
+import { initPromotedRules, reloadRules } from './core/rules/index.js';
+import { updateDisabledRules, updateForceOverrides, setDisabledRuleDetails } from './core/rules/engine.js';
+import { ruleScores, resolveProbation } from './core/case-base.js';
+import { loadOverrides, overrideSets } from './core/rule-overrides.js';
+import { loadCacConfig } from './core/cac-config.js';
+import { rehydrateRecentCacDecisions } from './core/cac-predictor.js';
+import { loadEngineMode, isAdaptive, setEngineMode, getEngineMode } from './core/engine-mode.js';
 import { startHttp } from './http-server.js';
 import { createLogger } from './core/logger.js';
 import { LSP_READY_TIMEOUT_MS } from './core/constants.js';
+import { startSessionEventBus } from './core/session-event-bus.js';
+import { openBlobStore } from './core/blob-store.js';
+import { openAnalyticsStore } from './core/analytics-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -30,6 +40,182 @@ const VERSION = pkg.version;
  */
 export async function createServer({ projectDir, httpPort = 0 }) {
   const { emit: rawEmit, log, close: closeLogger, logPath } = createLogger({ directory: projectDir, version: VERSION });
+
+  // ── Session id + event bus (Phase A1) ─────────────────────────────────────
+  //
+  // The bus owns the append-only NDJSON log + the in-memory projection. It
+  // runs in PARALLEL with the legacy session.* state during Phase 2 so the
+  // existing dashboard/tests keep working unchanged. Phase 3's acceptance
+  // gate compares projection-from-disk to the live projection; once we
+  // trust that match the legacy mutation paths come out (separate change).
+  //
+  // Bus creation is best-effort: if the writer can't open (read-only fs,
+  // permission denied), the bus runs in-memory only and the live request
+  // path is never affected.
+  const sessionsDir = join(projectDir, '.pos-supervisor', 'sessions');
+  const sessionId = `session-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  const sessionBus = startSessionEventBus({ sessionId, sessionsDir, log });
+  if (sessionBus.writerError) {
+    log(`session-event-bus: running in-memory only (${sessionBus.writerError})`);
+  } else {
+    log(`session-event-bus: writing events to ${sessionBus.eventsPath}`);
+  }
+  sessionBus.startInvariantInterval();
+
+  // ── Content blob store (Phase A4/A5) ──────────────────────────────────────
+  let blobStore = null;
+  try {
+    blobStore = openBlobStore(join(projectDir, '.pos-supervisor', 'blobs'));
+  } catch (e) {
+    log(`blob-store: failed to open (${e.message}); content hashes will not be stored`);
+  }
+
+  // ── Analytics store (Phase B — derived from NDJSON, disposable) ────────────
+  let analyticsStore = null;
+  try {
+    analyticsStore = openAnalyticsStore(
+      join(projectDir, '.pos-supervisor', 'analytics.db'),
+      { blobStore },
+    );
+    log('analytics-store: opened');
+  } catch (e) {
+    log(`analytics-store: failed to open (${e.message}); analytics will not be available`);
+  }
+
+  // ── Engine mode (adaptive vs static) ──────────────────────────────────────
+  const engineMode = loadEngineMode(projectDir);
+  log(`engine-mode: ${engineMode}`);
+
+  // ── Promoted rules (Phase J — declarative rules from analytics) ──────────────
+  try {
+    initPromotedRules(projectDir);
+    log(`promoted-rules: ${isAdaptive() ? 'loaded' : 'skipped (static mode)'}`);
+  } catch (e) {
+    log(`promoted-rules: failed to load (${e.message})`);
+  }
+
+  let promotedRulesWatcher = null;
+  const promotedRulesPath = join(projectDir, '.pos-supervisor', 'promoted-rules.json');
+  const supervisorDir = join(projectDir, '.pos-supervisor');
+  if (existsSync(supervisorDir)) {
+    try {
+      let debounceTimer = null;
+      promotedRulesWatcher = watch(supervisorDir, { recursive: false }, (eventType, filename) => {
+        if (filename !== 'promoted-rules.json') return;
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          try {
+            reloadRules(projectDir);
+            log('promoted-rules: reloaded after file change');
+          } catch (e) {
+            log(`promoted-rules: reload failed (${e.message})`);
+          }
+        }, 200);
+        if (typeof debounceTimer.unref === 'function') debounceTimer.unref();
+      });
+      if (typeof promotedRulesWatcher.unref === 'function') promotedRulesWatcher.unref();
+    } catch (e) {
+      log(`promoted-rules watcher: failed to start (${e.message})`);
+    }
+  }
+
+  // ── Disabled rule enforcement (Phase J4 + I4 operator overrides) ─────────────
+  // force-enable wins over case-base disable; force-disable applies always.
+  // Engine picks up the split via ruleIsActive; sync loads file → engine so
+  // edits made through the dashboard take effect without restart.
+  function syncRuleOverrides() {
+    try {
+      const state = loadOverrides(projectDir, { log });
+      const { force_enable, force_disable } = overrideSets(state);
+      updateForceOverrides({ force_enable, force_disable });
+      if (force_enable.size || force_disable.size) {
+        log(`rule-overrides: ${force_enable.size} force-enabled, ${force_disable.size} force-disabled`);
+      }
+      return state;
+    } catch (e) {
+      log(`rule-overrides: sync failed (${e.message})`);
+      return { force_enable: {}, force_disable: {} };
+    }
+  }
+
+  function syncDisabledRules() {
+    if (!isAdaptive()) {
+      updateDisabledRules(null);
+      setDisabledRuleDetails([]);
+      return;
+    }
+    if (!analyticsStore) return;
+    try {
+      // Engine state: NEVER apply the operator's reporting baseline. Auto-disable
+      // requires full history so a freshly-set baseline can't accidentally
+      // narrow the sample below the disable threshold and re-enable harmful
+      // rules. `since: null` is the explicit bypass — see case-base.ruleScores
+      // JSDoc and the `resolveSince` contract.
+      const scores = ruleScores(analyticsStore, { minEmitted: 5, since: null });
+      const disabled = scores.filter(s => s.disabled).map(s => s.rule_id);
+      updateDisabledRules(disabled);
+      setDisabledRuleDetails(scores.filter(s => s.disabled));
+      if (disabled.length > 0) log(`disabled-rules: ${disabled.length} rule(s) disabled by analytics`);
+    } catch (e) {
+      log(`disabled-rules: sync failed (${e.message})`);
+    }
+  }
+
+  // Order matters: overrides first so the disabled-rules sync below sees
+  // them in effect. Both are idempotent — safe to call repeatedly.
+  syncRuleOverrides();
+  syncDisabledRules();
+
+  // ── CAC predictor config (opt-in 4th gating axis) ──────────────────────────
+  // Shared mutable ref: validate-code reads `current` on each call, the HTTP
+  // POST handler mutates it after persisting to disk. Disabled by default —
+  // when `enabled: false`, validate-code skips the predictor entirely.
+  const cacConfigState = { current: loadCacConfig(projectDir, { log }) };
+  function syncCacConfig() {
+    try {
+      cacConfigState.current = loadCacConfig(projectDir, { log });
+      const c = cacConfigState.current;
+      if (c.enabled) {
+        log(`cac-predictor: ${c.mode} mode, threshold=${c.threshold}, action=${c.action}, min_samples=${c.min_samples}`);
+      }
+    } catch (e) {
+      log(`cac-predictor: sync failed (${e.message})`);
+    }
+  }
+  syncCacConfig();
+
+  // Rehydrate the CAC decision ring from prior sessions' NDJSON logs so the
+  // dashboard's "Recent CAC Decisions" panel survives server restarts. Pure
+  // disk read — runs even when the predictor is disabled, since flipping it
+  // on later in the session shouldn't show an empty audit trail. Best
+  // effort: any I/O error returns 0 and is logged at info level.
+  try {
+    const n = rehydrateRecentCacDecisions(sessionsDir);
+    if (n > 0) log(`cac-predictor: rehydrated ${n} decision(s) from prior sessions`);
+  } catch (e) {
+    log(`cac-predictor: rehydration failed (${e.message})`);
+  }
+
+  // ── Engine mode transitions ──────────────────────────────────────────────────
+  function handleModeTransition(prev, mode) {
+    log(`engine-mode: ${prev} → ${mode}`);
+    reloadRules(projectDir);
+    if (mode === 'adaptive') {
+      syncDisabledRules();
+      if (analyticsStore) {
+        try { resolveProbation(analyticsStore); } catch {}
+      }
+    } else {
+      updateDisabledRules(null);
+    }
+    broadcastSse({ event: 'engine_mode_changed', ts: new Date().toISOString(), prev, mode });
+  }
+
+  function switchEngineMode(mode) {
+    setEngineMode(mode, { projectDir, onTransition: handleModeTransition });
+    return getEngineMode();
+  }
 
   // ── In-memory session stats (not written to JSONL to keep log entries small) ──
   const sessionStats = {
@@ -72,6 +258,12 @@ export async function createServer({ projectDir, httpPort = 0 }) {
         if (input?.file_path) m.file_path = input.file_path;
         if (Array.isArray(output?.errors))   m.error_count   = output.errors.length;
         if (Array.isArray(output?.warnings)) m.warning_count = output.warnings.length;
+        { const checks = [];
+          for (const d of [...(output?.errors ?? []), ...(output?.warnings ?? [])]) {
+            if (d.check && !checks.includes(d.check)) checks.push(d.check);
+          }
+          if (checks.length) m.checks = checks;
+        }
         break;
       case 'validate_intent':
         if (Array.isArray(output?.pending_files)) m.file_count = output.pending_files.length;
@@ -90,10 +282,95 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     return m;
   }
 
+  // Mirror a legacy emit() call into the typed session-event bus. Returns
+  // void; never throws. Unmapped legacy events are silently dropped (the
+  // bus only persists kinds it knows how to project — extra log/diagnostic
+  // events still go to the JSONL logger via rawEmit).
+  function mirrorToBus(event, data, ts) {
+    if (sessionBus.isClosed) return;
+    switch (event) {
+      case 'server_start':
+        sessionBus.emit('server_start', {
+          project_dir: data.projectDir ?? projectDir,
+          version: VERSION,
+          http_port: data.httpPort ?? null,
+          started_at: ts,
+        }, ts);
+        return;
+      case 'server_stop':
+        sessionBus.emit('server_stop', { reason: data.reason ?? 'unknown' }, ts);
+        return;
+      case 'pos_cli_found':
+        sessionBus.emit('pos_cli_resolved', {
+          found: true,
+          path: data.path ?? null,
+          data_dir: data.dataDir ?? null,
+        }, ts);
+        return;
+      case 'pos_cli_error':
+        sessionBus.emit('pos_cli_resolved', { found: false, error: data.error ?? null }, ts);
+        return;
+      case 'lsp_ready':
+        sessionBus.emit('lsp_event', { phase: 'ready', duration_ms: data.durationMs }, ts);
+        return;
+      case 'lsp_warmed_up':
+        sessionBus.emit('lsp_event', {
+          phase: 'warmed_up', duration_ms: data.durationMs, index_ready: data.indexReady,
+        }, ts);
+        return;
+      case 'lsp_crash':
+        sessionBus.emit('lsp_event', {
+          phase: 'crash',
+          code: data.code ?? null,
+          signal: data.signal ?? null,
+          restart_count: data.restartCount ?? 0,
+        }, ts);
+        return;
+      case 'lsp_init_failed':
+        sessionBus.emit('lsp_event', { phase: 'init_failed', error: data.error ?? '' }, ts);
+        return;
+      case 'lsp_restart_requested':
+        sessionBus.emit('lsp_event', { phase: 'restart_requested' }, ts);
+        return;
+      case 'lsp_restart_failed':
+        sessionBus.emit('lsp_event', { phase: 'restart_failed', error: data.error ?? '' }, ts);
+        return;
+      case 'index_ready': {
+        const payload = { index: data.index, status: 'ready' };
+        if (data.count != null)     payload.count = data.count;
+        if (data.queries != null)   payload.queries = data.queries;
+        if (data.mutations != null) payload.mutations = data.mutations;
+        sessionBus.emit('index_event', payload, ts);
+        return;
+      }
+      case 'index_failed':
+        sessionBus.emit('index_event', { index: data.index, status: 'failed', error: data.error ?? '' }, ts);
+        return;
+      case 'tool_call':
+        sessionBus.emit('tool_call', {
+          tool: data.tool,
+          duration_ms: data.durationMs ?? 0,
+          success: data.success !== false,
+          input: data.input,
+          output: data.output,
+          ...(data.error ? { error: data.error } : {}),
+        }, ts);
+        return;
+      // fs_change is emitted directly by the watcher via the bus — no mirror.
+      // Other legacy events (lsp_request, fs_watcher_start_failed, etc.) are
+      // diagnostic-only and not part of the projection.
+    }
+  }
+
   // Wrap emit: track in-memory stats, add lightweight metadata, strip large payloads.
   // lsp_request events are very frequent and not useful in the log file.
   function emit(event, data = {}) {
     if (event === 'lsp_request') return; // too noisy
+    const ts = new Date().toISOString();
+    // Mirror to the typed bus FIRST (before any payload stripping below).
+    // Wrapped in try/catch so a bus issue can never break the live request path.
+    try { mirrorToBus(event, data, ts); } catch (e) { log(`session-event-bus mirror error: ${e.message}`); }
+
     if (event === 'tool_call') {
       trackStats(data.tool, data.durationMs, data.success, data.output);
       const meta = extractLogMeta(data.tool, data.input, data.output);
@@ -105,14 +382,17 @@ export async function createServer({ projectDir, httpPort = 0 }) {
         ...meta,
       };
       rawEmit(event, entry);
-      broadcastSse({ event, ts: new Date().toISOString(), ...entry });
+      broadcastSse({ event, ts, ...entry });
       return;
     }
     rawEmit(event, data);
-    broadcastSse({ event, ts: new Date().toISOString(), ...data });
+    broadcastSse({ event, ts, ...data });
   }
 
-  rawEmit('server_start', { projectDir, httpPort });
+  const serverStartMs = Date.now();
+  // emit() mirrors to the session bus; rawEmit would skip the bus and we'd
+  // miss server_start in the NDJSON log (and replay would never see it).
+  emit('server_start', { projectDir, httpPort });
   log(`Starting pos-supervisor v${VERSION} for ${projectDir}`);
 
   // ── Resolve pos-cli paths ─────────────────────────────────────────────────
@@ -347,7 +627,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   // validate_code/analyze_project read it and merge with explicit params.
   // scaffold(write:true) clears it after the files land on disk.
   const session = {
-    fileHistory: new Map(),    // filePath → { calls, lastErrorCount, consecutiveNonDecreasing }
+    fileHistory: new Map(),    // filePath → { calls, lastErrorCount, consecutiveNonDecreasing, lastChecks }
     validatedPlan: null,       // { planId, pendingFiles: Set, validatedFiles: Set } (legacy — see pending)
     pending: {
       files:         new Set(),
@@ -357,6 +637,11 @@ export async function createServer({ projectDir, httpPort = 0 }) {
       validatedAt:   null,
       writeDirectly: false,      // true after successful scaffold_output validation (trusted track)
     },
+    checkEffectiveness: {},    // check → { fixed, stuck } — transitions between consecutive validate_code calls
+    scaffoldRuns: [],          // [{ ts, model, type, files: string[] }]
+    enrichHistory: [],         // [{ file, check, ts }] — pending enrich_error calls awaiting validate_code
+    hintEffectiveness: {},     // check → { hinted, fixedAfterHint } — hint-then-fix correlation
+    pipelineTraces: new Map(), // filePath → trace[] — most recent pipeline trace per file
   };
 
   const ctx = {
@@ -374,8 +659,14 @@ export async function createServer({ projectDir, httpPort = 0 }) {
     filtersIndex,
     tagsIndex,
     session,
+    sessionBus,
+    blobStore,
+    analyticsStore,
+    cacConfigState,
     log,
     emit,
+    switchEngineMode,
+    getEngineMode,
   };
 
   // ── Create MCP server (SDK) for stdio transport ───────────────────────────
@@ -399,6 +690,41 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   process.stdin.on('close', () => {
     setTimeout(() => shutdown('stdin-closed'), 200);
   });
+
+  // ── Session persistence (D3 — comparative session view) ───────────────────
+  // sessionsDir + sessionId are declared above (Phase A1 event bus) so the
+  // bus can open its NDJSON writer before the first emit fires.
+
+  function saveSessionSummary() {
+    try {
+      mkdirSync(sessionsDir, { recursive: true });
+      const stats = sessionStats.byTool;
+      let totalCalls = 0, totalErrors = 0;
+      for (const s of Object.values(stats)) {
+        totalCalls += s.calls || 0;
+        totalErrors += s.errors || 0;
+      }
+      const summary = {
+        id: sessionId,
+        startedAt: new Date(serverStartMs).toISOString(),
+        endedAt: new Date().toISOString(),
+        projectDir,
+        version: VERSION,
+        toolCalls: totalCalls,
+        toolErrors: totalErrors,
+        filesValidated: session.fileHistory.size,
+        checkFrequency: sessionStats.checkFrequency,
+        checkEffectiveness: session.checkEffectiveness,
+        hintEffectiveness: session.hintEffectiveness,
+        scaffoldRuns: session.scaffoldRuns.length,
+        stats,
+      };
+      writeFileSync(join(sessionsDir, `${sessionId}.json`), JSON.stringify(summary, null, 2));
+      log(`Session summary saved: ${sessionId}`);
+    } catch (e) {
+      log(`Session save failed: ${e.message}`);
+    }
+  }
 
   // ── Start HTTP transport (optional, for REST consumers and tests) ─────────
   if (httpPort > 0) {
@@ -426,18 +752,31 @@ export async function createServer({ projectDir, httpPort = 0 }) {
           calls: h.calls,
           lastErrorCount: h.lastErrorCount,
           lastWarningCount: h.lastWarningCount ?? 0,
+          lastChecks: h.lastChecks || [],
+          prevChecks: h.prevChecks || [],
+          consecutiveNonDecreasing: h.consecutiveNonDecreasing ?? 0,
         })),
+        checkEffectiveness: session.checkEffectiveness,
+        scaffoldRuns: session.scaffoldRuns,
+        hintEffectiveness: session.hintEffectiveness,
+        pipelineTraces: [...session.pipelineTraces.entries()].map(([path, trace]) => ({ path, trace })),
+        analytics: analyticsStore ? analyticsStore.stats() : null,
+        engineMode: getEngineMode(),
       };
     }
     const dataRoot = join(__dirname, 'data');
-    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir });
+    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild: syncDisabledRules, onOverridesChanged: () => { syncRuleOverrides(); syncDisabledRules(); }, onCacConfigChanged: syncCacConfig, switchEngineMode, getEngineMode });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────
   function shutdown(reason) {
     emit('server_stop', { reason });
     log(`Shutting down (${reason})...`);
+    try { saveSessionSummary(); } catch {}
     try { fsWatcher?.close(); } catch {}
+    try { promotedRulesWatcher?.close(); } catch {}
+    try { analyticsStore?.close(); } catch {}
+    try { sessionBus.close(); } catch {} // runs final replay-vs-projection invariant + closes NDJSON
     lsp.stop();
     closeLogger();
     mcpServer.close().catch(() => {});

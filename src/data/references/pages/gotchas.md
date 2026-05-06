@@ -16,7 +16,7 @@ but the architecture is wrong and becomes unmaintainable.
 slug: products/index
 layout: application
 ---
-{% graphql g = 'lib/queries/products/list' %}
+{% graphql g = 'products/list' %}
 <div class="container">
   <h1>Products</h1>
   {% for product in g.records.results %}
@@ -29,7 +29,7 @@ layout: application
 slug: products/index
 layout: application
 ---
-{% graphql g = 'lib/queries/products/list' %}
+{% graphql g = 'products/list' %}
 {% render 'products/index', products: g.records.results %}
 ```
 
@@ -61,7 +61,7 @@ metadata:
 
 ```liquid
 {# In page — after fetching data: #}
-{% graphql g = 'lib/queries/products/find', id: context.params.id %}
+{% graphql g = 'products/find', id: context.params.id %}
 {% assign product = g.record %}
 {% content_for 'title' %}{{ product.properties_object.name }}{% endcontent_for %}
 {% render 'products/show', product: product %}
@@ -102,7 +102,7 @@ The `function` tag also supports these forms: `{% function data['product'] = 'pr
 
 ### Root page (`/`) — omit the slug entirely
 
-**Cause:** Setting `slug: /` or `slug: ""` in front matter for the home page, then getting an InvalidSlug warning.
+**Cause:** Setting `slug: /` or `slug: ""` or `slug: index` in front matter for the home page, then getting an InvalidSlug warning.
 
 **Solution:** For the home page (root `/`), do not set a slug at all. A page at `app/views/pages/index.html.liquid` serves `/` by default — no front matter slug is needed.
 

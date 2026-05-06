@@ -1,6 +1,7 @@
 import { getHint } from './hint-loader.js';
-import { extractVarName } from './objects-index.js';
+import { extractParams, templateOf } from './diagnostic-record.js';
 import { isShopifyObject, isShopifyFilter, getShopifyObject, getShopifyFilter } from './knowledge-loader.js';
+import { runRules, hasRules } from './rules/engine.js';
 
 /**
  * Extract readable text from LSP hover result.
@@ -27,7 +28,7 @@ function extractHoverText(result) {
  * @param {object} ctx.schemaIndex
  * @returns {Promise<object>} Enriched diagnostic
  */
-export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsIndex, tagsIndex, schemaIndex, content, _hoverCache }) {
+export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, content, _hoverCache, factGraph, filePath, projectDir }) {
   const result = { ...diagnostic };
 
   // 1. Hint set per-check below with template vars; fallback for unhandled checks at end
@@ -50,9 +51,31 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
     }
   }
 
+  // 2b. Rule engine — when rules exist for this check and a fact graph is
+  //     available, run rules first. If a rule matches, use its output for
+  //     hint/see_also/rule_id and skip the regex-based enrichment below.
+  if (factGraph && hasRules(diagnostic.check)) {
+    const params = extractParams(diagnostic.check, diagnostic.message);
+    const tmplFp = templateOf(diagnostic.check, diagnostic.message);
+    const diag = { check: diagnostic.check, params, message: diagnostic.message, file: filePath, line: diagnostic.line, column: diagnostic.column ?? 0, template_fp: tmplFp };
+    const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, projectDir };
+    const ruleResult = runRules(diag, facts);
+    if (ruleResult) {
+      result.hint = ruleResult.hint_md;
+      result.rule_id = ruleResult.rule_id;
+      if (ruleResult.suggestion) result.suggestion = ruleResult.suggestion;
+      if (ruleResult.see_also) result.see_also = ruleResult.see_also;
+      if (ruleResult.confidence != null) result.confidence = ruleResult.confidence;
+      if (ruleResult.case_base_signal) result.case_base_signal = ruleResult.case_base_signal;
+      if (ruleResult.fixes?.length > 0) result.fixes = ruleResult.fixes;
+      attachSeeAlso(result, content);
+      return result;
+    }
+  }
+
   // 3. Index lookup for suggestions + Shopify awareness
   if (diagnostic.check === 'UnknownFilter') {
-    const filterName = extractFilterName(diagnostic.message);
+    const filterName = extractParams(diagnostic.check, diagnostic.message).filter ?? null;
     let suggestion = null;
     if (filterName) {
       if (tagsIndex?.isTag(filterName)) {
@@ -85,7 +108,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'UndefinedObject') {
-    const varName = extractVarName(diagnostic.message);
+    const varName = extractParams(diagnostic.check, diagnostic.message).variable ?? null;
     const isPartial = uri?.includes('/partials/');
     // Compute suggestion first so has_suggestion can be passed to hint template
     let suggestion = null;
@@ -123,9 +146,9 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'TranslationKeyExists') {
-    const key = extractTranslationKey(diagnostic.message);
-    // Check if the linter message already contains a typo suggestion ("Did you mean...")
-    const hasSuggestion = key && /did you mean/i.test(diagnostic.message);
+    const _tp = extractParams(diagnostic.check, diagnostic.message);
+    const key = _tp.key ?? null;
+    const hasSuggestion = _tp.has_typo_suggestion === 'true';
     if (key) {
       result.hint = getHint(diagnostic.check, null, {
         key,
@@ -137,11 +160,13 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'MissingPartial') {
-    const partialName = extractPartialName(diagnostic.message);
+    const partialName = extractParams(diagnostic.check, diagnostic.message).partial ?? null;
     const objType = detectObjectType(partialName);
     const createPath = buildCreatePath(objType, partialName);
     const tag = objType === 'partial' ? 'render' : 'function';
-    const hintVariant = objType === 'module' ? 'module' : null;
+    let hintVariant = null;
+    if (objType === 'module') hintVariant = 'module';
+    else if (objType === 'invalid_lib_prefix') hintVariant = 'invalid_lib_prefix';
 
     // For module paths: fetch LSP completions to show available paths.
     // For project paths: agent has project_map context — no completions needed.
@@ -174,6 +199,9 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
     }
     if (suggestion) result.suggestion = suggestion;
 
+    const correctedName = objType === 'invalid_lib_prefix'
+      ? partialName.slice('lib/'.length)
+      : null;
     result.hint = partialName
       ? getHint(diagnostic.check, hintVariant, {
           object: objType,
@@ -181,12 +209,13 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
           create_path: createPath,
           tag,
           has_suggestion: !!suggestion,
+          ...(correctedName ? { corrected_name: correctedName } : {}),
         })
       : getHint(diagnostic.check, hintVariant);
   }
 
   if (diagnostic.check === 'UnknownProperty') {
-    const { propertyName, objectName } = extractPropertyAndObject(diagnostic.message);
+    const { property: propertyName = null, object: objectName = null } = extractParams(diagnostic.check, diagnostic.message);
     const propVariant = uri?.includes('/partials/') ? 'partial' : null;
     result.hint = (propertyName && objectName)
       ? getHint(diagnostic.check, propVariant, {
@@ -197,7 +226,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'DeprecatedTag') {
-    const { tagName, replacementTag } = extractDeprecatedTagInfo(diagnostic.message);
+    const { tag: tagName = null, replacement: replacementTag = null } = extractParams(diagnostic.check, diagnostic.message);
     result.hint = tagName
       ? getHint(diagnostic.check, null, {
           tag_name: tagName,
@@ -222,7 +251,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'MissingRenderPartialArguments') {
-    const { partialName, missingParam } = extractMissingArgInfo(diagnostic.message);
+    const { partial: partialName = null, missing_param: missingParam = null } = extractParams(diagnostic.check, diagnostic.message);
     result.hint = (partialName || missingParam)
       ? getHint(diagnostic.check, null, {
           partial_name: partialName ?? 'unknown',
@@ -240,7 +269,7 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
   }
 
   if (diagnostic.check === 'UnusedAssign') {
-    const varName = extractVarName(diagnostic.message);
+    const varName = extractParams(diagnostic.check, diagnostic.message).variable ?? null;
     result.hint = varName
       ? getHint(diagnostic.check, null, { var_name: varName })
       : getHint(diagnostic.check, null);
@@ -416,66 +445,10 @@ function classifyGraphQLError(message) {
   return { category_generic: true };
 }
 
-/**
- * Extract property name and object name from an UnknownProperty error message.
- * Handles: "Unknown property 'foo' on 'bar'", "property `foo` ... `bar`", etc.
- */
-function extractPropertyAndObject(message) {
-  if (!message) return { propertyName: null, objectName: null };
-  const bt = message.match(/`([^`]+)`[^`]*`([^`]+)`/);
-  const dq = message.match(/"([^"]+)"[^"]*"([^"]+)"/);
-  const sq = message.match(/'([^']+)'[^']*'([^']+)'/);
-  const m = bt || dq || sq;
-  return m ? { propertyName: m[1], objectName: m[2] } : { propertyName: null, objectName: null };
-}
-
-/**
- * Extract tag name and replacement from a DeprecatedTag error message.
- */
-function extractDeprecatedTagInfo(message) {
-  if (!message) return { tagName: null, replacementTag: null };
-  const tagMatch = message.match(/[`'"](\w+)[`'"]/) || message.match(/\btag\s+[`'"]?(\w+)[`'"]?/i);
-  const tagName = tagMatch ? tagMatch[1] : null;
-  // Match "replaced by `render`" or "use `render`" — but NOT "use the way" or "reduces"
-  const replMatch = message.match(/replaced\s+by\s+\[?[`'"](\w+)[`'"]\]?/i)
-                 || message.match(/\buse\s+[`'"](\w+)[`'"]/i);
-  const replacementTag = replMatch ? replMatch[1] : (tagName === 'include' ? 'render' : null);
-  return { tagName, replacementTag };
-}
-
-/**
- * Extract partial name and missing param from a MissingRenderPartialArguments error message.
- */
-function extractMissingArgInfo(message) {
-  if (!message) return { partialName: null, missingParam: null };
-  // Partial name: quoted path containing a slash, e.g. 'products/card'
-  const partialMatch = message.match(/[`'"]([^`'"]+\/[^`'"]+)[`'"]/);
-  const partialName = partialMatch ? partialMatch[1] : null;
-  // Parameter name: matches "argument 'name'" in the actual linter message format:
-  // "Missing required argument 'email' in render tag for partial 'sessions/form'"
-  const paramMatch = message.match(/\bargument\s+['"`](\w+)['"`]/i);
-  const missingParam = paramMatch ? paramMatch[1] : null;
-  return { partialName, missingParam };
-}
-
-/**
- * Extract filter name from an UnknownFilter error message.
- */
-function extractFilterName(message) {
-  if (!message) return null;
-  const m = message.match(/`([^`]+)`/) || message.match(/"([^"]+)"/) || message.match(/'([^']+)'/);
-  return m ? m[1] : null;
-}
-
-/**
- * Extract translation key from a TranslationKeyExists error message.
- * Message format: "Translation key 'some.key' not found." or similar.
- */
-function extractTranslationKey(message) {
-  if (!message) return null;
-  const m = message.match(/['"`]([^'"`]+)['"`]/);
-  return m ? m[1] : null;
-}
+// Extraction functions (extractFilterName, extractTranslationKey,
+// extractPartialName, extractPropertyAndObject, extractDeprecatedTagInfo,
+// extractMissingArgInfo) have been centralized into diagnostic-record.js
+// extractParams(). See roadmap §A2.
 
 /**
  * Build an indented YAML snippet showing where to add a translation key.
@@ -496,14 +469,6 @@ function buildYamlSnippet(key) {
   return lines.join('\n');
 }
 
-/**
- * Extract partial name from a MissingPartial error message.
- */
-function extractPartialName(message) {
-  if (!message) return null;
-  const m = message.match(/['"]([^'"]+)['"]/);
-  return m ? m[1] : null;
-}
 
 /**
  * Normalize LSP completion result to an array of label strings.
@@ -523,14 +488,22 @@ function extractCompletionLabels(result) {
 function detectObjectType(name) {
   if (!name) return 'partial';
   if (name.startsWith('modules/')) return 'module';
-  if (/(?:^|\/)commands\//.test(name)) return 'command';
-  if (/(?:^|\/)queries\//.test(name)) return 'query';
+  // Literal `lib/commands/` or `lib/queries/` prefix is invalid: `function`
+  // tag paths resolve under the partial search paths, so `lib/commands/X`
+  // expands to `app/lib/lib/commands/X` which never exists. Tag separately
+  // so the hint renderer can surface "drop the prefix" instead of the
+  // generic "missing file" copy.
+  if (name.startsWith('lib/commands/') || name.startsWith('lib/queries/')) {
+    return 'invalid_lib_prefix';
+  }
+  if (name.startsWith('commands/')) return 'command';
+  if (name.startsWith('queries/')) return 'query';
   return 'partial';
 }
 
 /**
  * Build the expected disk path for a missing platformOS file.
- * @param {'partial'|'command'|'query'|'module'} type
+ * @param {'partial'|'command'|'query'|'module'|'invalid_lib_prefix'} type
  * @param {string|null} name
  * @returns {string}
  */
@@ -538,10 +511,14 @@ function buildCreatePath(type, name) {
   if (!name) return '(unknown path)';
   switch (type) {
     case 'command':
-    case 'query': {
-      // Name may come with or without lib/ prefix — normalize to avoid app/lib/lib/...
-      const stripped = name.replace(/^lib\//, '');
-      return `app/lib/${stripped}.liquid`;
+    case 'query':
+      return `app/lib/${name}.liquid`;
+    case 'invalid_lib_prefix': {
+      // The path is wrong, not the file. Show where the corrected call
+      // *would* resolve so the agent can sanity-check that the existing
+      // file is the intended target before applying the rule's text edit.
+      const corrected = name.slice('lib/'.length);
+      return `app/lib/${corrected}.liquid`;
     }
     case 'module': {
       const moduleName = name.split('/')[1] ?? name;
@@ -578,4 +555,63 @@ export async function enrichAll(diagnostics, ctx) {
   }
 
   return Promise.all(diagnostics.map(d => enrichError(d, { ...ctx, _hoverCache: hoverCache })));
+}
+
+/**
+ * Bridge rule-engine attribution onto diagnostics that didn't pass through
+ * `enrichAll` — structural warnings, schema/translation/GraphQL validators,
+ * diff-aware RemovedRender/AddedParam, new-partial caller check. Those are
+ * pushed into `result.errors/warnings` AFTER `enrichAll` returns, so their
+ * rule modules never fire and they land in analytics as `<Check>.unmatched`.
+ *
+ * This helper runs `runRules` on any diagnostic whose `rule_id` is still
+ * unset and whose `check` has a registered rule module. On a match it copies
+ * the rule's `rule_id`, `hint_md`, `confidence`, `see_also`, `fixes`, and
+ * `case_base_signal` onto the diagnostic — same fields the main enrichAll
+ * path writes, so downstream (emit loop, fix generator, dashboard) treats
+ * the diagnostic identically to one that went through enrichAll.
+ *
+ * Idempotent: diagnostics already carrying a `rule_id` are skipped so this
+ * can safely run after enrichAll + structural-warnings push without double
+ * scoring.
+ */
+export function bridgeRulesOntoUnattributed(result, ctx) {
+  const { filePath, content, factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, projectDir } = ctx;
+  if (!factGraph) return;
+
+  const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, projectDir };
+
+  const apply = (d) => {
+    if (d.rule_id) return;                   // already attributed
+    if (!d.check) return;
+    if (!hasRules(d.check)) return;
+
+    const params = extractParams(d.check, d.message);
+    const tmplFp = templateOf(d.check, d.message);
+    const diag = {
+      check: d.check,
+      params,
+      message: d.message,
+      file: filePath,
+      line: d.line,
+      column: d.column ?? 0,
+      template_fp: tmplFp,
+    };
+    let ruleResult;
+    try { ruleResult = runRules(diag, facts); }
+    catch { return; }                         // runRules failure is non-fatal
+    if (!ruleResult) return;
+
+    d.rule_id = ruleResult.rule_id;
+    if (ruleResult.hint_md && !d.hint) d.hint = ruleResult.hint_md;
+    if (ruleResult.confidence != null && d.confidence == null) d.confidence = ruleResult.confidence;
+    if (ruleResult.see_also && !d.see_also) d.see_also = ruleResult.see_also;
+    if (ruleResult.case_base_signal && !d.case_base_signal) d.case_base_signal = ruleResult.case_base_signal;
+    if (ruleResult.fixes?.length > 0 && !d.fixes) d.fixes = ruleResult.fixes;
+    attachSeeAlso(d, content);
+  };
+
+  for (const d of result.errors)   apply(d);
+  for (const d of result.warnings) apply(d);
+  for (const d of result.infos)    apply(d);
 }

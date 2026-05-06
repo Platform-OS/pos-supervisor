@@ -6,6 +6,10 @@
  * and is documented with its purpose and ordering dependencies.
  *
  * ORDERING CONTRACT:
+ *   0a. suppressLspKnownFalsePositives — must run FIRST (after raw user suppressions) so
+ *       downstream enrichment, fix generation, and the must_fix_before_write gate
+ *       never see the spurious LSP error. Currently covers the pos-cli LSP
+ *       "Syntax is not supported" regression on `assign x = a <op> b`.
  *   1. suppressDocParams               — must run before Shopify elevation (doc params may look like Shopify objects)
  *   2. suppressUnusedDocParams         — depends on content, independent of other filters
  *   3. elevateShopify                  — must run after enrichment (needs .suggestion field)
@@ -28,6 +32,15 @@
  *  15. verifyOrphanedPartialOnDisk     — independent (filesystem check) — must run AFTER 8
  *      so pending-plan suppression runs first; this catches the post-write case where
  *      the files ARE on disk but the checker hasn't re-indexed (scaffold write:true).
+ *  16. verifyMissingPartialsOnDisk     — independent (filesystem check) — must run AFTER 9
+ *      so pending suppression handles in-plan partials first; the disk check then
+ *      catches partials that ARE on disk but the LSP hasn't re-indexed yet.
+ *  17. populateDefaultConfidence       — must run LAST (after all suppressions/verifications)
+ *      so it only stamps diagnostics that actually survive to the agent. The rule
+ *      engine sets confidence and rule_id when a rule matches; this step covers
+ *      everything else with a severity-based default confidence and a stable
+ *      `${check}.unmatched` rule_id fallback (A4) so confidenceCalibration can bucket
+ *      every row and the Rule Performance table attributes every emit to some rule.
  *
  * NOTE: MissingPartial, MissingPage and TranslationKeyExists are real errors — do NOT downgrade
  * them based on isPreWrite or other implicit state. Use pending_files / pending_pages /
@@ -37,10 +50,13 @@
 
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import yaml from 'js-yaml';
+import { toLiquidHtmlAST } from '@platformos/liquid-html-parser';
 import { getKnownModulesMissingDocs } from './knowledge-loader.js';
 import { buildAssetIndex, resolveAssetPath } from './asset-index.js';
 import { buildTranslationIndex } from './translation-index.js';
 import { buildPageRouteIndex, parseMissingPageMessage, resolvePageRoute } from './page-route-index.js';
+import { DEFAULT_CONFIDENCE_BY_SEVERITY, STRUCTURAL_DEFAULT_CONFIDENCE } from './constants.js';
 
 /**
  * Run the full diagnostic post-processing pipeline.
@@ -66,80 +82,103 @@ export function runDiagnosticPipeline(result, opts) {
     projectDir,
   } = opts;
 
+  // Pipeline trace (D2 — pipeline step inspector). Each step records what changed.
+  const trace = [];
+  function traceStep(name, fn) {
+    const eBefore = result.errors.length;
+    const wBefore = result.warnings.length;
+    fn();
+    const eRemoved = eBefore - result.errors.length;
+    const wRemoved = wBefore - result.warnings.length;
+    const eAdded = result.errors.length - (eBefore - eRemoved);
+    trace.push({
+      step: name,
+      errorsRemoved: eRemoved,
+      warningsRemoved: wRemoved,
+      errorsAfter: result.errors.length,
+      warningsAfter: result.warnings.length,
+    });
+  }
+
   // Accumulate suppression summaries into one info diagnostic — the agent sees a single line.
   const suppressionNotes = [];
 
+  // 0. Apply user-defined suppressions from .pos-supervisor-ignore.yml (A3)
+  if (projectDir) {
+    traceStep('userSuppressions', () => applyUserSuppressions(result, filePath, projectDir));
+  }
+
+  // 0a. Suppress known pos-cli LSP false positives. Currently covers the
+  //     "Syntax is not supported" regression on `assign x = a <op> b` boolean
+  //     comparisons. Runs first so downstream enrichment, fix generation,
+  //     and the must_fix_before_write gate never see the spurious error.
+  traceStep('suppressLspKnownFalsePositives', () => suppressLspKnownFalsePositives(result, content));
+
   // 1. Suppress UndefinedObject for declared @param names
   if (docParamNames.size > 0) {
-    suppressDocParams(result, docParamNames);
+    traceStep('suppressDocParams', () => suppressDocParams(result, docParamNames));
   }
 
   // 2. Suppress UnusedDocParam when param is used as named argument
   if (docParamNames.size > 0) {
-    suppressUnusedDocParams(result, docParamNames, content);
+    traceStep('suppressUnusedDocParams', () => suppressUnusedDocParams(result, docParamNames, content));
   }
 
   // 3. Elevate Shopify contamination from warning to error
-  elevateShopify(result);
+  traceStep('elevateShopify', () => elevateShopify(result));
 
   // 4. Deduplicate MissingRenderPartialArguments + MetadataParamsCheck
-  deduplicateArgChecks(result);
+  traceStep('deduplicateArgChecks', () => deduplicateArgChecks(result));
 
   // 5. Suppress MetadataParamsCheck when the called target has no {% doc %} block.
-  //    The LSP infers required params from usage patterns when no contract is declared,
-  //    producing false positives for every optional param. Module partials (modules/*)
-  //    are always treated as undocumented (they are excluded from lint by config AND
-  //    overwhelmingly lack doc blocks in practice). App partials/commands/queries are
-  //    confirmed by reading the target file from disk — if it has no {% doc %}, we
-  //    suppress and emit an advisory info pointing at the root fix (add {% doc %}).
-  suppressUndocumentedTargetParams(result, content, projectDir);
+  traceStep('suppressUndocumentedTargetParams', () => suppressUndocumentedTargetParams(result, content, projectDir));
 
   // 6. Suppress required-param diagnostics whose target partial defaults the param.
-  //    The target's {% doc %} declared it required, but its body does `| default:`,
-  //    so callers that omit the param still receive a valid value. This covers the
-  //    common pattern where authors forgot to bracket the @param name.
-  suppressRequiredParamsWithDefault(result, content, projectDir);
+  traceStep('suppressRequiredParamsWithDefault', () => suppressRequiredParamsWithDefault(result, content, projectDir));
 
   // 7. Suppress DeprecatedTag for module helper includes
-  suppressModuleHelpers(result, content);
+  traceStep('suppressModuleHelpers', () => suppressModuleHelpers(result, content));
 
-  // 8. Suppress OrphanedPartial for commands/queries and for partials in
-  //    multi-file creation plans (callers may be pending and not on disk yet).
-  suppressOrphanedPartial(result, filePath, pendingFiles, pendingPages);
+  // 8. Suppress OrphanedPartial for commands/queries and pending plans
+  traceStep('suppressOrphanedPartial', () => suppressOrphanedPartial(result, filePath, pendingFiles, pendingPages));
 
-  // 8. Suppress MissingPartial for pending files
+  // 9. Suppress MissingPartial for pending files
   if (pendingFiles.length > 0) {
-    const n = suppressByPending(result, {
-      check: 'MissingPartial',
-      pendingSet: buildPendingPartialNames(pendingFiles),
-      extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+    traceStep('suppressPendingPartials', () => {
+      const n = suppressByPending(result, {
+        check: 'MissingPartial',
+        pendingSet: buildPendingPartialNames(pendingFiles),
+        extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+      });
+      if (n > 0) suppressionNotes.push(`${n} MissingPartial(s) for pending files`);
     });
-    if (n > 0) suppressionNotes.push(`${n} MissingPartial(s) for pending files`);
   }
 
-  // 9. Suppress MissingPage for pending pages
+  // 10. Suppress MissingPage for pending pages
   if (pendingPages.length > 0) {
-    const n = suppressByPending(result, {
-      check: 'MissingPage',
-      pendingSet: buildPendingPageKeys(pendingPages),
-      extractKey: (d) => {
-        // MissingPage messages look like: Page 'blog_posts/show' not found
-        // or: Missing page at slug 'blog_posts'
-        const m = d.message?.match(/['"]([^'"]+)['"]/);
-        return m ? m[1] : null;
-      },
+    traceStep('suppressPendingPages', () => {
+      const n = suppressByPending(result, {
+        check: 'MissingPage',
+        pendingSet: buildPendingPageKeys(pendingPages),
+        extractKey: (d) => {
+          const m = d.message?.match(/['"]([^'"]+)['"]/);
+          return m ? m[1] : null;
+        },
+      });
+      if (n > 0) suppressionNotes.push(`${n} MissingPage(s) for pending pages`);
     });
-    if (n > 0) suppressionNotes.push(`${n} MissingPage(s) for pending pages`);
   }
 
-  // 10. Suppress TranslationKeyExists for pending translations
+  // 11. Suppress TranslationKeyExists for pending translations
   if (pendingTranslations.length > 0) {
-    const n = suppressByPending(result, {
-      check: 'TranslationKeyExists',
-      pendingSet: new Set(pendingTranslations),
-      extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+    traceStep('suppressPendingTranslations', () => {
+      const n = suppressByPending(result, {
+        check: 'TranslationKeyExists',
+        pendingSet: new Set(pendingTranslations),
+        extractKey: (d) => d.message?.match(/['"]([^'"]+)['"]/)?.[1] ?? null,
+      });
+      if (n > 0) suppressionNotes.push(`${n} TranslationKeyExists for pending translations`);
     });
-    if (n > 0) suppressionNotes.push(`${n} TranslationKeyExists for pending translations`);
   }
 
   if (suppressionNotes.length > 0) {
@@ -150,43 +189,157 @@ export function runDiagnosticPipeline(result, opts) {
     });
   }
 
-  // 11. Verify MissingAsset against filesystem
+  // 12. Verify MissingAsset against filesystem
   if (projectDir) {
-    verifyMissingAssets(result, projectDir);
+    traceStep('verifyMissingAssets', () => verifyMissingAssets(result, projectDir));
   }
 
-  // 12. Verify TranslationKeyExists against filesystem. The LSP's translation
-  //     cache lags behind disk just like its asset cache — after the agent
-  //     writes a key to app/translations/<locale>.yml the LSP keeps reporting
-  //     "key not found" until it re-indexes. Cross-check against the real
-  //     YAML files so the agent does not need to pass `pending_translations`
-  //     for keys that already exist on disk.
+  // 13. Verify TranslationKeyExists against filesystem
   if (projectDir) {
-    verifyTranslationKeysOnDisk(result, projectDir);
+    traceStep('verifyTranslationKeysOnDisk', () => verifyTranslationKeysOnDisk(result, projectDir));
   }
 
-  // 13. Verify MissingPage against filesystem. validate_code analyses one
-  //     file at a time, so any link in a partial pointing to a route defined
-  //     in OTHER pages fires MissingPage. Cross-check against the real page
-  //     files (slug from frontmatter or path-derived) so a header partial
-  //     linking to /notes does not flag the route as missing when
-  //     app/views/pages/notes/index.html.liquid clearly exists.
+  // 14. Verify MissingPage against filesystem. The file under validation is
+  //     passed as an overlay so its in-memory frontmatter (`slug:`, `method:`)
+  //     contributes to the route index — fixes the self-page case where an
+  //     agent validating `app/views/pages/index.liquid` with `method: post`
+  //     in-memory would otherwise see a stale MissingPage warning for the
+  //     very route this page is about to serve.
   if (projectDir) {
-    verifyPageRoutesOnDisk(result, projectDir);
+    traceStep('verifyPageRoutesOnDisk', () => verifyPageRoutesOnDisk(result, projectDir, { filePath, content }));
   }
 
-  // 14. Verify OrphanedPartial against filesystem. validate_code analyses
-  //     one file at a time, so the checker has no cross-file render graph.
-  //     After scaffold(write:true) writes all files and clears pending state,
-  //     the checker still reports OrphanedPartial because its index hasn't
-  //     re-indexed the new pages yet. Cross-check by scanning all .liquid
-  //     files on disk for a render/function reference to this partial.
+  // 15. Verify OrphanedPartial against filesystem
   if (projectDir) {
-    verifyOrphanedPartialOnDisk(result, filePath, projectDir);
+    traceStep('verifyOrphanedPartialOnDisk', () => verifyOrphanedPartialOnDisk(result, filePath, projectDir));
   }
+
+  // 16. Verify MissingPartial against filesystem
+  if (projectDir) {
+    traceStep('verifyMissingPartialsOnDisk', () => verifyMissingPartialsOnDisk(result, projectDir));
+  }
+
+  // 17. Stamp a default confidence on every surviving diagnostic that the rule
+  //     engine did not already score. Runs last so suppressed/downgraded items
+  //     are gone by now.
+  traceStep('populateDefaultConfidence', () => populateDefaultConfidence(result));
+
+  // Attach pipeline trace for dashboard inspector (D2)
+  result._pipelineTrace = trace;
 }
 
 // ── Individual filters ──────────────────────────────────────────────────────
+
+/**
+ * Suppress known pos-cli LSP false positives.
+ *
+ * Currently covers ONE pattern: `LiquidHTMLSyntaxError` with the generic
+ * upstream message `Syntax is not supported`, fired by pos-cli's LSP on a
+ * boolean comparison inside an `assign` tag (e.g. `assign object.valid = c == empty`,
+ * `assign x = 1 == 1`). The platformOS Liquid parser
+ * (`@platformos/liquid-html-parser`, the same package the runtime parser is
+ * derived from) accepts this syntax, and `pos-cli check run` reports no
+ * offenses on it. Only the LSP rejects it — a stand-alone regression in the
+ * LSP's expression parser, not in the language.
+ *
+ * Without this suppression, agents are forced to rewrite valid Liquid
+ * (typically by lowering `assign x = a == b` to a four-line if/else) just to
+ * pass the must_fix_before_write gate. Worse, the diagnostic message
+ * "Syntax is not supported" gives no actionable hint, so agents iterate
+ * blindly until something passes.
+ *
+ * Suppression criteria — all must hold:
+ *   1. The diagnostic check is `LiquidHTMLSyntaxError`.
+ *   2. The message matches the exact upstream phrasing `Syntax is not supported`
+ *      (case-insensitive). Other LiquidHTMLSyntaxError messages — unclosed
+ *      blocks, malformed tag arguments, etc. — point at real bugs and stay.
+ *   3. The file parses cleanly under the strict mode of the platformOS parser.
+ *      A genuine syntax error elsewhere in the file would fail strict parse,
+ *      and we leave every diagnostic in place to avoid masking it.
+ *
+ * When all three hold, the matching diagnostics are removed and a single
+ * `pos-supervisor:LspSyntaxFalsePositiveSuppressed` info diagnostic is
+ * emitted naming the lines so the agent can audit the suppression.
+ */
+function suppressLspKnownFalsePositives(result, content) {
+  const matches = (d) =>
+    d.check === 'LiquidHTMLSyntaxError' &&
+    typeof d.message === 'string' &&
+    /^Syntax is not supported$/i.test(d.message.trim());
+
+  const candidates = [
+    ...result.errors.filter(matches),
+    ...result.warnings.filter(matches),
+  ];
+  if (candidates.length === 0) return;
+
+  // Strict parse — no tolerant flag — is the gate. If the platformOS parser
+  // rejects the file, there IS a genuine syntax error and we must not
+  // suppress LSP errors that may be the agent's only signal.
+  let parsesCleanly;
+  try {
+    toLiquidHtmlAST(content);
+    parsesCleanly = true;
+  } catch {
+    parsesCleanly = false;
+  }
+  if (!parsesCleanly) return;
+
+  const removeSet = new Set(candidates);
+  result.errors = result.errors.filter(d => !removeSet.has(d));
+  result.warnings = result.warnings.filter(d => !removeSet.has(d));
+
+  const lines = candidates
+    .map(d => d.line)
+    .filter(n => n != null);
+  result.infos.push({
+    check: 'pos-supervisor:LspSyntaxFalsePositiveSuppressed',
+    severity: 'info',
+    message:
+      `Suppressed ${candidates.length} LiquidHTMLSyntaxError("Syntax is not supported") ` +
+      `diagnostic(s)${lines.length ? ` on line(s) ${lines.join(', ')}` : ''} — ` +
+      `the platformOS parser (@platformos/liquid-html-parser) accepts the file. ` +
+      `This is a known pos-cli LSP regression, most often triggered by a boolean ` +
+      `comparison inside \`assign\` (e.g. \`assign x = a == b\`).`,
+  });
+}
+
+function applyUserSuppressions(result, filePath, projectDir) {
+  const suppressFile = join(projectDir, '.pos-supervisor-ignore.yml');
+  if (!existsSync(suppressFile)) return;
+  let rules;
+  try {
+    const parsed = yaml.load(readFileSync(suppressFile, 'utf-8'));
+    rules = parsed?.suppressions;
+  } catch { return; }
+  if (!Array.isArray(rules) || rules.length === 0) return;
+
+  const matchRule = (d) => rules.some(r => {
+    if (r.check !== d.check) return false;
+    if (r.file_pattern) {
+      if (r.file_pattern.includes('*')) {
+        const re = new RegExp('^' + r.file_pattern.replace(/\*/g, '.*') + '$');
+        if (!re.test(filePath)) return false;
+      } else if (!filePath.includes(r.file_pattern)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const errBefore = result.errors.length;
+  const warnBefore = result.warnings.length;
+  result.errors = result.errors.filter(d => !matchRule(d));
+  result.warnings = result.warnings.filter(d => !matchRule(d));
+  const suppressed = (errBefore - result.errors.length) + (warnBefore - result.warnings.length);
+  if (suppressed > 0) {
+    result.infos.push({
+      check: 'pos-supervisor:UserSuppressed',
+      severity: 'info',
+      message: `Suppressed ${suppressed} diagnostic(s) via .pos-supervisor-ignore.yml`,
+    });
+  }
+}
 
 function suppressDocParams(result, docParamNames) {
   const match = (diag) => {
@@ -755,11 +908,11 @@ function verifyMissingAssets(result, projectDir) {
  *     link to a POST-only route) and the agent needs to see it.
  *   - route not served at all → diagnostic stands.
  */
-function verifyPageRoutesOnDisk(result, projectDir) {
+function verifyPageRoutesOnDisk(result, projectDir, currentFile = null) {
   const candidates = [...result.errors, ...result.warnings].filter(d => d.check === 'MissingPage');
   if (candidates.length === 0) return;
 
-  const index = buildPageRouteIndex(projectDir);
+  const index = buildPageRouteIndex(projectDir, currentFile);
   if (index.routes.size === 0) return;
 
   const suppressed = new Set();
@@ -843,9 +996,184 @@ function verifyOrphanedPartialOnDisk(result, filePath, projectDir) {
   });
 }
 
+/**
+ * Cross-check every MissingPartial against the real filesystem.
+ *
+ * The LSP's partial index lags behind disk writes. A partial written during a
+ * scaffold step produces a false-positive MissingPartial until the LSP re-indexes.
+ * Module partials (names starting with 'modules/') are skipped — they are not local
+ * disk files and cannot be suppressed by presence checks.
+ */
+function verifyMissingPartialsOnDisk(result, projectDir) {
+  const candidates = [...result.errors, ...result.warnings].filter(d => d.check === 'MissingPartial');
+  if (candidates.length === 0) return;
+
+  const suppressed = new Set();
+  const verified = [];
+
+  for (const d of candidates) {
+    const nameMatch = d.message?.match(/['"]([^'"]+)['"]/);
+    if (!nameMatch) continue;
+    const name = nameMatch[1];
+    if (name.startsWith('modules/')) continue;
+
+    if (resolveMissingPartialPaths(name, projectDir).some(p => existsSync(p))) {
+      suppressed.add(d);
+      verified.push(name);
+    }
+  }
+
+  if (suppressed.size === 0) return;
+
+  result.errors = result.errors.filter(d => !suppressed.has(d));
+  result.warnings = result.warnings.filter(d => !suppressed.has(d));
+  result.infos.push({
+    check: 'pos-supervisor:MissingPartialSuppressed',
+    severity: 'info',
+    message: `Suppressed ${verified.length} MissingPartial diagnostic(s) — partial(s) exist on disk: ${verified.join(', ')}. (LSP cache lag — partial was written but not yet re-indexed.)`,
+  });
+}
+
+/**
+ * Mirror upstream `DocumentsLocator` partial-resolution semantics: the
+ * `function` / `render` tags resolve relative to the partial search paths
+ * declared by `@platformos/platformos-common` —
+ *   FILE_TYPE_DIRS[Partial] = ['views/partials', 'lib']
+ * — joined under `app/`. So `commands/X` is found at `app/lib/commands/X.liquid`
+ * and `lib/commands/X` would only resolve at `app/lib/lib/commands/X.liquid`
+ * (which never exists in any sane project). DO NOT strip a leading `lib/`
+ * here: doing so silently suppresses the LSP's correct MissingPartial error
+ * for the invalid prefix and steers agents toward the bug. The `.html.liquid`
+ * variant is included for legacy projects whose partials use the layout
+ * extension; upstream itself only matches `.liquid`, so this is a superset.
+ */
+function resolveMissingPartialPaths(name, projectDir) {
+  return [
+    join(projectDir, 'app', 'views', 'partials', `${name}.liquid`),
+    join(projectDir, 'app', 'views', 'partials', `${name}.html.liquid`),
+    join(projectDir, 'app', 'lib', `${name}.liquid`),
+  ];
+}
+
 function extractPartialNameFromPath(filePath) {
   const m = filePath.match(/^app\/views\/partials\/(.+?)\.(?:html\.)?liquid$/);
   return m ? m[1] : null;
+}
+
+function defaultConfidenceFor(diag) {
+  if (typeof diag.check === 'string' && diag.check.startsWith('pos-supervisor:')) {
+    return STRUCTURAL_DEFAULT_CONFIDENCE;
+  }
+  const sev = diag.severity;
+  if (sev && DEFAULT_CONFIDENCE_BY_SEVERITY[sev] != null) {
+    return DEFAULT_CONFIDENCE_BY_SEVERITY[sev];
+  }
+  return DEFAULT_CONFIDENCE_BY_SEVERITY.warning;
+}
+
+function defaultRuleIdFor(diag) {
+  // Stable fallback so rule-less diagnostics cluster under a single bucket per
+  // check instead of scattering into `unknown` or the check name alone (which
+  // collides with the check-level scorecard and muddles rule attribution).
+  // See A4 in docs/new-task/implementation-plan.md.
+  return diag.check ? `${diag.check}.unmatched` : 'unknown.unmatched';
+}
+
+function populateDefaultConfidence(result) {
+  const stamp = (d) => {
+    if (d.confidence == null) d.confidence = defaultConfidenceFor(d);
+    if (!d.rule_id) d.rule_id = defaultRuleIdFor(d);
+  };
+  for (const d of result.errors) stamp(d);
+  for (const d of result.warnings) stamp(d);
+  for (const d of result.infos) stamp(d);
+}
+
+/**
+ * Stand-alone entry point — same semantics as the pipeline's step 17, callable
+ * from outside the pipeline.
+ *
+ * Reason it exists: `validate-code.js` pushes several diagnostic sources
+ * (structural warnings, schema validation, translation YAML check, diff-aware
+ * RemovedRender/RemovedGraphQL/AddedParam, new-partial caller check) into
+ * `result.errors` / `result.warnings` AFTER `runDiagnosticPipeline` finishes.
+ * Those late additions would otherwise escape `populateDefaultConfidence` and
+ * land in the analytics store with `confidence = null` / `rule_id` missing.
+ * See the confidence-stamp bug identified in the 2026-04-23 DEMO report.
+ *
+ * Idempotent — calling twice is safe because the helper only fills when
+ * fields are null/missing.
+ */
+export function stampDefaultsOn(result) {
+  populateDefaultConfidence(result);
+}
+
+/**
+ * Suppress upstream `ValidFrontmatter` diagnostics that overlap with our
+ * richer structural-check counterparts. pos-cli 6.0.7 added `ValidFrontmatter`
+ * which independently reports the same root causes as our existing
+ * `pos-supervisor:InvalidLayout` (missing layout file) and
+ * `pos-supervisor:InvalidFrontMatter` (unknown / misleading frontmatter keys).
+ *
+ * Our checks carry richer messages (named expected paths, deprecation
+ * guidance, fix templates) so we keep them and drop the upstream copy.
+ * Upstream `ValidFrontmatter` rows that don't share a line with one of our
+ * checks pass through untouched — they cover novel cases (deprecated
+ * `layout_name`, missing required fields per file type, invalid HTTP method
+ * enum, etc.) that our structural checks don't handle yet.
+ *
+ * Line-anchored: YAML frontmatter is one key per line, so a line collision
+ * between `ValidFrontmatter` and `pos-supervisor:InvalidLayout` /
+ * `pos-supervisor:InvalidFrontMatter` reliably indicates the same root cause.
+ *
+ * Idempotent. Pure. Safe to call after both diagnostic sources have pushed
+ * (i.e. after `generateStructuralWarnings`).
+ *
+ * @returns {number} count of suppressed diagnostics
+ */
+export function suppressUpstreamFrontmatterDup(result) {
+  // Two matching axes — line (the default) AND layout name (parsed from the
+  // message). The line-match alone misses cases where upstream and our
+  // structural emitter disagree by ±1 line (frontmatter edge cases, leading
+  // whitespace, line-zero anchoring), which is exactly what the DEMO data
+  // showed: both `pos-supervisor:InvalidLayout` and
+  // `ValidFrontmatter.layout_missing` fired with diverging line values, so
+  // the agent saw two contradictory hints for the same root cause.
+  const ourLines = new Set();
+  const ourInvalidLayoutNames = new Set();
+  for (const d of [...result.errors, ...result.warnings]) {
+    if (d.check === 'pos-supervisor:InvalidLayout' || d.check === 'pos-supervisor:InvalidFrontMatter') {
+      ourLines.add(d.line);
+    }
+    if (d.check === 'pos-supervisor:InvalidLayout') {
+      const layoutName = d.message?.match(/^Layout `([^`]+)` not found/)?.[1];
+      if (layoutName) ourInvalidLayoutNames.add(layoutName);
+    }
+  }
+  if (ourLines.size === 0 && ourInvalidLayoutNames.size === 0) return 0;
+
+  const isRedundant = (d) => {
+    if (d.check !== 'ValidFrontmatter') return false;
+    if (ourLines.has(d.line)) return true;
+    // Layout-name match: the upstream `Layout 'X' does not exist` shape
+    // names the same layout `X` that pos-supervisor:InvalidLayout already
+    // flagged. The two diagnostics describe identical root cause.
+    const layoutName = d.message?.match(/^Layout ['"`]([^'"`]+)['"`] does not exist$/)?.[1];
+    return !!layoutName && ourInvalidLayoutNames.has(layoutName);
+  };
+  const eRemoved = result.errors.filter(isRedundant).length;
+  const wRemoved = result.warnings.filter(isRedundant).length;
+  const removed = eRemoved + wRemoved;
+  if (removed === 0) return 0;
+
+  result.errors = result.errors.filter(d => !isRedundant(d));
+  result.warnings = result.warnings.filter(d => !isRedundant(d));
+  result.infos.push({
+    check: 'pos-supervisor:DuplicateFrontmatterCheck',
+    severity: 'info',
+    message: `Suppressed ${removed} ValidFrontmatter diagnostic(s) already covered by pos-supervisor structural check(s) (InvalidLayout / InvalidFrontMatter).`,
+  });
+  return removed;
 }
 
 function hasRenderReferenceOnDisk(projectDir, partialName, selfPath) {

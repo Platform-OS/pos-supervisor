@@ -10,6 +10,7 @@ function getWarnings(content, filePath, existingChecks = new Set(), options = {}
   if (!ast) return [];
   const structural = extractAllFromAST(ast);
   const structuralObj = {
+    renders_used: structural.renders ?? [],
     tags_used: [...structural.tags],
     filters_used: [...structural.filters],
     doc_params: [...structural.docParams],
@@ -55,6 +56,21 @@ describe('structural-warnings: HTML in pages', () => {
     expect(w).toBeDefined();
     expect(w.line).toBeGreaterThanOrEqual(0);
     expect(w.severity).toBe('warning');
+  });
+
+  // B-tier guard (2026-04-24): composite landing pages legitimately mix HTML
+  // wrappers with partial renders. Don't flag those — the check had 100%
+  // regression on exactly this pattern in the 2026-04-23 DEMO report.
+  it('does NOT warn for pages that render at least one partial (composite page)', () => {
+    const content = '---\nslug: index\n---\n<section class="hero">{% render "landing/hero" %}</section>';
+    const warnings = getWarnings(content, '/project/app/views/pages/index.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:HtmlInPage')).toBe(false);
+  });
+
+  it('still warns for pure-HTML pages that do not render any partials', () => {
+    const content = '---\nslug: contact\n---\n<form><input name="email"/></form>';
+    const warnings = getWarnings(content, '/project/app/views/pages/contact.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:HtmlInPage')).toBe(true);
   });
 });
 
@@ -102,6 +118,71 @@ describe('structural-warnings: GraphQL in partials', () => {
     const warnings = getWarnings(content, '/project/app/views/partials/test.html.liquid');
     const gqlWarnings = warnings.filter(w => w.check === 'pos-supervisor:GraphqlInPartial');
     expect(gqlWarnings.length).toBe(1);
+  });
+});
+
+// ── Multi-line graphql in {% liquid %} block ──────────────────────────────
+
+describe('structural-warnings: GraphqlMultilineInLiquidBlock', () => {
+  // Repro for the DEMO 2026-04-27 regression spiral. Multi-line `,`
+  // continuation inside `{% liquid %}` truncates the call; LSP fires
+  // GraphQLVariablesCheck.required for every dropped arg. The structural
+  // warning surfaces the syntactic root cause loudly, before the rule layer
+  // has to disambiguate.
+  it('errors on multi-line graphql with comma continuation inside {% liquid %} block', () => {
+    const content =
+      "{% liquid\n" +
+      "graphql result = 'contacts/create',\n" +
+      "  name: shaped.name,\n" +
+      "  email: shaped.email\n" +
+      "%}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/contacts/create.liquid');
+    const w = warnings.find(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock');
+    expect(w).toBeDefined();
+    expect(w.severity).toBe('error');
+    expect(w.message).toContain('truncates');
+    expect(w.message).toContain('single-line tag form');
+  });
+
+  it('does NOT fire for the canonical {% graphql %} tag form', () => {
+    const content = "{% graphql result = 'op', name: shaped.name, email: shaped.email %}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/x.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock')).toBe(false);
+  });
+
+  it('does NOT fire for single-line graphql inside {% liquid %} block', () => {
+    const content =
+      "{% liquid\n" +
+      "graphql result = 'op', name: shaped.name, email: shaped.email\n" +
+      "%}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/x.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock')).toBe(false);
+  });
+
+  it('does NOT fire for multi-line graphql inside {% graphql %} tag delimiters', () => {
+    // `{%` … `%}` form parses multi-line correctly — only the {% liquid %}
+    // block continuation is truncated.
+    const content =
+      "{% graphql result = 'op',\n" +
+      "  name: shaped.name,\n" +
+      "  email: shaped.email %}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/x.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock')).toBe(false);
+  });
+
+  it('reports each truncated call once per occurrence', () => {
+    const content =
+      "{% liquid\n" +
+      "graphql a = 'op_a',\n" +
+      "  x: 1\n" +
+      "%}\n" +
+      "{% liquid\n" +
+      "graphql b = 'op_b',\n" +
+      "  y: 2\n" +
+      "%}";
+    const warnings = getWarnings(content, '/project/app/lib/commands/x.liquid');
+    const found = warnings.filter(w => w.check === 'pos-supervisor:GraphqlMultilineInLiquidBlock');
+    expect(found).toHaveLength(2);
   });
 });
 
@@ -468,6 +549,54 @@ describe('structural-warnings: missing doc block', () => {
 
 // ── Method validation ─────────────────────────────────────────────────────
 
+describe('structural-warnings: non-GET rendering page', () => {
+  // Landing-page mistake pattern the DEMO agent keeps repeating:
+  // `method: post` + HTML body → page 404s on browser GET.
+  it('warns when page has method: post and renders HTML content', () => {
+    const content = '---\nslug: contact\nmethod: post\nlayout: application\n---\n<h1>Contact</h1>\n<form>{{ foo }}</form>';
+    const warnings = getWarnings(content, '/project/app/views/pages/contact.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:NonGetRenderingPage')).toBe(true);
+  });
+
+  it('warns when page has method: post and renders partials (composite landing)', () => {
+    const content = '---\nslug: index\nmethod: post\n---\n{% render "landing/hero" %}';
+    const warnings = getWarnings(content, '/project/app/views/pages/index.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:NonGetRenderingPage')).toBe(true);
+  });
+
+  it('warns for put/delete/patch too', () => {
+    for (const method of ['put', 'delete', 'patch']) {
+      const content = `---\nslug: widget\nmethod: ${method}\n---\n<div>{{ x }}</div>`;
+      const warnings = getWarnings(content, '/project/app/views/pages/widget.liquid');
+      expect(warnings.some(w => w.check === 'pos-supervisor:NonGetRenderingPage')).toBe(true);
+    }
+  });
+
+  it('does NOT warn for API pages (slug under /api/)', () => {
+    const content = '---\nslug: api/contacts/create\nmethod: post\nformat: json\n---\n{{ r | json }}';
+    const warnings = getWarnings(content, '/project/app/views/pages/api/contacts/create.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:NonGetRenderingPage')).toBe(false);
+  });
+
+  it('does NOT warn for JSON-only endpoints (no HTML, no layout, no partials, no output)', () => {
+    const content = '---\nslug: webhooks/stripe\nmethod: post\n---\n';
+    const warnings = getWarnings(content, '/project/app/views/pages/webhooks/stripe.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:NonGetRenderingPage')).toBe(false);
+  });
+
+  it('does NOT warn for method: get', () => {
+    const content = '---\nslug: contact\nmethod: get\n---\n<h1>Contact</h1>';
+    const warnings = getWarnings(content, '/project/app/views/pages/contact.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:NonGetRenderingPage')).toBe(false);
+  });
+
+  it('does NOT warn when method field is absent (default is get)', () => {
+    const content = '---\nslug: contact\n---\n<h1>Contact</h1>';
+    const warnings = getWarnings(content, '/project/app/views/pages/contact.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:NonGetRenderingPage')).toBe(false);
+  });
+});
+
 describe('structural-warnings: method validation', () => {
   it('errors on uppercase POST', () => {
     const content = '---\nslug: test\nmethod: POST\n---\n{% assign x = 1 %}';
@@ -574,16 +703,31 @@ describe('structural-warnings: missing return in commands', () => {
 
 // ── Missing doc block in commands ─────────────────────────────────────────
 
-describe('structural-warnings: missing doc block in commands', () => {
-  it('warns when command has no doc block', () => {
+describe('structural-warnings: missing doc block in commands (B1.5 scope-out)', () => {
+  // Commands were dropped from MissingDocBlock after plan B1.5 — the check
+  // was 10% resolution / 40% regression on command files in production.
+  // Only partials still fire this warning.
+  it('does NOT warn when command has no doc block', () => {
     const content = '{% liquid\n  assign object["id"] = 1\n  return object\n%}';
     const warnings = getWarnings(content, '/project/app/lib/commands/test/create.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:MissingDocBlock')).toBe(false);
+  });
+
+  it('does not warn when command has doc block either', () => {
+    const content = '{% doc %}\n  @param object {Hash}\n{% enddoc %}\n{% liquid\n  return object\n%}';
+    const warnings = getWarnings(content, '/project/app/lib/commands/test/create.liquid');
+    expect(warnings.some(w => w.check === 'pos-supervisor:MissingDocBlock')).toBe(false);
+  });
+
+  it('still warns for partials without doc block (regression guard)', () => {
+    const content = '<div>{{ x }}</div>';
+    const warnings = getWarnings(content, '/project/app/views/partials/widget.html.liquid');
     expect(warnings.some(w => w.check === 'pos-supervisor:MissingDocBlock')).toBe(true);
   });
 
-  it('does not warn when command has doc block', () => {
-    const content = '{% doc %}\n  @param object {Hash}\n{% enddoc %}\n{% liquid\n  return object\n%}';
-    const warnings = getWarnings(content, '/project/app/lib/commands/test/create.liquid');
+  it('does not warn for queries without doc block', () => {
+    const content = '{% graphql res = "list_posts" %}{{ res | json }}';
+    const warnings = getWarnings(content, '/project/app/lib/queries/list_posts.liquid');
     expect(warnings.some(w => w.check === 'pos-supervisor:MissingDocBlock')).toBe(false);
   });
 });

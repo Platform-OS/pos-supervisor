@@ -40,6 +40,8 @@ export async function scanModule(projectDir, moduleName) {
     display_name: metadata.name || moduleName,
     version: metadata.version || 'unknown',
     dependencies: metadata.dependencies || {},
+    manifest_source: metadata.manifest_source ?? null,
+    ...(metadata.manifest_warnings ? { manifest_warnings: metadata.manifest_warnings } : {}),
     installed: true,
     ...apiSurface,
     schemas,
@@ -71,6 +73,8 @@ export async function listModules(projectDir) {
         display_name: meta.name || entry.name,
         version: meta.version || 'unknown',
         dependencies: meta.dependencies || {},
+        manifest_source: meta.manifest_source ?? null,
+        ...(meta.manifest_warnings ? { manifest_warnings: meta.manifest_warnings } : {}),
       });
     }
 
@@ -81,28 +85,107 @@ export async function listModules(projectDir) {
 }
 
 // ── Metadata scanning ────────────────────────────────────────────────────────
+//
+// Precedence (most authoritative first):
+//   1. `pos-module.json`        — upstream platformOS module manifest. Source
+//                                 of truth for `version` and `dependencies`.
+//   2. `template-values.json`   — generated artifact emitted by
+//                                 `pos-cli modules version`. Mirrors
+//                                 pos-module.json but can drift if deps are
+//                                 added without re-running the version sync.
+//   3. `package.json`           — npm metadata. Its `version` reflects the
+//                                 npm-package layout, NOT the platformOS
+//                                 module version. Last-resort fallback.
+//
+// When both `pos-module.json` and `template-values.json` exist we run a drift
+// check; any divergence in `version` or in the `dependencies` key set surfaces
+// in `manifest_warnings` so module_info can flag it for the operator.
+
+async function readJsonOr(file) {
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
 
 async function scanMetadata(moduleDir) {
-  // Try template-values.json first (platformOS module metadata)
-  const tvPath = join(moduleDir, 'template-values.json');
-  try {
-    const content = await readFile(tvPath, 'utf8');
-    return JSON.parse(content);
-  } catch {}
+  const posModule      = await readJsonOr(join(moduleDir, 'pos-module.json'));
+  const templateValues = await readJsonOr(join(moduleDir, 'template-values.json'));
 
-  // Fallback to package.json
-  const pkgPath = join(moduleDir, 'package.json');
-  try {
-    const content = await readFile(pkgPath, 'utf8');
-    const pkg = JSON.parse(content);
-    return {
-      name: pkg.name,
-      version: pkg.version,
-      dependencies: pkg.dependencies || {},
-    };
-  } catch {}
+  let primary = null;
+  let source  = null;
+  if (posModule) {
+    primary = posModule;
+    source  = 'pos-module.json';
+  } else if (templateValues) {
+    primary = templateValues;
+    source  = 'template-values.json';
+  } else {
+    const pkg = await readJsonOr(join(moduleDir, 'package.json'));
+    if (pkg) {
+      return {
+        name: pkg.name ?? null,
+        version: pkg.version ?? null,
+        dependencies: pkg.dependencies ?? {},
+        manifest_source: 'package.json',
+      };
+    }
+    return { manifest_source: null };
+  }
 
-  return {};
+  const out = {
+    name: primary.name ?? null,
+    version: primary.version ?? null,
+    dependencies: primary.dependencies ?? {},
+    manifest_source: source,
+  };
+
+  if (posModule && templateValues) {
+    const warnings = detectManifestDrift(posModule, templateValues);
+    if (warnings.length > 0) out.manifest_warnings = warnings;
+  }
+
+  return out;
+}
+
+/**
+ * Compare `pos-module.json` and `template-values.json` and emit one warning per
+ * detected divergence. Used by scanMetadata to surface stale module-version
+ * sync state — the canonical fix is to re-run `pos-cli modules version <name>`.
+ */
+function detectManifestDrift(posModule, templateValues) {
+  const warnings = [];
+
+  if ((posModule.version ?? null) !== (templateValues.version ?? null)) {
+    warnings.push({
+      kind: 'version_drift',
+      pos_module: posModule.version ?? null,
+      template_values: templateValues.version ?? null,
+      message: `pos-module.json (${posModule.version ?? 'null'}) and template-values.json (${templateValues.version ?? 'null'}) report different versions. pos-module.json wins. Re-run \`pos-cli modules version <name>\` to sync.`,
+    });
+  }
+
+  const posDeps = posModule.dependencies ?? {};
+  const tvDeps  = templateValues.dependencies ?? {};
+  const posKeys = Object.keys(posDeps);
+  const tvKeys  = Object.keys(tvDeps);
+  const onlyPos = posKeys.filter(k => !(k in tvDeps));
+  const onlyTv  = tvKeys.filter(k => !(k in posDeps));
+
+  if (onlyPos.length > 0 || onlyTv.length > 0) {
+    warnings.push({
+      kind: 'dependency_drift',
+      only_in_pos_module: onlyPos.sort(),
+      only_in_template_values: onlyTv.sort(),
+      message: [
+        onlyPos.length > 0 ? `pos-module.json adds [${onlyPos.sort().join(', ')}]` : null,
+        onlyTv.length  > 0 ? `template-values.json adds [${onlyTv.sort().join(', ')}]` : null,
+      ].filter(Boolean).join('; ') + '. pos-module.json wins. Re-run `pos-cli modules version <name>` to sync.',
+    });
+  }
+
+  return warnings;
 }
 
 // ── Public API surface ───────────────────────────────────────────────────────

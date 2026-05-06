@@ -15,14 +15,14 @@ Partials contain all presentation HTML and reusable logic. They are the building
 
 ### As a function (returns data)
 ```liquid
-{% function result = 'lib/commands/products/create', title: "New Product", price: 19.99 %}
+{% function result = 'commands/products/create', title: "New Product", price: 19.99 %}
 ```
 
 ## Naming Rules
 
 - **NO underscore prefix** in filenames (e.g., `card.liquid`, NOT `_card.liquid`)
 - View partials: `render 'products/card'` → `app/views/partials/products/card.liquid`
-- Commands/queries: `function r = 'lib/commands/products/create'` → `app/lib/commands/products/create.liquid`
+- Commands/queries: `function r = 'commands/products/create'` → `app/lib/commands/products/create.liquid`
 
 ## Variable Scope
 

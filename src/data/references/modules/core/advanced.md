@@ -1,158 +1,168 @@
-# pos-module-core -- Advanced Topics
+# pos-module-core — Advanced Topics
 
-Advanced customization, edge cases, and optimization techniques for the core module.
+> Compatible with pos-cli 6.0.7+ (modernized canonical syntax).
 
 ## Custom Validators
 
-You can create custom validators by adding files to your app that follow the core validator interface.
+Validators are plain Liquid partials that take a contract `c`, a
+`field_name`, and the `object` plus any validator-specific options.
+They APPEND to the contract via `modules/core/helpers/register_error`
+and return the updated contract.
 
 ### Creating a custom validator
 
-1. Create the validator file:
-
 ```liquid
-{% comment %} app/lib/validators/phone_number.liquid {% endcomment %}
+{% comment %} app/lib/validations/phone_number.liquid {% endcomment %}
+{% doc %}
+  @param {object} c - error contract
+  @param {string} field_name - field to validate
+  @param {object} object - object under validation
+  @param {string} message - optional override for the error message
+{% enddoc %}
 {% liquid
-  assign value = object[property]
+  assign value = object[field_name]
   assign phone_regex = '^\+?[0-9]{10,15}$'
-  assign is_valid = value | matches: phone_regex
-
-  if is_valid != true
-    assign errors[property] = 'is not a valid phone number'
+  if value != blank
+    assign ok = value | matches: phone_regex
+    if ok != true
+      assign message = message | default: 'errors.phone_invalid' | t
+      function c = 'modules/core/helpers/register_error',
+        contract: c, field_name: field_name, message: message, key: null
+    endif
   endif
-
-  return errors
+  return c
 %}
 ```
 
-2. Reference it in your validators array with a custom path:
+### Calling it from your check partial
 
 ```liquid
-{% assign validators = [{ "name": "presence", "property": "phone" }, { "name": "phone_number", "property": "phone" }] %}
+{% function c = 'lib/validations/phone_number',
+   c: c, field_name: 'phone', object: object %}
 ```
 
-**Note:** Custom validators must follow the same interface: accept `object` and `property`, return an `errors` hash.
+The same calling convention works whether the validator is shipped
+(`modules/core/lib/validations/...`), an override
+(`app/modules/core/public/lib/validations/...`), or a fully custom
+app-level one (`app/lib/validations/...`).
 
 ## Overriding Built-in Validators
 
-To change how a built-in validator works (e.g., custom error messages):
+To customize a shipped validator (e.g. tighter error messages):
 
 ```bash
-mkdir -p app/modules/core/public/lib/validators
-cp modules/core/public/lib/validators/presence.liquid \
-   app/modules/core/public/lib/validators/presence.liquid
+mkdir -p app/modules/core/public/lib/validations
+cp modules/core/public/lib/validations/presence.liquid \
+   app/modules/core/public/lib/validations/presence.liquid
 ```
 
-Edit the copy in `app/modules/core/` to customize behavior. The app-level file takes precedence.
+Edit the copy. The override at `app/modules/core/public/...` wins over
+the shipped file.
 
 ## Event Chaining
 
-Events can trigger commands that publish more events, creating a chain:
+Events can trigger commands that publish more events:
 
 ```
-order_created -> send_confirmation_email
-              -> update_inventory -> inventory_low -> notify_admin
-              -> update_analytics
+order_created → send_confirmation_email
+              → update_inventory → inventory_low → notify_admin
+              → update_analytics
 ```
-
-### Implementing event chains
 
 ```liquid
-{% comment %} app/lib/consumers/order_created/update_inventory.liquid {% endcomment %}
+{% comment %} app/lib/events/order_created/update_inventory.liquid {% endcomment %}
 {% liquid
-  function result = 'lib/commands/inventory/decrement', order: object
+  function result = 'commands/inventory/decrement', object: object
 
   if result.quantity < result.reorder_threshold
     function _ = 'modules/core/commands/events/publish',
-      type: 'inventory_low',
-      object: result
+      type: 'inventory_low', object: result
   endif
 
   return result
 %}
 ```
 
-**Warning:** Avoid circular event chains. If event A triggers event B which triggers event A, you create an infinite loop.
+Avoid circular chains — if A triggers B which triggers A, you have an
+infinite loop. The platform doesn't break it for you.
 
 ## Conditional Validation
 
-Apply validators only when certain conditions are met:
-
 ```liquid
-{% comment %} app/lib/commands/products/create.liquid {% endcomment %}
+{% comment %} app/lib/commands/products/create/check.liquid {% endcomment %}
 {% liquid
-  function object = 'modules/core/commands/build', object: params
+  assign c = object.errors | default: empty
 
-  assign validators = [{ "name": "presence", "property": "title" }, { "name": "presence", "property": "status" }]
+  function c = 'modules/core/lib/validations/presence',
+    c: c, field_name: 'title', object: object
+  function c = 'modules/core/lib/validations/included',
+    c: c, field_name: 'status', object: object,
+    in: ['draft','published','archived']
 
   if object.status == 'published'
-    assign publish_validators = [{ "name": "presence", "property": "description" }, { "name": "presence", "property": "price" }, { "name": "numericality", "property": "price", "options": { "greater_than": 0 } }]
-    assign validators = validators | concat: publish_validators
+    function c = 'modules/core/lib/validations/presence',
+      c: c, field_name: 'description', object: object
+    function c = 'modules/core/lib/validations/number',
+      c: c, field_name: 'price', object: object, gt: 0
   endif
 
-  function object = 'modules/core/commands/check', object: object, validators: validators
-
-  if object.errors != blank
-    return object
-  endif
-
-  function object = 'modules/core/commands/execute',
-    mutation_name: 'products/create', selection: 'record_create', object: object
+  assign object.errors = c
+  assign object.valid  = c == empty
   return object
 %}
 ```
 
-## Multi-Step Commands
+## Multi-Step / Nested Commands
 
-For complex operations that span multiple tables:
+For operations that span tables, run each sub-command in sequence and
+short-circuit on the first failure:
 
 ```liquid
 {% comment %} app/lib/commands/orders/create.liquid {% endcomment %}
 {% liquid
-  comment Create the order record first
-  endcomment
-  function order = 'modules/core/commands/build', object: order_params
-  function order = 'modules/core/commands/check', object: order, validators: order_validators
-  if order.errors != blank
+  function order = 'commands/orders/create/build', object: order_params
+  function order = 'commands/orders/create/check', object: order
+  if order.valid == false
     return order
   endif
   function order = 'modules/core/commands/execute',
-    mutation_name: 'orders/create', selection: 'record_create', object: order
+    mutation_name: 'orders/create',
+    selection: 'record_create',
+    object: order
 
-  comment Then create each line item
-  endcomment
   for item in line_items
     assign item['order_id'] = order.id
-    function line = 'modules/core/commands/build', object: item
-    function line = 'modules/core/commands/execute',
-      mutation_name: 'order_items/create', selection: 'record_create', object: line
+    function line = 'commands/order_items/create', object: item
+    if line.valid == false
+      log line.errors, type: 'orders/create line_item failed'
+    endif
   endfor
 
-  function _ = 'modules/core/commands/events/publish', type: 'order_created', object: order
+  function _ = 'modules/core/commands/events/publish',
+    type: 'order_created', object: order
+
   return order
 %}
 ```
 
-## Scoped Uniqueness Validation
+For multi-step rollback semantics, wrap in `{% transaction %}` (platform
+primitive) — outside the scope of `commands/execute`.
 
-Validate uniqueness within a scope (e.g., slug unique per category):
+## Scoped Uniqueness
 
-```json
-{
-  "name": "uniqueness",
-  "property": "slug",
-  "options": {
-    "table": "product",
-    "scope": ["category_id"]
-  }
-}
+`uniqueness` accepts a `scope:` (array of field names) so the unique
+constraint applies only WITHIN matching values:
+
+```liquid
+{% function c = 'modules/core/lib/validations/uniqueness',
+   c: c, field_name: 'slug', object: object,
+   table: 'product', scope: ['category_id'] %}
 ```
 
-This checks that `slug` is unique only among records with the same `category_id`.
+This rejects duplicate `slug` only among rows with the same
+`category_id`.
 
 ## Batch Operations
-
-For bulk creates or updates, loop through items and collect results:
 
 ```liquid
 {% liquid
@@ -160,18 +170,20 @@ For bulk creates or updates, loop through items and collect results:
   assign all_valid = true
 
   for item in items
-    function object = 'modules/core/commands/build', object: item
-    function object = 'modules/core/commands/check', object: object, validators: validators
-    if object.errors != blank
+    function obj = 'commands/products/create/build', object: item
+    function obj = 'commands/products/create/check', object: obj
+    if obj.valid == false
       assign all_valid = false
     endif
-    assign results = results | add_to_array: object
+    assign results = results | add_to_array: obj
   endfor
 
   if all_valid
-    for object in results
-      function object = 'modules/core/commands/execute',
-        mutation_name: 'products/create', selection: 'record_create', object: object
+    for obj in results
+      function obj = 'modules/core/commands/execute',
+        mutation_name: 'products/create',
+        selection: 'record_create',
+        object: obj
     endfor
   endif
 
@@ -179,36 +191,36 @@ For bulk creates or updates, loop through items and collect results:
 %}
 ```
 
-## Performance Optimization
+## Performance Notes
 
-### Minimize validator calls
+### Cheap before expensive
 
-Each validator may run a database query (especially `uniqueness`). Group validators thoughtfully:
+Validators may hit the DB (`uniqueness`, `exist_in_db`). Order them
+cheapest-first so a missing required field never reaches the slow check:
 
 ```liquid
-{% comment %} Run cheap validators first, expensive ones last {% endcomment %}
-{% assign validators = [
-  { "name": "presence", "property": "title" },
-  { "name": "presence", "property": "email" },
-  { "name": "format", "property": "email", "options": { "pattern": "^[^@]+@[^@]+$" } },
-  { "name": "uniqueness", "property": "email", "options": { "table": "user_profile" } }
-] %}
+{% function c = 'modules/core/lib/validations/presence',
+   c: c, field_name: 'email', object: object %}
+{% function c = 'modules/core/lib/validations/email',
+   c: c, field_name: 'email', object: object %}
+{% function c = 'modules/core/lib/validations/uniqueness',
+   c: c, field_name: 'email', object: object, table: 'user_profile' %}
 ```
 
 ### Lean event payloads
 
-Pass only IDs in event payloads; let consumers fetch what they need:
+Pass only IDs; let consumers fetch what they need:
 
 ```liquid
-{% assign payload = { "id": object.id, "type": "product" } %}
-{% function _ = 'modules/core/commands/events/publish', type: 'product_created', object: payload %}
+{% assign payload = { id: object.id, type: 'product' } %}
+{% function _ = 'modules/core/commands/events/publish',
+   type: 'product_created', object: payload %}
 ```
 
 ## See Also
 
-- [Core Overview](README.md) -- introduction and key concepts
-- [Core API](api.md) -- all available functions
-- [Core Configuration](configuration.md) -- installation and validator options
-- [Core Patterns](patterns.md) -- standard workflows
-- [Core Gotchas](gotchas.md) -- common errors and limits
-- [Events & Consumers](../../events-consumers/README.md) -- event consumer registration
+- [Core Overview](README.md)
+- [Core API](api.md) — full validator inventory + option names
+- [Core Configuration](configuration.md)
+- [Core Patterns](patterns.md)
+- [Core Gotchas](gotchas.md)

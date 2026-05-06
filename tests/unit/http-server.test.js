@@ -96,6 +96,95 @@ describe('HTTP GET endpoints', () => {
   });
 });
 
+describe('HTTP GET /api/hints', () => {
+  it('list mode returns both static md hints and rule-driven check names', async () => {
+    const { status, body } = await httpGet('/api/hints');
+    expect(status).toBe(200);
+    expect(Array.isArray(body.hints)).toBe(true);
+    expect(Array.isArray(body.checks)).toBe(true);
+
+    // Legacy md hints — sample from src/data/hints/
+    expect(body.hints).toContain('GraphQLCheck');
+    // Rule-driven (no md file) — must be present after the fix.
+    expect(body.hints).toContain('GraphQLVariablesCheck');
+    expect(body.hints).toContain('PartialCallArguments');
+
+    // Per-check sources metadata
+    const gqlVars = body.checks.find(c => c.name === 'GraphQLVariablesCheck');
+    expect(gqlVars).toBeDefined();
+    expect(gqlVars.sources).toContain('rule');
+    expect(gqlVars.sources).not.toContain('static');
+
+    const gqlCheck = body.checks.find(c => c.name === 'GraphQLCheck');
+    expect(gqlCheck).toBeDefined();
+    expect(gqlCheck.sources).toContain('static');
+  });
+
+  it('GET ?name=<static-check> returns md content with source=static', async () => {
+    const { status, body } = await httpGet('/api/hints?name=GraphQLCheck');
+    expect(status).toBe(200);
+    expect(body.name).toBe('GraphQLCheck');
+    expect(body.source).toBe('static');
+    expect(typeof body.content).toBe('string');
+    expect(body.content.length).toBeGreaterThan(20);
+  });
+
+  // Repro for the dashboard 404 reported on 2026-04-28: rule-driven checks
+  // had no md file, the endpoint 404'd, drilldown showed "Failed to load".
+  it('GET ?name=GraphQLVariablesCheck synthesizes a rule doc instead of 404', async () => {
+    const { status, body } = await httpGet('/api/hints?name=GraphQLVariablesCheck');
+    expect(status).toBe(200);
+    expect(body.name).toBe('GraphQLVariablesCheck');
+    expect(body.source).toBe('rule');
+    expect(Array.isArray(body.rule_ids)).toBe(true);
+    // Sub-rule ids must be present in the synthesized doc.
+    expect(body.rule_ids).toContain('GraphQLVariablesCheck.required');
+    expect(body.rule_ids).toContain('GraphQLVariablesCheck.unknown');
+    expect(body.rule_ids).toContain('GraphQLVariablesCheck.parser_blind_spot');
+    expect(body.content).toContain('GraphQLVariablesCheck');
+    expect(body.content).toContain('Rule-driven');
+    expect(body.content).toContain('src/core/rules/GraphQLVariablesCheck.js');
+    // Each sub-rule must be documented with priority + when() source.
+    expect(body.content).toContain('parser_blind_spot');
+    expect(body.content).toContain('priority');
+  });
+
+  it('GET ?name=<unknown> still 404s when neither md nor rule exists', async () => {
+    const { status, body } = await httpGet('/api/hints?name=NoSuchCheckEverDefined');
+    expect(status).toBe(404);
+    expect(body.error).toBeDefined();
+  });
+
+  it('GET ?name=<pos-supervisor:Foo> resolves prefixed rule-driven checks', async () => {
+    // pos-supervisor:InvalidLayout is registered with the prefix, has no md
+    // file, and the dashboard splits on the first dot when computing
+    // baseCheck — so the colon prefix must round-trip cleanly.
+    const { status, body } = await httpGet(
+      '/api/hints?name=' + encodeURIComponent('pos-supervisor:InvalidLayout')
+    );
+    expect(status).toBe(200);
+    expect(body.source).toBe('rule');
+    expect(body.name).toBe('pos-supervisor:InvalidLayout');
+    // Module path strips the `pos-supervisor:` prefix when we point at the
+    // file the developer must edit — the rule files are not namespaced.
+    expect(body.content).toContain('src/core/rules/InvalidLayout.js');
+  });
+
+  it('GET ?name=<pos-supervisor:Foo> with both md and rule prefers static md', async () => {
+    // pos-supervisor:NonGetRenderingPage has BOTH a md file and a rule
+    // module. The endpoint must serve the md (legacy enricher path is what
+    // agents actually consume) and the rule sub-rules remain reachable via
+    // the per-check rule_ids list elsewhere in the dashboard.
+    const { status, body } = await httpGet(
+      '/api/hints?name=' + encodeURIComponent('pos-supervisor:NonGetRenderingPage')
+    );
+    expect(status).toBe(200);
+    expect(body.source).toBe('static');
+    expect(typeof body.content).toBe('string');
+    expect(body.content.length).toBeGreaterThan(20);
+  });
+});
+
 describe('HTTP POST /call', () => {
   it('executes domain_guide tool', async () => {
     const { status, body } = await httpPost('/call', {

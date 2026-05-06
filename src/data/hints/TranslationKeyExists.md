@@ -3,6 +3,18 @@ Translation key '{{key}}' not found in translation files.
 NOTE: If you are creating translation files as part of a multi-file plan, pass pending_translations
   (from validate_intent) to validate_code — this suppresses TranslationKeyExists for keys that
   will exist once the plan is written to disk.
+  
+IF Translations show "translation missing" even though the key exists in the YAML file.
+Root cause: The YAML file is missing the required top-level language key.
+
+```yaml
+en:
+  app:
+    contact_form:
+      title: "..."
+```
+
+OTHERWISE:
 
 STEP 1 — Check the suggestion field for a typo fix.
   HAS suggestion (Did you mean '...'?):

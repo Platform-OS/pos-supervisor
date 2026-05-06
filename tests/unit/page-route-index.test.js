@@ -180,4 +180,91 @@ describe('page-route-index', () => {
       expect(resolvePageRoute('/totally-unknown', 'get', index)).toEqual({ status: 'missing' });
     });
   });
+
+  describe('buildPageRouteIndex with overlay', () => {
+    it("substitutes the overlay's frontmatter for the on-disk version of the same file", () => {
+      // Disk version of dashboard.liquid has no method (defaults to GET).
+      // Overlay declares `method: post` — the route's method set must reflect
+      // the overlay (POST), not the disk (GET).
+      const overlay = {
+        filePath: 'app/views/pages/dashboard.liquid',
+        content: '---\nmethod: post\n---\n<p>POST handler</p>\n',
+      };
+      const { routes } = buildPageRouteIndex(tmpDir, overlay);
+      const methods = routes.get('dashboard');
+      expect(methods).toBeDefined();
+      expect(methods.has('post')).toBe(true);
+      expect(methods.has('get')).toBe(false);
+    });
+
+    it('adds a brand-new page (not yet on disk) to the index', () => {
+      const overlay = {
+        filePath: 'app/views/pages/contact.liquid',
+        content: '---\nmethod: post\n---\n<p>new page</p>\n',
+      };
+      const { routes } = buildPageRouteIndex(tmpDir, overlay);
+      expect(routes.has('contact')).toBe(true);
+      expect(routes.get('contact').has('post')).toBe(true);
+    });
+
+    it("respects the overlay's frontmatter slug just like it does for on-disk files", () => {
+      const overlay = {
+        filePath: 'app/views/pages/whatever.liquid',
+        content: '---\nslug: my-custom-route\nmethod: put\n---\n<p>x</p>\n',
+      };
+      const { routes } = buildPageRouteIndex(tmpDir, overlay);
+      expect(routes.has('my-custom-route')).toBe(true);
+      expect(routes.has('whatever')).toBe(false);
+    });
+
+    it('accepts an absolute filePath in the overlay', () => {
+      const overlay = {
+        filePath: join(tmpDir, 'app/views/pages/contact.liquid'),
+        content: '---\nmethod: post\n---\n<p>x</p>\n',
+      };
+      const { routes } = buildPageRouteIndex(tmpDir, overlay);
+      expect(routes.has('contact')).toBe(true);
+    });
+
+    it('ignores the overlay when the file is not under app/views/pages/', () => {
+      // Partials cannot serve routes. The overlay must be silently dropped
+      // rather than creating a phantom route entry.
+      const overlay = {
+        filePath: 'app/views/partials/header.liquid',
+        content: '---\nslug: phantom\nmethod: post\n---\n<p>x</p>\n',
+      };
+      const { routes } = buildPageRouteIndex(tmpDir, overlay);
+      expect(routes.has('phantom')).toBe(false);
+    });
+
+    it('ignores the overlay when filePath does not end in .liquid', () => {
+      const overlay = {
+        filePath: 'app/views/pages/contact.json.liquid.bak',
+        content: '---\nslug: phantom\n---\n',
+      };
+      const { routes } = buildPageRouteIndex(tmpDir, overlay);
+      expect(routes.has('phantom')).toBe(false);
+    });
+
+    it('treats a malformed overlay (missing fields) as if no overlay were provided', () => {
+      const baseline = buildPageRouteIndex(tmpDir).routes.size;
+      expect(buildPageRouteIndex(tmpDir, null).routes.size).toBe(baseline);
+      expect(buildPageRouteIndex(tmpDir, {}).routes.size).toBe(baseline);
+      expect(buildPageRouteIndex(tmpDir, { filePath: 'x' }).routes.size).toBe(baseline);
+      expect(buildPageRouteIndex(tmpDir, { content: 'x' }).routes.size).toBe(baseline);
+    });
+
+    it('overlay with no frontmatter falls back to path-derived route + GET', () => {
+      // The disk version of dashboard.liquid is also no-frontmatter / GET.
+      // Overlay just confirms the same. Ensures empty frontmatter does not
+      // accidentally erase the file from the index.
+      const overlay = {
+        filePath: 'app/views/pages/dashboard.liquid',
+        content: '<p>no frontmatter</p>\n',
+      };
+      const { routes } = buildPageRouteIndex(tmpDir, overlay);
+      expect(routes.has('dashboard')).toBe(true);
+      expect(routes.get('dashboard').has('get')).toBe(true);
+    });
+  });
 });

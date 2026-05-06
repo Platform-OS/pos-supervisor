@@ -53,7 +53,13 @@ export async function scanProject(projectDir) {
           method,
           layout: file.structural.layout,
           renders: file.structural.renders,
+          render_calls: file.structural.renderCalls,
           function_calls: file.functionCalls,
+          // API pages (`method: post`, `format: json`) commonly carry a
+          // `{% graphql %}` body directly. Indexing graphql_calls here
+          // lets rule-engine consumers resolve the operation from any
+          // caller — same shape as commands/queries.
+          graphql_calls: file.structural.graphql,
         };
         break;
       }
@@ -63,7 +69,11 @@ export async function scanProject(projectDir) {
           path: file.relPath,
           params: [...file.structural.docParams],
           renders: file.structural.renders,
+          render_calls: file.structural.renderCalls,
           function_calls: file.functionCalls,
+          // Partials may host `{% graphql %}` calls (data-fetching helpers).
+          // Index for the same reason as pages above.
+          graphql_calls: file.structural.graphql,
           rendered_by: [],
         };
         break;
@@ -88,7 +98,15 @@ export async function scanProject(projectDir) {
         break;
       }
       case 'layouts': {
-        layouts[file.relPath] = { path: file.relPath };
+        layouts[file.relPath] = {
+          path: file.relPath,
+          renders: file.structural.renders,
+          render_calls: file.structural.renderCalls,
+          function_calls: file.functionCalls,
+          // Same rationale as pages/partials — layouts may invoke graphql
+          // for nav data, etc.
+          graphql_calls: file.structural.graphql,
+        };
         break;
       }
     }
@@ -111,6 +129,7 @@ export async function scanProject(projectDir) {
     queries,
     pages,
     partials,
+    layouts,
     translations,
     assets,
     summary: {
@@ -283,6 +302,7 @@ async function scanLiquidFiles(appDir) {
           layout: extracted.layout,
           method: extracted.method,
           renders: extracted.renders,
+          renderCalls: extracted.renderCalls,
           graphql: extracted.graphql,
           filters: extracted.filters,
           tags: extracted.tags,

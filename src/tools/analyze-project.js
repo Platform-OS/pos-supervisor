@@ -3,6 +3,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createCheckRunner } from '../core/check-runner.js';
 import { validateSchema } from '../core/schema-validator.js';
+import { validateTranslationYaml } from '../core/translation-validator.js';
 import { toUri, sanitizePath } from '../core/utils.js';
 import { getProjectMap } from './project-map.js';
 import { ToolError } from '../core/tool-error.js';
@@ -11,13 +12,14 @@ import {
   buildPendingPartialNames,
   buildPendingPageKeys,
 } from '../core/diagnostic-pipeline.js';
-import { buildDependencyGraph, detectDeadCode } from '../core/dependency-graph.js';
+import { buildDependencyGraph, detectOrphanedFiles } from '../core/dependency-graph.js';
 import { findOrphanPartials } from '../core/orphan-detector.js';
 import { resolveRenderName } from '../core/project-scanner.js';
+import { buildFactGraph } from '../core/project-fact-graph.js';
 
 export const analyzeProjectTool = {
   name: 'analyze_project',
-  description: 'Cross-file project health overview. Returns per-file error/warning counts, dependency graph, broken references, dead code, and schema issues. Use validate_code on individual files for full diagnostics, fix proposals, and context-aware analysis.',
+  description: 'Cross-file project health overview. Returns per-file error/warning counts, dependency graph, broken references, orphaned files, and schema issues. Use validate_code on individual files for full diagnostics, fix proposals, and context-aware analysis.',
   inputSchema: {
     files: z.array(z.string()).optional().describe('List of file paths (relative to project root) to analyze. Omit to analyze all project files.'),
     min_severity: z.enum(['error', 'warning', 'info']).optional().describe('Minimum severity to include in file counts. "error" = only list files with errors, "warning" = errors + warnings (default), "info" = everything.'),
@@ -36,17 +38,18 @@ export const analyzeProjectTool = {
       const SEV_RANK = { error: 3, warning: 2, info: 1 };
       const minRank = SEV_RANK[min_severity] ?? 2;
 
-      // If no files specified, discover all .liquid and .graphql files in app/
+      // Fetch the project map once up front — used for file listing, dep graph,
+      // and integrity checks. Cached by getProjectMap so this is near-free.
+      const projectMap = await getProjectMap(ctx.directory);
+      const factGraph = buildFactGraph(projectMap);
+
+      // If no files specified, use the fact graph's indexed file list instead of
+      // re-walking app/ (eliminates the parallel-walk class of bugs).
+      // Also include translation files explicitly so they're part of the primary analysis.
       if (!files || !Array.isArray(files) || files.length === 0) {
-        const appDir = join(ctx.directory, 'app');
-        try {
-          const entries = await readdir(appDir, { recursive: true });
-          files = entries
-            .filter(e => e.endsWith('.liquid') || e.endsWith('.graphql'))
-            .map(e => join('app', e));
-        } catch {
-          throw new ToolError('No files specified and could not scan app/ directory', { status: 404 });
-        }
+        const checkableFiles = factGraph.allCheckableFiles();
+        const translationFiles = getTranslationFilePaths(projectMap);
+        files = [...checkableFiles, ...translationFiles];
         if (files.length === 0) {
           throw new ToolError('No .liquid or .graphql files found in app/', { status: 404 });
         }
@@ -117,6 +120,32 @@ export const analyzeProjectTool = {
         }
       }
 
+      // Catch diagnostics from pos-cli check that target files outside
+      // the checkable set (e.g. MatchingTranslations in .yml files).
+      const fileSet = new Set(files);
+      const unattributed = new Map();
+      for (const d of [...allResults.errors, ...allResults.warnings, ...allResults.infos]) {
+        if (!d._filePath) continue;
+        const rel = d._filePath.startsWith(ctx.directory)
+          ? d._filePath.slice(ctx.directory.length + 1)
+          : d._filePath;
+        if (fileSet.has(rel)) continue;
+        if (!unattributed.has(rel)) unattributed.set(rel, { errors: 0, warnings: 0, infos: 0 });
+        const counts = unattributed.get(rel);
+        counts[d.severity === 'error' ? 'errors' : d.severity === 'warning' ? 'warnings' : 'infos']++;
+      }
+      for (const [path, counts] of unattributed) {
+        const hasRelevant =
+          counts.errors > 0 ||
+          (minRank <= 2 && counts.warnings > 0) ||
+          (minRank <= 1 && counts.infos > 0);
+        if (hasRelevant) {
+          const entry = { path, errors: counts.errors, warnings: counts.warnings };
+          if (minRank <= 1) entry.infos = counts.infos;
+          fileResults.push(entry);
+        }
+      }
+
       // Schema validation — validate all .yml files in app/schema/
       let schemasScanned = 0;
       try {
@@ -139,6 +168,30 @@ export const analyzeProjectTool = {
         }
       } catch { /* schema directory not found — skip */ }
 
+      // Translation validation — catch structural invariant violations (e.g. missing
+      // top-level locale key, stray non-locale top-level keys) that pos-cli check
+      // does not report as errors on the .yml file itself. Without this step, a
+      // broken translation file (e.g. `enff:` instead of `en:`) has 0 pos-cli errors
+      // and never enters fix_order, even though it is the root cause of
+      // TranslationKeyExists errors on every liquid file that uses translation keys.
+      for (const tranPath of getTranslationFilePaths(projectMap)) {
+        try {
+          const content = await readFile(join(ctx.directory, tranPath), 'utf8');
+          const transResult = validateTranslationYaml(content, tranPath);
+          const errorCount = transResult.errors.length;
+          const warningCount = transResult.warnings.length;
+          const hasRelevant = errorCount > 0 || (minRank <= 2 && warningCount > 0);
+          if (!hasRelevant) continue;
+          const existing = fileResults.find(f => f.path === tranPath);
+          if (existing) {
+            existing.errors += errorCount;
+            existing.warnings += warningCount;
+          } else {
+            fileResults.push({ path: tranPath, errors: errorCount, warnings: warningCount });
+          }
+        } catch { /* translation file read/parse failure — skip */ }
+      }
+
       // Build dependency graph.
       //
       // The LSP's appGraph/* methods return empty arrays for files it has not
@@ -153,6 +206,7 @@ export const analyzeProjectTool = {
       const lspOverlay = {};
       if (ctx.lsp?.initialized) {
         for (const filePath of files) {
+          if (filePath.endsWith('.yml') || filePath.endsWith('.yaml')) continue;
           const absPath = absPaths[filePath];
           const uri = toUri(absPath);
           try {
@@ -171,22 +225,18 @@ export const analyzeProjectTool = {
         }
       }
 
-      // Fetch the project map once — both the dep graph and the integrity
-      // checks consume it.
-      const projectMap = await getProjectMap(ctx.directory);
-
       // projectMap-derived graph merged with LSP overlay. This is the
       // authoritative graph surfaced to the agent.
       const dependencyGraph = buildDependencyGraph(projectMap, lspOverlay);
 
-      // Cross-file integrity checks + dead code detection.
+      // Cross-file integrity checks + orphaned file detection.
       let integrity = [];
-      let dead_code = [];
+      let orphaned_files = [];
       try {
         integrity = performIntegrityChecks(projectMap);
-        dead_code = detectDeadCode(dependencyGraph, projectMap);
+        orphaned_files = detectOrphanedFiles(dependencyGraph, projectMap);
       } catch {
-        // Integrity checks and dead code detection are best-effort.
+        // Integrity checks and orphaned file detection are best-effort.
       }
 
       // Apply severity filter to integrity issues
@@ -194,18 +244,44 @@ export const analyzeProjectTool = {
         integrity = integrity.filter(i => (SEV_RANK[i.severity] ?? 1) >= minRank);
       }
 
+      // Inject translation dependency edges into dependencyGraph so buildFixOrder
+      // can place the translation file before the liquid files it breaks.
+      // filesAffectedByTranslationFile relies on translation_keys in projectMap
+      // which the scanner doesn't populate — using allResults.errors directly
+      // gives us the ground truth: every file with a TranslationKeyExists error
+      // implicitly depends on the broken translation file.
+      const tranPrefix = ctx.directory.endsWith('/') ? ctx.directory : ctx.directory + '/';
+      for (const tranPath of getTranslationFilePaths(projectMap)) {
+        if (!fileResults.some(f => f.path === tranPath && f.errors > 0)) continue;
+        for (const d of allResults.errors) {
+          if (d.check !== 'TranslationKeyExists') continue;
+          const rel = d._filePath?.startsWith(tranPrefix)
+            ? d._filePath.slice(tranPrefix.length)
+            : d._filePath;
+          if (!rel || rel === tranPath) continue;
+          if (!dependencyGraph[rel]) dependencyGraph[rel] = { depends_on: [], referenced_by: [] };
+          if (!dependencyGraph[rel].depends_on.includes(tranPath)) {
+            dependencyGraph[rel].depends_on.push(tranPath);
+          }
+          if (!dependencyGraph[tranPath]) dependencyGraph[tranPath] = { depends_on: [], referenced_by: [] };
+          if (!dependencyGraph[tranPath].referenced_by.includes(rel)) {
+            dependencyGraph[tranPath].referenced_by.push(rel);
+          }
+        }
+      }
+
       const lintErrors = fileResults.reduce((s, f) => s + f.errors, 0);
       const lintWarnings = fileResults.reduce((s, f) => s + f.warnings, 0);
       const integrityErrors = integrity.filter(i => i.severity === 'error').length;
       const integrityWarnings = integrity.filter(i => i.severity === 'warning').length;
 
-      const fix_order = buildFixOrder(fileResults, dependencyGraph, ctx.directory);
+      const fix_order = buildFixOrder(fileResults, dependencyGraph, ctx.directory, projectMap);
 
       const totalErrors = lintErrors + integrityErrors;
       const totalWarnings = lintWarnings + integrityWarnings;
 
       // ── blocking_files: files with errors that must be fixed ────────────
-      const blockingFiles = computeBlockingFiles(fileResults, integrity);
+      const blockingFiles = computeBlockingFiles(fileResults, integrity, allResults, ctx.directory, projectMap);
 
       // ── diff_from_last_run: compare against previous analysis ──────────
       const prefix = ctx.directory.endsWith('/') ? ctx.directory : ctx.directory + '/';
@@ -225,13 +301,13 @@ export const analyzeProjectTool = {
       }
 
       return {
-        files_scanned: filesScanned + schemasScanned,
+        files_scanned: filesScanned + schemasScanned + unattributed.size,
         files: fileResults,
         fix_order,
         blocking_files: blockingFiles,
         diff_from_last_run: diff,
         dependency_graph: dependencyGraph,
-        dead_code,
+        orphaned_files,
         integrity,
         lint_errors: lintErrors,
         lint_warnings: lintWarnings,
@@ -258,12 +334,16 @@ export const analyzeProjectTool = {
  * If A renders/calls B and both have errors, B should be fixed first —
  * fixing B may eliminate cascade errors in A.
  *
+ * Translation files are handled specially: they have implicit dependents
+ * (all files that use translation keys). These are computed at analyze time.
+ *
  * @param {{ path: string, errors: number, warnings: number }[]} fileResults
  * @param {Record<string, { depends_on: string[] }>} dependencyGraph
  * @param {string} projectDir - absolute project root
+ * @param {object} projectMap - project indexing result (for translation file handling)
  * @returns {{ path: string, errors: number, warnings: number, reason: string, dependents_with_errors: number }[]}
  */
-export function buildFixOrder(fileResults, dependencyGraph, projectDir) {
+export function buildFixOrder(fileResults, dependencyGraph, projectDir, projectMap) {
   if (fileResults.length === 0) return [];
 
   const errorPaths = new Set(fileResults.map(f => f.path));
@@ -291,6 +371,20 @@ export function buildFixOrder(fileResults, dependencyGraph, projectDir) {
       if (errorPaths.has(rel) && rel !== f.path) {
         deps[f.path].add(rel);
         dependents[rel].add(f.path);
+      }
+    }
+  }
+
+  // Handle translation file implicit dependents: files that use translation keys
+  // depend on translation files, so if a translation file has errors, all its
+  // dependents should be fixed after it.
+  for (const tranFile of fileResults.filter(f => f.path.startsWith('app/translations/'))) {
+    const affectedFiles = filesAffectedByTranslationFile(tranFile.path, projectMap);
+    for (const affectedPath of affectedFiles) {
+      if (errorPaths.has(affectedPath)) {
+        // affectedPath depends on tranFile
+        deps[affectedPath].add(tranFile.path);
+        dependents[tranFile.path].add(affectedPath);
       }
     }
   }
@@ -416,12 +510,18 @@ function performIntegrityChecks(projectMap) {
   }
 
   // 3. Broken function calls (from pages, partials, commands, queries)
-  // In platformOS, {% function result = 'queries/X' %} resolves to app/lib/queries/X.liquid
-  // The lib/ prefix is implicit in function calls.
+  //
+  // platformOS resolves `function` paths relative to the partial search
+  // paths declared by `@platformos/platformos-common`:
+  //   FILE_TYPE_DIRS[Partial] = ['views/partials', 'lib']
+  // joined under `app/`. So `'commands/X'` resolves to `app/lib/commands/X.liquid`,
+  // and `'lib/commands/X'` resolves to `app/lib/lib/commands/X.liquid`
+  // (which never exists). A literal `lib/` prefix is *invalid*, not optional.
+  // Reporting the resolution verbatim — without stripping `lib/` — surfaces
+  // the bug to the agent through the error message itself.
   const checkFunctionCalls = (sourcePath, functionCalls) => {
     for (const fc of functionCalls ?? []) {
       if (isModuleRef(fc.path)) continue;
-      // function call path → disk path: app/lib/{path}.liquid
       const fullPath = `app/lib/${fc.path}.liquid`;
       if (fc.path.includes('commands/') && !allCommands.has(fullPath)) {
         issues.push({
@@ -437,16 +537,29 @@ function performIntegrityChecks(projectMap) {
     }
   };
 
-  for (const [slug, page] of Object.entries(projectMap.pages ?? {})) {
+  for (const [, page] of Object.entries(projectMap.pages ?? {})) {
     checkFunctionCalls(page.path, page.function_calls);
   }
-  // Also check function calls from partials, commands, and queries
-  for (const [name, partial] of Object.entries(projectMap.partials ?? {})) {
+  for (const [, partial] of Object.entries(projectMap.partials ?? {})) {
     checkFunctionCalls(partial.path, partial.function_calls);
+  }
+  // Commands invoke their own build/check phases via {% function %}; queries
+  // and layouts also carry function_calls in the project map. Without these,
+  // a wrong call inside a command (the most common form: a multi-phase
+  // command calling its sibling phase with `lib/commands/...`) slips through
+  // unchecked.
+  for (const [path, cmd] of Object.entries(projectMap.commands ?? {})) {
+    checkFunctionCalls(path, cmd.function_calls);
+  }
+  for (const [path, query] of Object.entries(projectMap.queries ?? {})) {
+    checkFunctionCalls(path, query.function_calls);
+  }
+  for (const [, layout] of Object.entries(projectMap.layouts ?? {})) {
+    checkFunctionCalls(layout.path, layout.function_calls);
   }
 
   // 4. Orphan partials (never rendered by anything) — shared predicate so
-  //    validate_intent P5 and dependency-graph dead-code detection use the
+  //    validate_intent P5 and dependency-graph orphaned-file detection use the
   //    same rule. See src/core/orphan-detector.js.
   for (const { name, path } of findOrphanPartials(projectMap)) {
     issues.push({
@@ -472,13 +585,51 @@ function matchesFile(diagnostic, absPath, relPath) {
 /**
  * Files with at least one error (lint or integrity) that block a clean project.
  * Sorted by total error count descending — worst offenders first.
+ * @param {Array} fileResults - per-file { path, errors, warnings }
+ * @param {Array} integrity - integrity issues with { severity, source, type }
+ * @param {{ errors: Array }} [allResults] - full diagnostic results for check name extraction
+ * @param {string} [projectDir] - absolute project root, needed for translation file path normalisation
+ * @param {object} [projectMap] - project indexing result, needed to discover translation files
  */
-export function computeBlockingFiles(fileResults, integrity) {
+export function computeBlockingFiles(fileResults, integrity, allResults, projectDir, projectMap) {
   const blockMap = new Map();
 
   for (const f of fileResults) {
     if (f.errors > 0) {
-      blockMap.set(f.path, { path: f.path, lint_errors: f.errors, integrity_errors: 0 });
+      blockMap.set(f.path, { path: f.path, lint_errors: f.errors, integrity_errors: 0, checks: new Set() });
+    }
+  }
+
+  if (allResults?.errors) {
+    for (const d of allResults.errors) {
+      const rel = d._filePath;
+      for (const [key, entry] of blockMap) {
+        if (rel && (rel === key || rel.endsWith('/' + key) || rel.endsWith(key))) {
+          if (d.check) entry.checks.add(d.check);
+        }
+      }
+    }
+  }
+
+  // Explicitly ensure translation file errors reach blocking_files even when the
+  // caller provided an explicit files list that excluded translation files.
+  // (When files come from the default discovery path, translation files are already
+  // in fileResults via Change 1a — this handles the explicit-files-list case.)
+  if (projectDir && projectMap && allResults?.errors) {
+    const prefix = projectDir.endsWith('/') ? projectDir : projectDir + '/';
+    for (const tranPath of getTranslationFilePaths(projectMap)) {
+      if (blockMap.has(tranPath)) continue;
+      const errors = allResults.errors.filter(d => {
+        if (!d._filePath) return false;
+        const rel = d._filePath.startsWith(prefix)
+          ? d._filePath.slice(prefix.length)
+          : d._filePath;
+        return rel === tranPath;
+      });
+      if (errors.length > 0) {
+        const checks = new Set(errors.map(e => e.check).filter(Boolean));
+        blockMap.set(tranPath, { path: tranPath, lint_errors: errors.length, integrity_errors: 0, checks });
+      }
     }
   }
 
@@ -487,13 +638,16 @@ export function computeBlockingFiles(fileResults, integrity) {
     const existing = blockMap.get(issue.source);
     if (existing) {
       existing.integrity_errors++;
+      if (issue.type) existing.checks.add(issue.type);
     } else {
-      blockMap.set(issue.source, { path: issue.source, lint_errors: 0, integrity_errors: 1 });
+      const checks = new Set();
+      if (issue.type) checks.add(issue.type);
+      blockMap.set(issue.source, { path: issue.source, lint_errors: 0, integrity_errors: 1, checks });
     }
   }
 
   return [...blockMap.values()]
-    .map(b => ({ ...b, total: b.lint_errors + b.integrity_errors }))
+    .map(b => ({ ...b, total: b.lint_errors + b.integrity_errors, checks: [...b.checks] }))
     .sort((a, b) => b.total - a.total);
 }
 
@@ -552,3 +706,47 @@ export function computeDiffFromLastRun(session, currentSnapshot, totalErrors, to
     warning_delta: totalWarnings - (prev.total_warnings ?? 0),
   };
 }
+
+/**
+ * Get the list of translation file paths from the project map.
+ * @param {object} projectMap - project indexing result
+ * @returns {string[]} relative paths like 'app/translations/en.yml'
+ */
+export function getTranslationFilePaths(projectMap) {
+  return Object.keys(projectMap.translations || {}).map(
+    locale => `app/translations/${locale}.yml`
+  );
+}
+
+/**
+ * Find all .liquid files that would be affected if a translation file has errors.
+ * Translation file errors (e.g., missing locale key, mismatched keys across locales)
+ * cause TranslationKeyExists failures on any file that references keys from that locale.
+ *
+ * @param {string} translationFilePath - e.g., 'app/translations/en.yml'
+ * @param {object} projectMap - project indexing result
+ * @returns {Set<string>} relative paths of files that depend on this translation file
+ */
+export function filesAffectedByTranslationFile(translationFilePath, projectMap) {
+  const affected = new Set();
+  const locale = translationFilePath.match(/\/(\w+)\.yml$/)?.[1];
+  if (!locale) return affected;
+
+  // Collect all files that use translation keys — these depend on the translation file
+  const allFiles = [
+    ...Object.values(projectMap.pages || {}),
+    ...Object.values(projectMap.partials || {}),
+    ...Object.values(projectMap.commands || {}),
+    ...Object.values(projectMap.queries || {}),
+  ];
+
+  for (const file of allFiles) {
+    // If file has any translation key references, it depends on the translation file
+    if (file.translation_keys && file.translation_keys.length > 0) {
+      affected.add(file.path);
+    }
+  }
+
+  return affected;
+}
+

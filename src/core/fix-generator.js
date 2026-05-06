@@ -11,7 +11,7 @@
 import { walk, NodeTypes } from '@platformos/liquid-html-parser';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { extractVarName } from './objects-index.js';
+import { extractParams } from './diagnostic-record.js';
 import { isShopifyObject, isShopifyFilter } from './knowledge-loader.js';
 import { offsetToLineCol, lineColToOffset, slugFromPath } from './position-utils.js';
 import { POSITION_FUZZY_TOLERANCE } from './constants.js';
@@ -271,24 +271,13 @@ function findFilterAt(filterIndex, line, col, filterName) {
   return null;
 }
 
-// ── Extract names from diagnostic messages ──────────────────────────────────
-
-function extractFilterName(message) {
-  if (!message) return null;
-  const m = message.match(/`([^`]+)`/) || message.match(/"([^"]+)"/) || message.match(/'([^']+)'/);
-  return m ? m[1] : null;
-}
-
-function extractPartialPath(message) {
-  if (!message) return null;
-  const m = message.match(/['"`]([^'"`]+)['"`]/);
-  return m ? m[1] : null;
-}
+// Extraction functions (extractFilterName, extractPartialPath) have been
+// centralized into diagnostic-record.js extractParams(). See roadmap §A2.
 
 // ── Fix handlers per check type ─────────────────────────────────────────────
 
 function fixUndefinedObject(diagnostic, varIndex, isPartialLike, objectsIndex) {
-  const varName = extractVarName(diagnostic.message);
+  const varName = extractParams(diagnostic.check, diagnostic.message).variable ?? null;
   if (!varName) return null;
 
   // Shopify object — don't suggest a platformOS replacement (semantic mismatch)
@@ -339,7 +328,7 @@ function fixUndefinedObject(diagnostic, varIndex, isPartialLike, objectsIndex) {
 }
 
 function fixUnknownFilter(diagnostic, filterIndex, filtersIndex, tagsIndex) {
-  const filterName = extractFilterName(diagnostic.message);
+  const filterName = extractParams(diagnostic.check, diagnostic.message).filter ?? null;
   if (!filterName) return null;
 
   // Tag-as-filter (highest priority)
@@ -386,21 +375,8 @@ function fixUnknownFilter(diagnostic, filterIndex, filtersIndex, tagsIndex) {
 }
 
 function fixMissingPartial(diagnostic, projectDir, ast, content) {
-  const partialPath = extractPartialPath(diagnostic.message);
+  const partialPath = extractParams(diagnostic.check, diagnostic.message).partial ?? null;
   if (!partialPath) return null;
-
-  // Determine the correct directory based on the partial path
-  let targetPath;
-  let fileType = 'partial';
-  if (partialPath.startsWith('commands/') || partialPath.startsWith('lib/commands/')) {
-    targetPath = `app/lib/commands/${partialPath.replace(/^(lib\/)?commands\//, '')}.liquid`;
-    fileType = 'command';
-  } else if (partialPath.startsWith('queries/') || partialPath.startsWith('lib/queries/')) {
-    targetPath = `app/lib/queries/${partialPath.replace(/^(lib\/)?queries\//, '')}.liquid`;
-    fileType = 'query';
-  } else {
-    targetPath = `app/views/partials/${partialPath}.liquid`;
-  }
 
   // Module paths: never create_file — agent cannot create files inside installed modules
   if (partialPath.startsWith('modules/')) {
@@ -414,6 +390,36 @@ function fixMissingPartial(diagnostic, projectDir, ast, content) {
       type: 'guidance',
       description: `\`${partialPath}\` cannot be resolved. Call project_map to see installed modules and their available paths.`,
     };
+  }
+
+  // Invalid `lib/` prefix on a function call. `function` tag paths resolve
+  // from the partial search paths (`app/views/partials/`, `app/lib/`), not
+  // project root, so `lib/commands/X` expands to `app/lib/lib/commands/X`
+  // which never exists. Emit a text_edit that strips the prefix; do NOT
+  // propose creating a phantom file at `app/lib/lib/...`.
+  if (partialPath.startsWith('lib/commands/') || partialPath.startsWith('lib/queries/')) {
+    const corrected = partialPath.slice('lib/'.length);
+    const edit = buildLibPrefixTextEdit(diagnostic, partialPath, corrected, content);
+    if (edit) return edit;
+    return {
+      type: 'guidance',
+      description:
+        `Drop the \`lib/\` prefix from \`${partialPath}\`. Function tag paths resolve from ` +
+        `\`app/lib/\`, so use \`${corrected}\` instead.`,
+    };
+  }
+
+  // Determine the correct directory based on the partial path
+  let targetPath;
+  let fileType = 'partial';
+  if (partialPath.startsWith('commands/')) {
+    targetPath = `app/lib/${partialPath}.liquid`;
+    fileType = 'command';
+  } else if (partialPath.startsWith('queries/')) {
+    targetPath = `app/lib/${partialPath}.liquid`;
+    fileType = 'query';
+  } else {
+    targetPath = `app/views/partials/${partialPath}.liquid`;
   }
 
   // Check if file already exists — if so, don't suggest creating it again
@@ -435,6 +441,42 @@ function fixMissingPartial(diagnostic, projectDir, ast, content) {
     path: targetPath,
     scaffold,
     description: `Create missing file: \`${targetPath}\``,
+  };
+}
+
+/**
+ * Build a `text_edit` fix that strips the invalid `lib/` prefix from a
+ * `function` tag call. Returns null if the diagnostic lacks the position
+ * fields the edit needs (line/column/endColumn).
+ *
+ * Quote handling: when `content` is available, peek at the source byte
+ * under `diagnostic.column` and re-emit with the same quote style the user
+ * wrote (`'` or `"`). Otherwise fall back to single-quote, which is the
+ * convention everywhere in platformOS templates and our scaffolds.
+ */
+function buildLibPrefixTextEdit(diagnostic, partialPath, corrected, content) {
+  if (diagnostic.line == null || diagnostic.column == null || diagnostic.endColumn == null) {
+    return null;
+  }
+  let quote = "'";
+  if (typeof content === 'string') {
+    const lines = content.split('\n');
+    const sourceLine = lines[diagnostic.line];
+    if (typeof sourceLine === 'string' && diagnostic.column < sourceLine.length) {
+      const ch = sourceLine[diagnostic.column];
+      if (ch === "'" || ch === '"') quote = ch;
+    }
+  }
+  return {
+    type: 'text_edit',
+    range: {
+      start: { line: diagnostic.line, character: diagnostic.column },
+      end: { line: diagnostic.endLine ?? diagnostic.line, character: diagnostic.endColumn },
+    },
+    new_text: `${quote}${corrected}${quote}`,
+    description:
+      `Drop invalid \`lib/\` prefix — function tag paths resolve from \`app/lib/\`. ` +
+      `Replace \`${partialPath}\` with \`${corrected}\`.`,
   };
 }
 
@@ -1118,65 +1160,82 @@ function fixInvalidFrontMatter(diagnostic, content) {
 }
 
 function extractLayoutPath(message) {
-  const match = message?.match(/`([^`]+)`.*not found/);
-  if (!match) return 'app/views/layouts/application.html.liquid';
-  return `app/views/layouts/${match[1]}.html.liquid`;
+  // The structural emitter (`validateLayout` in structural-warnings.js) has
+  // access to projectDir and detects whether the project standardised on
+  // `.liquid` or `.html.liquid` for layouts. It bakes the full expected
+  // file path into the message ("Expected file: `app/views/layouts/X.liquid`"),
+  // so the right thing here is to lift that path verbatim — never re-derive.
+  const expected = message?.match(/Expected file:\s*`([^`]+)`/);
+  if (expected) return expected[1];
+
+  // Defensive fallback: only used when the message shape changes upstream.
+  // We bias toward `.liquid` (the modern shape) and ignore module layouts —
+  // an agent shouldn't be creating files inside an installed module anyway.
+  const layoutName = message?.match(/`([^`]+)`.*not found/)?.[1];
+  return layoutName ? `app/views/layouts/${layoutName}.liquid` : 'app/views/layouts/application.liquid';
 }
 
+/**
+ * Heuristic fix for TranslationKeyExists.
+ *
+ * Scope (intentionally narrow): produce an actionable text_edit when the
+ * upstream LSP message contains a "Did you mean 'X'" suggestion AND we
+ * can locate the offending quoted key on the diagnostic's line. This is
+ * a complement to the rule-engine `TranslationKeyExists.suggest_nearest`
+ * — the rule emits guidance, the heuristic emits the diff.
+ *
+ * Cases the rule engine OWNS (heuristic must NOT duplicate):
+ *   - `foo[0]` array-index misuse → `TranslationKeyExists.array_index_misuse`
+ *   - generic Levenshtein guidance text → `TranslationKeyExists.suggest_nearest`
+ *
+ * Returning null means "no heuristic fix available" — the rule fix (if any)
+ * stands alone. This is the correct behavior when we can't produce an
+ * actionable edit.
+ */
 function fixTranslationKeyExists(diagnostic, content) {
   const msg = diagnostic.message || '';
-  // v0.3.3+ includes Levenshtein suggestion: "Did you mean 'correct.key'?"
-  const suggestMatch = msg.match(/[Dd]id you mean\s+['"`]([^'"`]+)['"`]/);
-  if (!suggestMatch) {
-    return {
-      type: 'guidance',
-      description: 'Translation key not found. Add it to app/translations/en.yml, or check for typos in the key name.',
-    };
-  }
-
-  const suggestedKey = suggestMatch[1];
-  // Extract the wrong key from the message
   const wrongKeyMatch = msg.match(/['"`]([^'"`]+)['"`]/);
   const wrongKey = wrongKeyMatch ? wrongKeyMatch[1] : null;
 
-  if (!wrongKey || wrongKey === suggestedKey) {
-    return {
-      type: 'guidance',
-      description: `Did you mean \`${suggestedKey}\`? Fix the translation key.`,
-    };
-  }
+  // Array-index misuse is owned by the rule engine. Don't emit guidance
+  // here — it would duplicate (and risk diverging from) the rule's hint.
+  if (wrongKey && /\[\d+\]/.test(wrongKey)) return null;
 
-  // Find the wrong key string at the diagnostic position
-  const lines = content.split('\n');
-  const line = lines[diagnostic.line];
-  if (!line) {
-    return {
-      type: 'guidance',
-      description: `Replace translation key \`${wrongKey}\` with \`${suggestedKey}\`.`,
-    };
-  }
-
-  // Look for the wrong key as a quoted string in the line
-  const keyPatterns = [`'${wrongKey}'`, `"${wrongKey}"`];
-  for (const pattern of keyPatterns) {
-    const idx = line.indexOf(pattern);
-    if (idx >= 0) {
-      const quote = pattern[0];
-      return {
-        type: 'text_edit',
-        range: {
-          start: { line: diagnostic.line, character: idx },
-          end: { line: diagnostic.line, character: idx + pattern.length },
-        },
-        new_text: `${quote}${suggestedKey}${quote}`,
-        description: `Replace \`${wrongKey}\` with \`${suggestedKey}\``,
-      };
+  // When the LSP message carries a "did you mean 'X'" suggestion AND we can
+  // locate the quoted key on the line, produce a text_edit. This is the
+  // ONLY case where the heuristic outranks rule guidance, because text_edits
+  // are actionable diffs the rule layer cannot produce.
+  const suggestMatch = msg.match(/[Dd]id you mean\s+['"`]([^'"`]+)['"`]/);
+  if (suggestMatch && wrongKey && wrongKey !== suggestMatch[1]) {
+    const suggestedKey = suggestMatch[1];
+    const lines = content.split('\n');
+    const line = lines[diagnostic.line];
+    if (line) {
+      for (const pattern of [`'${wrongKey}'`, `"${wrongKey}"`]) {
+        const idx = line.indexOf(pattern);
+        if (idx >= 0) {
+          const quote = pattern[0];
+          return {
+            type: 'text_edit',
+            range: {
+              start: { line: diagnostic.line, character: idx },
+              end: { line: diagnostic.line, character: idx + pattern.length },
+            },
+            new_text: `${quote}${suggestedKey}${quote}`,
+            description: `Replace \`${wrongKey}\` with \`${suggestedKey}\``,
+          };
+        }
+      }
     }
   }
 
+  // Generic guidance is the safety net for the case where the rule engine
+  // is not registered / facts are missing. In normal operation the merge
+  // loop in validate-code.js DROPS this guidance because the rule engine
+  // produces an attributed equivalent. See the precedence comment there.
   return {
     type: 'guidance',
-    description: `Replace translation key \`${wrongKey}\` with \`${suggestedKey}\`.`,
+    description: 'Translation key not found. Add it to app/translations/en.yml, or check for typos in the key name.',
   };
 }
 
@@ -1325,10 +1384,18 @@ export function generateFixes(diagnostics, ast, content, filePath, ctx, projectD
 
     if (!fix) continue;
 
+    // I1 — rule attribution for heuristic fixes. Tagging once here keeps every
+    // per-check branch above free of boilerplate. The emit loop propagates this
+    // into the proposed_fixes.rule_id column so Rule Performance can attribute
+    // adoption to a specific heuristic variant (heuristic:<Check>.<fix_type>).
+    if (!fix.rule_id) {
+      fix.rule_id = `heuristic:${d.check ?? 'Unknown'}.${fix.type ?? 'fix'}`;
+    }
+
     if (fix.type === 'add_doc_param') {
       docParamFixes.push({ index: i, ...fix });
       // Attach per-diagnostic fix reference
-      diagnosticFixes.set(i, { type: 'add_doc_param', description: fix.description, param_name: fix.param_name });
+      diagnosticFixes.set(i, { type: 'add_doc_param', description: fix.description, param_name: fix.param_name, rule_id: fix.rule_id });
     } else {
       diagnosticFixes.set(i, fix);
       // Deduplicate: don't add identical fixes

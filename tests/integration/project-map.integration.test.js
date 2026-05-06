@@ -98,7 +98,7 @@ describe('project_map — full scope', () => {
     const result = await server.callTool('project_map', { scope: 'full' });
     expect(result.summary.file_counts.schema).toBe(1);
     expect(result.summary.file_counts.graphql).toBe(4);
-    expect(result.summary.file_counts.pages).toBe(2);
+    expect(result.summary.file_counts.pages).toBe(3);
     expect(result.summary.file_counts.assets).toBeGreaterThan(0);
   });
 

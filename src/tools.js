@@ -69,15 +69,42 @@ export function createToolRegistry(ctx, mcpServer = null) {
 
     // Wrap handler with timing telemetry + session tracking
     const timedHandler = async (args) => {
+      // Dashboard-originated calls (e.g. Live Diagnostic Console) must NOT
+      // pollute agent-activity surfaces: File Validation Map, Activity log,
+      // tool stats, bigram sequences, or NDJSON session log. The sentinel is
+      // stripped before the raw handler runs so tool logic never sees it.
+      const untracked = args?._source === 'dashboard_live';
+      let cleanArgs = args;
+      if (args && typeof args === 'object' && '_source' in args) {
+        const { _source, ...rest } = args;
+        cleanArgs = rest;
+      }
+
+      if (untracked) {
+        // `ctx.untracked = true` is read by tool handlers that emit directly
+        // to sessionBus (currently validate-code.js → `validator_emit`). The
+        // flag is transient — restore the previous value in a finally so a
+        // tool handler that happens to trigger another tool mid-flight does
+        // not lose state. Single-threaded event loop: concurrent calls
+        // already share ctx, so this is consistent with existing practice.
+        const prevUntracked = ctx.untracked;
+        ctx.untracked = true;
+        try {
+          return await rawHandler(cleanArgs);
+        } finally {
+          ctx.untracked = prevUntracked;
+        }
+      }
+
       const start = Date.now();
       let success = true;
       try {
-        const result = await rawHandler(args);
+        const result = await rawHandler(cleanArgs);
         const durationMs = Date.now() - start;
-        ctx.emit?.('tool_call', { tool: tool.name, durationMs, success, input: args, output: result });
+        ctx.emit?.('tool_call', { tool: tool.name, durationMs, success, input: cleanArgs, output: result });
 
         // Session tracking (non-blocking, best-effort)
-        try { updateSession(ctx.session, tool.name, args, result); } catch (e) { ctx.log?.(`Session tracking error: ${e.message}`); }
+        try { updateSession(ctx.session, tool.name, cleanArgs, result); } catch (e) { ctx.log?.(`Session tracking error: ${e.message}`); }
 
         // Tool avoidance detection: if there's a validated plan with unvalidated files
         // and the agent is calling tools other than validation, add an advisory note
@@ -98,7 +125,7 @@ export function createToolRegistry(ctx, mcpServer = null) {
       } catch (e) {
         success = false;
         const durationMs = Date.now() - start;
-        ctx.emit?.('tool_call', { tool: tool.name, durationMs, success, input: args, error: e.message });
+        ctx.emit?.('tool_call', { tool: tool.name, durationMs, success, input: cleanArgs, error: e.message });
         throw e;
       }
     };
@@ -182,6 +209,8 @@ function updateSession(session, toolName, args, result) {
     const fp           = args.file_path;
     const errorCount   = result?.errors?.length   ?? 0;
     const warningCount = result?.warnings?.length ?? 0;
+    const currentChecks = [...(result?.errors ?? []), ...(result?.warnings ?? [])]
+      .map(d => d.check).filter(Boolean);
     const prev = session.fileHistory.get(fp);
 
     if (prev) {
@@ -191,14 +220,31 @@ function updateSession(session, toolName, args, result) {
       } else {
         prev.consecutiveNonDecreasing = 0;
       }
+      // Track per-check effectiveness (fixed vs stuck between consecutive calls)
+      if (session.checkEffectiveness && prev.lastChecks?.length) {
+        const prevSet = new Set(prev.lastChecks);
+        const curSet = new Set(currentChecks);
+        for (const check of prevSet) {
+          if (!session.checkEffectiveness[check]) session.checkEffectiveness[check] = { fixed: 0, stuck: 0 };
+          if (curSet.has(check)) {
+            session.checkEffectiveness[check].stuck++;
+          } else {
+            session.checkEffectiveness[check].fixed++;
+          }
+        }
+      }
+      prev.prevChecks       = prev.lastChecks || [];
       prev.lastErrorCount   = errorCount;
       prev.lastWarningCount = warningCount;
+      prev.lastChecks       = currentChecks;
     } else {
       session.fileHistory.set(fp, {
         calls: 1,
         lastErrorCount: errorCount,
         lastWarningCount: warningCount,
         consecutiveNonDecreasing: 0,
+        lastChecks: currentChecks,
+        prevChecks: [],
       });
     }
 
@@ -209,5 +255,56 @@ function updateSession(session, toolName, args, result) {
     if (session.validatedPlan && result?.status !== 'error') {
       session.validatedPlan.validatedFiles.add(fp);
     }
+  }
+
+  // Track scaffold runs for quality scoring
+  if (toolName === 'scaffold' && result?.files && session.scaffoldRuns) {
+    session.scaffoldRuns.push({
+      ts: new Date().toISOString(),
+      model: args?.model,
+      type: args?.type,
+      files: result.files.map(f => f.path || f).filter(Boolean),
+      written: result.written || [],
+    });
+  }
+
+  // Track enrich_error calls for hint effectiveness scoring (A2)
+  if (toolName === 'enrich_error' && args?.file_path && args?.check_name) {
+    session.enrichHistory.push({
+      file: args.file_path,
+      check: args.check_name,
+      ts: Date.now(),
+    });
+  }
+
+  // Compute hint effectiveness: when validate_code runs, check if previously
+  // enriched checks for that file got fixed (A2)
+  if (toolName === 'validate_code' && args?.file_path && session.enrichHistory.length) {
+    const fp = args.file_path;
+    const currentCheckSet = new Set(
+      [...(result?.errors ?? []), ...(result?.warnings ?? [])].map(d => d.check).filter(Boolean)
+    );
+    const consumed = [];
+    for (let i = 0; i < session.enrichHistory.length; i++) {
+      const eh = session.enrichHistory[i];
+      if (eh.file !== fp) continue;
+      consumed.push(i);
+      if (!session.hintEffectiveness[eh.check]) {
+        session.hintEffectiveness[eh.check] = { hinted: 0, fixedAfterHint: 0 };
+      }
+      session.hintEffectiveness[eh.check].hinted++;
+      if (!currentCheckSet.has(eh.check)) {
+        session.hintEffectiveness[eh.check].fixedAfterHint++;
+      }
+    }
+    // Remove consumed entries (reverse order to preserve indices)
+    for (let i = consumed.length - 1; i >= 0; i--) {
+      session.enrichHistory.splice(consumed[i], 1);
+    }
+  }
+
+  // Store pipeline trace if present (D2 — pipeline inspector)
+  if (toolName === 'validate_code' && args?.file_path && result?._pipelineTrace) {
+    session.pipelineTraces.set(args.file_path, result._pipelineTrace);
   }
 }

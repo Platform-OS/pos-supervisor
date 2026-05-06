@@ -1,6 +1,6 @@
-# pos-module-core -- Configuration Reference
+# pos-module-core — Configuration
 
-This document covers installation, setup, and configuration options for the core module.
+> Compatible with pos-cli 6.0.7+ (modernized canonical syntax).
 
 ## Installation
 
@@ -8,141 +8,162 @@ This document covers installation, setup, and configuration options for the core
 pos-cli modules install core
 ```
 
-This creates the `modules/core/` directory in your project. This directory is **read-only** -- never edit files inside `modules/core/` directly.
+This creates `modules/core/` in your project. The directory is **read-only**
+— never edit files inside `modules/core/` directly. To customize, override
+under `app/modules/core/public/...`.
 
 ### Verify installation
 
-After installing and deploying, confirm the module is available:
-
-```liquid
-{% function test = 'modules/core/commands/build', object: null %}
-{% log test, type: 'debug' %}
+```bash
+ls modules/core/pos-module.json
 ```
 
-If you see output in logs without errors, the module is installed correctly.
+The manifest reports `version`, `name`, and `dependencies: {}` (core has no
+module deps). Re-run `pos-cli modules version core` if `template-values.json`
+drifts from `pos-module.json`.
 
-## Directory Structure
+## Live Module Layout (2.1.8)
 
 ```
-modules/core/                          # READ-ONLY -- installed module code
+modules/core/
+  pos-module.json
+  template-values.json           # mirror of pos-module.json (sync via `pos-cli modules version`)
+  generators/
+    command/templates/           # used by `pos-cli generators run command`
+    crud/templates/              # used by `pos-cli generators run crud`
   public/
     lib/
       commands/
-        build.liquid                   # Construct object hash
-        check.liquid                   # Validate with validators array
-        execute.liquid                 # Run GraphQL mutation
-        events/
-          publish.liquid               # Publish an event
-        session/
-          get.liquid                   # Get session value
-          set.liquid                   # Set session value
-          clear.liquid                 # Clear session value
+        execute.liquid                    # the only top-level command runner
+        session/{get,set,clear}.liquid
+        events/{create,broadcast,publish}.liquid
+        events/create/{build,check,execute}.liquid
+        email/send.liquid
+        email/send/{build,check}.liquid
+        statuses/{create,delete}.liquid
+        statuses/{create,delete}/{build,check}.liquid
+        variable/set.liquid
+        hook/{alter,fire}.liquid
+      queries/
+        registry/, hook/, events/, statuses/, headscripts/, variable/,
+        constants/, module/
       helpers/
-        redirect_to.liquid             # Redirect with flash
-        flash/
-          publish.liquid               # Set flash message
-      validators/
-        presence.liquid
-        numericality.liquid
-        uniqueness.liquid
-        length.liquid
-        format.liquid
-        inclusion.liquid
-        confirmation.liquid
+        redirect_to.liquid
+        flash.liquid
+        timezone/...
+        register_error.liquid           # appends an error to a contract
+      validations/
+        presence, length, number, date, email, is_url, matches, equal,
+        uniqueness, included, elements_included, unique_elements,
+        each_element_length, password_complexity, hcaptcha, truthy,
+        not_null, exist_in_db, valid_object
+      events/                  # subscriber stubs for the shipped event types
+    schema/
+      status.yml
+    translations/
+      en.yml
+    views/                              # admin pages, layouts, partials
 ```
+
+There is NO `commands/build.liquid` or `commands/check.liquid` exposed by
+core — those phases are inline files of YOUR command (siblings of your
+`execute.liquid` under `app/lib/commands/<feature>/`).
 
 ## Overriding Module Files
 
-The `modules/core/` directory is read-only. To customize behavior, copy the specific file to the `app/modules/core/` mirror path:
+The override path mirrors the module tree under `app/modules/core/public/`:
 
 ```bash
 # Example: override the presence validator
-mkdir -p app/modules/core/public/lib/validators
-cp modules/core/public/lib/validators/presence.liquid \
-   app/modules/core/public/lib/validators/presence.liquid
+mkdir -p app/modules/core/public/lib/validations
+cp modules/core/public/lib/validations/presence.liquid \
+   app/modules/core/public/lib/validations/presence.liquid
 ```
 
-The file at `app/modules/core/public/...` takes precedence over the one in `modules/core/public/...`.
+The file at `app/modules/core/public/...` takes precedence over the
+shipped one. Override sparingly — keep diffs minimal so module updates
+don't conflict.
 
-**Rule:** Only override what you need. Keep overrides minimal to avoid breaking updates.
+## Validator Calling Convention
 
-## Validator Configuration
-
-Validators are configured as a JSON array passed to `check`. Each entry has:
-
-| Property   | Type   | Required | Description                                |
-|------------|--------|----------|--------------------------------------------|
-| `name`     | String | Yes      | Validator name (e.g., `presence`)          |
-| `property` | String | Yes      | Field name on the object to validate       |
-| `options`  | Hash   | No       | Validator-specific options                 |
-
-### Validator options reference
-
-| Validator      | Option         | Type    | Description                            |
-|----------------|----------------|---------|----------------------------------------|
-| `length`       | `minimum`      | Integer | Minimum string length                  |
-| `length`       | `maximum`      | Integer | Maximum string length                  |
-| `numericality` | `greater_than` | Number  | Value must be greater than this        |
-| `numericality` | `less_than`    | Number  | Value must be less than this           |
-| `format`       | `pattern`      | String  | Regex pattern the value must match     |
-| `inclusion`    | `values`       | Array   | Allowed values list                    |
-| `uniqueness`   | `table`        | String  | Table name to check uniqueness against |
-| `uniqueness`   | `scope`        | Array   | Additional fields for scoped uniqueness|
-| `confirmation` | `field`        | String  | Name of the confirmation field         |
-
-### Example: full validator array
+Validators are invoked individually with named parameters; chain them in
+your check partial. There is NO config-driven JSON-array form.
 
 ```liquid
-{% assign validators = [
-  { "name": "presence", "property": "title" },
-  { "name": "presence", "property": "email" },
-  { "name": "length", "property": "title", "options": { "minimum": 3, "maximum": 255 } },
-  { "name": "numericality", "property": "price", "options": { "greater_than": 0 } },
-  { "name": "format", "property": "email", "options": { "pattern": "^[^@]+@[^@]+\\.[^@]+$" } },
-  { "name": "uniqueness", "property": "slug", "options": { "table": "product" } },
-  { "name": "inclusion", "property": "status", "options": { "values": ["draft", "published", "archived"] } },
-  { "name": "confirmation", "property": "password" }
-] %}
-```
+{% comment %} app/lib/commands/products/create/check.liquid {% endcomment %}
+{% liquid
+  assign c = object.errors | default: empty
 
-## Session Configuration
+  function c = 'modules/core/lib/validations/presence',
+    c: c, field_name: 'title', object: object
 
-Session helpers use platformOS built-in session storage. No additional configuration is needed.
+  function c = 'modules/core/lib/validations/length',
+    c: c, field_name: 'title', object: object, min: 3, max: 255
 
-| Function      | Key Parameter | Description                       |
-|---------------|---------------|-----------------------------------|
-| `session/get` | `key`         | Retrieve a value from session     |
-| `session/set` | `key`, `value`| Store a value in session          |
-| `session/clear`| `key`        | Remove a value from session       |
+  function c = 'modules/core/lib/validations/number',
+    c: c, field_name: 'price', object: object, gt: 0
 
-The `sflash` key is the conventional key used for flash messages (session-flash).
+  function c = 'modules/core/lib/validations/matches',
+    c: c, field_name: 'sku', object: object,
+    regexp: '^[A-Z]{2,4}-[0-9]{4}$', allow_blank: true
 
-## Flash Message Configuration
+  function c = 'modules/core/lib/validations/uniqueness',
+    c: c, field_name: 'slug', object: object, table: 'product'
 
-The flash system uses `sflash` session key by convention. The `from` parameter on `session/set` ensures the flash auto-clears after display:
+  function c = 'modules/core/lib/validations/equal',
+    c: c, field_name: 'password', object: object, to: 'password_confirmation'
 
-```liquid
-{% function _ = 'modules/core/commands/session/set',
-  key: 'sflash', value: 'Record saved', from: context.location.pathname
+  function c = 'modules/core/lib/validations/included',
+    c: c, field_name: 'status', object: object, in: ['draft','published','archived']
+
+  assign object.errors = c
+  assign object.valid  = c == empty
+  return object
 %}
 ```
 
+See api.md for the full validator inventory + each validator's option set.
+
+## Session Storage
+
+Session helpers use the platformOS built-in session store; no extra config.
+
+| Function          | Description                       |
+|-------------------|-----------------------------------|
+| `session/get`     | Retrieve a value                  |
+| `session/set`     | Store a value (`from:` for flash) |
+| `session/clear`   | Remove a value                    |
+
+The `sflash` key is the conventional flash-message slot.
+
+## Flash Message Configuration
+
+```liquid
+{% function _ = 'modules/core/commands/session/set',
+   key: 'sflash', value: 'Record saved.',
+   from: context.location.pathname %}
+```
+
+The `from` value lets the flash auto-clear when the next request comes
+from a different origin.
+
 ## Dependencies
 
-pos-module-core has no module dependencies. It is the base module that all others depend on.
+`pos-module-core` has no module dependencies. It is the base module the
+rest of the ecosystem composes on:
 
-| Module               | Depends on core? |
-|----------------------|------------------|
-| pos-module-user      | Yes              |
-| pos-module-payments  | Yes              |
-| pos-module-tests     | Yes              |
-| pos-module-chat      | Yes              |
-| pos-module-openai    | Yes              |
+| Module                 | Depends on core |
+|------------------------|------------------|
+| `pos-module-user`      | Yes              |
+| `pos-module-common-styling` | No (peer)   |
+| `pos-module-payments`  | Yes              |
+| `pos-module-tests`     | Yes (dev only)   |
+| `pos-module-oauth_github` | Yes (via user) |
 
 ## See Also
 
-- [Core Overview](README.md) -- introduction and key concepts
-- [Core API](api.md) -- all available functions and helpers
-- [Core Patterns](patterns.md) -- real-world usage patterns
-- [Core Gotchas](gotchas.md) -- common errors and limits
-- [Core Advanced](advanced.md) -- custom validators and overrides
+- [Core Overview](README.md)
+- [Core API](api.md)
+- [Core Patterns](patterns.md)
+- [Core Gotchas](gotchas.md)
+- [Core Advanced](advanced.md)

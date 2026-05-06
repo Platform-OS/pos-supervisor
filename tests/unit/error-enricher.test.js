@@ -97,13 +97,13 @@ describe('MissingPartial hint template resolution', () => {
     const diagnostic = {
       check: 'MissingPartial',
       severity: 'error',
-      message: "Missing partial 'lib/commands/products/create'",
+      message: "Missing partial 'commands/products/create'",
       line: 3,
       column: 3,
     };
     const result = await enrichError(diagnostic, {
       uri: 'file:///app/views/pages/test.html.liquid',
-      content: "---\nslug: test\n---\n{% function result = 'lib/commands/products/create', params: context.params %}",
+      content: "---\nslug: test\n---\n{% function result = 'commands/products/create', params: context.params %}",
     });
 
     expect(result.hint).toContain('command');
@@ -116,18 +116,50 @@ describe('MissingPartial hint template resolution', () => {
     const diagnostic = {
       check: 'MissingPartial',
       severity: 'error',
-      message: "Missing partial 'lib/queries/products/search'",
+      message: "Missing partial 'queries/products/search'",
       line: 3,
       column: 3,
     };
     const result = await enrichError(diagnostic, {
       uri: 'file:///app/views/pages/test.html.liquid',
-      content: "---\nslug: test\n---\n{% function result = 'lib/queries/products/search', query_params: context.params %}",
+      content: "---\nslug: test\n---\n{% function result = 'queries/products/search', query_params: context.params %}",
     });
 
     expect(result.hint).toContain('query');
     expect(result.hint).toContain('app/lib/queries/products/search.liquid');
     expect(result.hint).toContain('function');
+    expect(result.hint).not.toContain('{{');
+  });
+
+  it('flags `lib/` prefix as invalid and points at the corrected path', async () => {
+    // Regression: the `lib/commands/X` and `lib/queries/X` forms used to be
+    // accepted as valid call forms in our hints/data — they aren't. The
+    // upstream resolver searches `app/views/partials/` and `app/lib/`, so a
+    // literal `lib/` prefix expands to `app/lib/lib/...` and never resolves.
+    // The enricher must surface this distinctly, with the corrected path
+    // (no phantom `app/lib/lib/...`) and a "drop the prefix" message —
+    // never a "create the file" message.
+    const diagnostic = {
+      check: 'MissingPartial',
+      severity: 'error',
+      message: "'lib/commands/products/create' does not exist",
+      line: 3,
+      column: 3,
+    };
+    const result = await enrichError(diagnostic, {
+      uri: 'file:///app/views/pages/test.html.liquid',
+      content: "---\nslug: test\n---\n{% function result = 'lib/commands/products/create', params: context.params %}",
+    });
+
+    expect(result.hint).toContain('lib/commands/products/create');
+    expect(result.hint).toContain('commands/products/create');
+    // Corrected disk path — the single-`lib/` resolution
+    expect(result.hint).toContain('app/lib/commands/products/create.liquid');
+    // Variant must not be the create-file template — the issue is the path
+    // syntax, not a missing file
+    expect(result.hint).not.toMatch(/STEP 2 — Create/);
+    // Hint must call out the prefix as invalid (the fix is to drop it)
+    expect(result.hint).toMatch(/lib\/[^\s]+ is not a valid path|drop the `lib\/` prefix/i);
     expect(result.hint).not.toContain('{{');
   });
 

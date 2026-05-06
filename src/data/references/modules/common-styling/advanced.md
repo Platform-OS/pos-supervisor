@@ -1,203 +1,202 @@
-# modules/common-styling - Advanced Customization
+# modules/common-styling — Advanced Topics
 
-## Theme Customization
+> Compatible with pos-cli 6.0.7+ (modernized canonical class names).
 
-### CSS Variables Override
-Customize the theme by overriding CSS variables:
+## Theme Customization via Design Tokens
 
-```scss
-// app/assets/styles/theme.scss
+The shipped CSS exposes its tokens as CSS custom properties under
+`pos-config.css`. Override them in your own stylesheet to retheme without
+touching the framework files:
 
-:root {
-  --pos-primary-color: #007bff;
-  --pos-secondary-color: #6c757d;
-  --pos-success-color: #28a745;
-  --pos-danger-color: #dc3545;
-  --pos-warning-color: #ffc107;
-  --pos-info-color: #17a2b8;
-
-  --pos-text-primary: #212529;
-  --pos-text-secondary: #6c757d;
-  --pos-background: #ffffff;
-  --pos-border-color: #dee2e6;
+```css
+/* app/assets/theme.css — loaded AFTER common-styling/init */
+.pos-app {
+  --pos-color-light-page-background: #fafafa;
+  --pos-color-light-content-background: #fff;
+  --pos-color-light-content-text: #1a1a1a;
+  --pos-color-light-frame: #e6e6e6;
+  --pos-gap-section-section: 3rem;
+  --pos-gap-text-text: 0.75rem;
 }
 ```
 
-### Dark Mode Support
-Implement dark mode:
+Wire it up:
 
-```scss
-@media (prefers-color-scheme: dark) {
-  :root {
-    --pos-background: #1e1e1e;
-    --pos-text-primary: #f0f0f0;
-    --pos-text-secondary: #b0b0b0;
-    --pos-border-color: #404040;
-  }
+```liquid
+{% comment %} layout <head>, AFTER init render {% endcomment %}
+{% render 'modules/common-styling/init' %}
+<link rel="stylesheet" href="{{ 'theme.css' | asset_url }}">
+```
+
+Inspect `modules/common-styling/public/assets/style/pos-config.css` for
+the canonical token list. Token naming pattern:
+`--pos-color-{light|dark}-{role}` and `--pos-gap-{from-to}`.
+
+## Dark Mode
+
+The module ships dark variants automatically. Activate at the root:
+
+```html
+<!-- system-preference auto-switching -->
+<html class="pos-app pos-theme-darkEnabled">
+
+<!-- forced dark -->
+<html class="pos-app pos-theme-dark">
+```
+
+The dark token set parallels the light one (`--pos-color-dark-*`). To
+customize dark, override in a `[class~="pos-theme-dark"]` selector:
+
+```css
+.pos-theme-dark.pos-app,
+.pos-theme-darkEnabled.pos-app {
+  --pos-color-dark-content-background: #0d0d0d;
+  --pos-color-dark-content-text: #e8e8e8;
 }
 ```
 
-## Custom Component Creation
+## Extending Components
 
-### Extending Components
-Create custom component variants:
+Components are partials + classes. To add a custom variant:
 
-```scss
-// app/assets/styles/components.scss
+1. Add a class in your own stylesheet that COMPOSES the shipped class.
+2. Use it alongside the shipped class.
 
-.pos-btn-custom {
-  @extend .pos-btn;
-  background-color: var(--pos-primary-color);
+```css
+.my-button-cta {
+  /* compose with pos-button rules */
+  background: linear-gradient(135deg,
+    var(--pos-color-light-accent),
+    var(--pos-color-light-accent-2));
+  letter-spacing: 0.05em;
   text-transform: uppercase;
-  letter-spacing: 1px;
-
-  &:hover {
-    background-color: darken(var(--pos-primary-color), 10%);
-  }
 }
 ```
 
-### Component Mixins
-Create reusable component styles:
+```html
+<button class="pos-button pos-button-primary my-button-cta">
+  Get Started
+</button>
+```
 
-```scss
-@mixin pos-card-variant($bg, $border) {
-  background-color: $bg;
-  border-color: $border;
+Don't use SCSS `@extend .pos-button` — the shipped CSS is plain CSS with
+custom properties; SCSS toolchain may not be present.
 
-  .pos-card-header {
-    background-color: darken($bg, 5%);
-  }
+## Custom Card Variants
+
+Cards are render-with-extras: pass extra classes to the partial via
+your own wrapper:
+
+```liquid
+<div class="my-premium-card">
+  {% render 'modules/common-styling/content/card',
+     url: '/x', title: 'Premium', content: '…',
+     highlighted: true %}
+</div>
+```
+
+```css
+.my-premium-card .pos-card-content-title {
+  color: var(--pos-color-light-accent);
 }
-
-.pos-card-premium {
-  @include pos-card-variant(#f8f9fa, #dee2e6);
+.my-premium-card .pos-card-highlighted {
+  border-color: var(--pos-color-light-accent);
 }
 ```
 
 ## Responsive Design
 
-### Breakpoints
-Use framework breakpoints:
+The module ships NO grid system, NO `pos-col-*`. Use native CSS Grid /
+Flexbox with media queries:
 
-```scss
-$pos-breakpoints: (
-  'xs': 0,
-  'sm': 576px,
-  'md': 768px,
-  'lg': 992px,
-  'xl': 1200px
-);
-
+```css
+.section-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--pos-gap-section-section);
+}
 @media (min-width: 768px) {
-  .pos-col-md-6 {
-    width: 50%;
+  .section-grid {
+    grid-template-columns: 2fr 1fr;
   }
 }
 ```
 
-### Mobile-First Approach
-Build mobile designs first:
-
 ```html
-<div class="pos-container">
-  <div class="pos-row">
-    <div class="pos-col-12 pos-col-md-6">
-      Full width on mobile, half on desktop
-    </div>
-    <div class="pos-col-12 pos-col-md-6">
-      Full width on mobile, half on desktop
-    </div>
-  </div>
+<div class="section-grid">
+  {% render 'modules/common-styling/content/card', ... %}
+  {% render 'modules/common-styling/content/card', ... %}
 </div>
 ```
 
-## Animation and Transitions
+## Transitions / Animations
 
-### Add Smooth Transitions
-```scss
-.pos-btn {
-  transition: all 0.3s ease-in-out;
-}
+The shipped CSS already animates a few interactive components (toasts on
+load/unload, dialogs, collapsibles). For your own work:
 
+```css
 .pos-card {
-  transition: box-shadow 0.3s ease;
-
-  &:hover {
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  }
+  transition: box-shadow 200ms ease;
+}
+.pos-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
 ```
 
-### Custom Animations
-```scss
-@keyframes slideIn {
-  from {
-    opacity: 0;
-    transform: translateX(-20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
+Toast load animation:
 
-.pos-alert {
-  animation: slideIn 0.3s ease-out;
-}
+```html
+<div class="pos-toast pos-toast-success">Saved.</div>
+<!-- when hiding -->
+<div class="pos-toast pos-toast-success pos-toast-unloading">Saved.</div>
 ```
 
-## Performance Optimization
+## Overriding Shipped Partials
 
-### Lazy Loading Components
-Load heavy components on demand:
+To customize a shipped partial, copy it to the module-override mirror:
+
+```bash
+mkdir -p app/modules/common-styling/public/views/partials/content
+cp modules/common-styling/public/views/partials/content/card.liquid \
+   app/modules/common-styling/public/views/partials/content/card.liquid
+```
+
+Edit the override; it shadows the shipped one when consumers `{% render
+'modules/common-styling/content/card', ... %}`.
+
+Keep overrides minimal — diverging too far from upstream means painful
+module upgrades.
+
+## Asset Performance
+
+Add `?v={hash}` cache-busting via `asset_url`:
 
 ```liquid
-{% if show_advanced_ui %}
-  {% render 'modules/common-styling/components/advanced-form' %}
-{% endif %}
+<link rel="stylesheet" href="{{ 'custom.css' | asset_url }}">
 ```
 
-### CSS Purging
-Remove unused styles in production:
+`asset_url` already appends a content-hash query parameter. Don't add
+your own.
 
-```yml
-# platformos.yml
-assets:
-  purge:
-    enabled: true
-    content:
-      - 'app/**/*.liquid'
-      - 'app/**/*.html'
-```
+## Accessibility
 
-## Accessibility Enhancements
-
-### Semantic HTML
-Use proper semantic elements:
+The shipped components ship with sane semantic markup (`<button>` for
+interactive, `aria-*` where required, `role="alert"` on alerts via the
+content/alert partial). When composing by hand, preserve these:
 
 ```html
-<button class="pos-btn pos-btn-primary" aria-label="Submit form">
-  Submit
-</button>
-
-<div class="pos-alert pos-alert-info" role="alert">
-  Important information
-</div>
+<button class="pos-button pos-button-primary"
+        aria-label="Submit form">Submit</button>
 ```
 
-### Color Contrast
-Ensure sufficient contrast:
-
-```scss
-.pos-btn-primary {
-  background-color: #0062cc; // WCAG AAA compliant
-  color: #ffffff;
-}
-```
+For alerts, prefer the partial — it sets `role="alert"` and the icon for
+you.
 
 ## See Also
-- configuration.md - Basic setup
-- api.md - Component reference
-- patterns.md - Common patterns
-- gotchas.md - Common mistakes
+
+- [README](README.md)
+- [API](api.md)
+- [Configuration](configuration.md)
+- [Patterns](patterns.md)
+- [Gotchas](gotchas.md)
+- [Prerequisites](prerequisites.md)

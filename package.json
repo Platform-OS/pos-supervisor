@@ -1,6 +1,6 @@
 {
   "name": "@platformos/pos-supervisor",
-  "version": "0.5.2",
+  "version": "0.7.3",
   "description": "platformOS domain-specific MCP server for LLM agents",
   "type": "module",
   "bin": {
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@platformos/liquid-html-parser": "^0.0.11",
+    "@platformos/liquid-html-parser": "^0.0.17",
     "js-yaml": "^4.1.1",
     "zod": "^4.3.6"
   },

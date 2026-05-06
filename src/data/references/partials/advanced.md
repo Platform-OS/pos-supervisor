@@ -50,7 +50,7 @@ Use function partials to return configuration hashes:
 ```
 
 ```liquid
-{% function nav_items = 'lib/config/navigation' %}
+{% function nav_items = 'config/navigation' %}
 {% for item in nav_items %}
   {% assign label = item.label | t %}
   {% render 'shared/nav_link', label: label, url: item.url %}
@@ -93,7 +93,7 @@ Function partials (commands, helpers) are testable via pos-module-tests:
 
 ```liquid
 {% comment %} app/lib/tests/helpers/format_price_test.liquid {% endcomment %}
-{% function result = 'lib/helpers/format_price', amount: 19.99, currency: 'USD' %}
+{% function result = 'helpers/format_price', amount: 19.99, currency: 'USD' %}
 {% function contract = 'modules/tests/assertions/equal', contract: contract, given: result, expected: '$19.99' %}
 {% return contract %}
 ```

@@ -15,13 +15,14 @@
  *   - Missing slug in pages
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { walk, NodeTypes, NamedTags } from '@platformos/liquid-html-parser';
 import { isShopifyObject, isShopifyFilter, getShopifyObject, getShopifyTag } from './knowledge-loader.js';
 import { getDomainFromPath } from './domain-detector.js';
 import { offsetToLineCol, slugFromPath } from './position-utils.js';
+import { classifyGraphqlSourceKind } from './liquid-parser.js';
 
 const HTML_NODE_TYPES = new Set([
   NodeTypes.HtmlElement,
@@ -66,10 +67,18 @@ export function generateStructuralWarnings(ast, content, filePath, structural, e
   const warnings = [];
   const domain = getDomainFromPath(filePath);
 
-  // 1. HTML in pages — pages should be controller-only (no inline HTML)
+  // 1. HTML in pages — pages should be controller-only (no inline HTML).
+  //    Guard: if the page composes partials via {% render %}, the HTML is
+  //    usually incidental glue (landing layouts, section wrappers) rather
+  //    than a violation. The check had 100% regression in the 2026-04-23
+  //    DEMO report because it fired on exactly this pattern. Suppress when
+  //    at least one partial is rendered — the composite-page case.
   if (domain === 'pages') {
-    const htmlWarning = detectHtmlInPage(ast, content);
-    if (htmlWarning) warnings.push(htmlWarning);
+    const rendersPartials = Array.isArray(structural?.renders_used) && structural.renders_used.length > 0;
+    if (!rendersPartials) {
+      const htmlWarning = detectHtmlInPage(ast, content);
+      if (htmlWarning) warnings.push(htmlWarning);
+    }
   }
 
   // 2. Shopify objects in variable output not caught by linter
@@ -101,6 +110,16 @@ export function generateStructuralWarnings(ast, content, filePath, structural, e
     if (gqlWarning) warnings.push(gqlWarning);
   }
 
+  // 6b. Multi-line `{% graphql %}` continuation inside `{% liquid %}` block.
+  //     Both liquid-html-parser and pos-cli's LSP truncate the call at the
+  //     first newline-comma — every named arg past it is silently dropped.
+  //     LSP then fires `GraphQLVariablesCheck.required` for each missing
+  //     arg, the agent sees the args in source and gets stuck in a fix
+  //     spiral. Surface the structural cause once per call.
+  //     (Reproduced in DEMO 2026-04-27, 4 emits / 100 % regression.)
+  const truncationWarnings = detectGraphqlMultilineTruncation(ast, content);
+  warnings.push(...truncationWarnings);
+
   // 7. Layout validation — referenced layout must exist on disk
   if (domain === 'pages' && structural?.layout && options.projectDir) {
     const layoutWarning = validateLayout(structural.layout, content, options.projectDir);
@@ -119,6 +138,17 @@ export function generateStructuralWarnings(ast, content, filePath, structural, e
     if (methodWarning) warnings.push(methodWarning);
   }
 
+  // 9b. Page method / form-target sanity. Three distinct misconfigurations:
+  //     html_on_post (non-GET page renders HTML), api_renders_html (API-pathed
+  //     page is non-GET but emits HTML or lacks `format: json`), and
+  //     get_form_target (GET page hosts a `<form method="post">` whose action
+  //     points at a non-API slug). All three share a check name so analytics
+  //     stay aggregated by symptom; the rule layer routes by message subtype.
+  if (domain === 'pages') {
+    const pageWarnings = validatePageMethodAndForms(structural, content);
+    warnings.push(...pageWarnings);
+  }
+
   // 10. Front matter key validation — unknown/misleading keys, missing slug
   if (domain === 'pages') {
     const fmWarnings = validateFrontMatterKeys(content, filePath);
@@ -131,11 +161,12 @@ export function generateStructuralWarnings(ast, content, filePath, structural, e
     if (returnWarning) warnings.push(returnWarning);
   }
 
-  // 12. Missing {% doc %} block in commands — undocumented parameters
-  if (domain === 'commands') {
-    const docWarning = detectMissingDocBlock(content, structural, domain);
-    if (docWarning) warnings.push(docWarning);
-  }
+  // 12. (Removed per plan B1.5 — 2026-04-23.)
+  //     MissingDocBlock previously also fired on commands but the production
+  //     sample was 10% resolution / 40% regression: most internal command
+  //     files are utility helpers or one-shot scripts with no caller-facing
+  //     contract. Keeping the check on partials only — where a missing doc
+  //     block is unambiguously a defect because renders need @param signals.
 
   // 13. Missing {{ content_for_layout }} in layouts — page content won't render
   if (domain === 'layouts') {
@@ -201,6 +232,41 @@ function detectGraphqlInPartial(ast, content) {
 }
 
 /**
+ * Detect `{% graphql %}` calls inside a `{% liquid %}` block written with a
+ * comma + newline continuation. Both liquid-html-parser and pos-cli's LSP
+ * truncate the call at the first newline-comma — `markup.args` ends up
+ * empty and LSP fires `GraphQLVariablesCheck.required` for every named arg
+ * that follows. The agent sees the args in source and is misled by the
+ * resulting "add the variable" hint into a regression spiral.
+ *
+ * Surfaced as `error` severity because the call WILL fail at runtime: every
+ * arg past the first newline is dropped, so the GraphQL operation receives
+ * no values for required variables.
+ */
+function detectGraphqlMultilineTruncation(ast, content) {
+  const warnings = [];
+  walk(ast, (node) => {
+    if (node.type !== NodeTypes.LiquidTag || node.name !== NamedTags.graphql) return;
+    if (classifyGraphqlSourceKind(node) !== 'liquid_multiline_truncated') return;
+    const pos = node.position
+      ? offsetToLineCol(content, node.position.start)
+      : { line: 0, character: 0 };
+    warnings.push({
+      check: 'pos-supervisor:GraphqlMultilineInLiquidBlock',
+      severity: 'error',
+      message:
+        'Multi-line `{% graphql %}` call inside a `{% liquid %}` block: the parser truncates ' +
+        'the call at the first newline-comma, so every named argument past it is silently ' +
+        'dropped at runtime. Move to single-line tag form: `{% graphql result = \'op\', name: value, ... %}`, ' +
+        'or keep it inside the block but place every `name: value` argument on the same line as `graphql`.',
+      line: pos.line,
+      column: pos.character,
+    });
+  });
+  return warnings;
+}
+
+/**
  * Detect commands without a {% return %} tag.
  * Commands should return a result object.
  */
@@ -238,17 +304,21 @@ function detectMissingContentForLayout(content) {
  * They should document their expected parameters.
  */
 function detectMissingDocBlock(content, structural, domain) {
+  // Scoped to partials only — commands were producing a high false-positive
+  // rate in production (utility commands, one-shot scripts, private helpers
+  // with no external callers). See call site comment and plan B1.5.
+  if (domain !== 'partials') return null;
+
   // Has {% doc %} block (parsed by liquid-html-parser as LiquidRawTag 'doc')
   if (structural?.tags_used?.includes('doc')) return null;
 
   // Has @prompt in a comment block (older convention)
   if (/@prompt\s*:/m.test(content)) return null;
 
-  const label = domain === 'commands' ? 'Command' : 'Partial';
   return {
     check: 'pos-supervisor:MissingDocBlock',
     severity: 'warning',
-    message: `${label} is missing a \`{% doc %}\` block. Document expected parameters so callers know what variables to pass. Example: \`{% doc %} @param title {string} Card title {% enddoc %}\`.`,
+    message: `Partial is missing a \`{% doc %}\` block. Document expected parameters so callers know what variables to pass. Example: \`{% doc %} @param title {string} Card title {% enddoc %}\`.`,
     line: 0,
     column: 0,
   };
@@ -467,9 +537,16 @@ function validateLayout(layoutName, content, projectDir) {
   if (found) return null;
 
   const line = findFrontmatterLine(content, 'layout');
+  // Pick the right extension by sampling existing layouts in the project.
+  // Hardcoding `.html.liquid` (the previous behaviour) creates files at the
+  // wrong path in any project that has standardised on the bare `.liquid`
+  // suffix — the agent applies the create_file proposal, the file lands in
+  // the wrong place, and the original error never resolves. The DEMO
+  // failure pattern was exactly this.
+  const ext = detectLayoutExtension(projectDir, moduleMatch?.[1]);
   const expectedPath = moduleMatch
-    ? `modules/${moduleMatch[1]}/public/views/layouts/${moduleMatch[2]}.html.liquid`
-    : `app/views/layouts/${layoutName}.html.liquid`;
+    ? `modules/${moduleMatch[1]}/public/views/layouts/${moduleMatch[2]}${ext}`
+    : `app/views/layouts/${layoutName}${ext}`;
   return {
     check: 'pos-supervisor:InvalidLayout',
     severity: 'warning',
@@ -477,6 +554,37 @@ function validateLayout(layoutName, content, projectDir) {
     line: line >= 0 ? line : 0,
     column: 0,
   };
+}
+
+/**
+ * Pick the layout-file extension convention the project already uses.
+ * Walks the relevant layouts directory once, counts each suffix variant,
+ * returns the dominant one. Falls back to `.liquid` (the modern shape) when
+ * no layouts exist on disk yet — that biases toward the more compact suffix
+ * which has been the default in scaffolds since pos-cli 6.x.
+ *
+ * `moduleName` is set when the missing layout itself is a module path,
+ * in which case we look at the module's layouts dir; otherwise we look at
+ * the top-level `app/views/layouts/`.
+ */
+function detectLayoutExtension(projectDir, moduleName = null) {
+  if (!projectDir) return '.liquid';
+  const dir = moduleName
+    ? join(projectDir, 'modules', moduleName, 'public', 'views', 'layouts')
+    : join(projectDir, 'app', 'views', 'layouts');
+  let entries;
+  try { entries = readdirSync(dir, { recursive: true }); }
+  catch { return '.liquid'; }
+
+  let html = 0;
+  let bare = 0;
+  for (const entry of entries) {
+    if (typeof entry !== 'string') continue;
+    if (entry.endsWith('.html.liquid')) html += 1;
+    else if (entry.endsWith('.liquid')) bare += 1;
+  }
+  if (html === 0 && bare === 0) return '.liquid';
+  return html > bare ? '.html.liquid' : '.liquid';
 }
 
 const VALID_METHODS = new Set(['get', 'post', 'put', 'delete', 'patch']);
@@ -510,6 +618,230 @@ function validateMethod(method, content) {
     line: line >= 0 ? line : 0,
     column: 0,
   };
+}
+
+/**
+ * Flag pages whose `method` is non-GET but whose body clearly renders
+ * HTML / uses a layout. On platformOS these pages will not respond to
+ * browser navigation — GET requests get a 404. The agent's usual mistake
+ * pattern is `method: post` on a landing page that includes forms; the
+ * correct shape is `method: get` (or omit) with the form POSTing to a
+ * command endpoint.
+ *
+ * Intentionally permissive: if the page is clearly an API endpoint
+ * (returns JSON, slug under /api/, filename suggests an action), skip
+ * the warning. Trust the developer when the signal is strong.
+ */
+/**
+ * Detect three distinct page-method / form-target misconfigurations.
+ *
+ * Routing rules (mirror the gist analysis: NonGetRenderingPageRule.md, 2026-04-27):
+ *   1. method != GET, slug under /api/, /_/, /internal/, AND (HTML present
+ *      OR `format: json` is missing) → api_renders_html. The endpoint is
+ *      labelled API by slug convention but is leaking HTML to clients that
+ *      expect JSON, OR forgetting the explicit format header.
+ *   2. method != GET, slug NOT api-pathed, page renders HTML (layout,
+ *      partials, output, or HTML tags) → html_on_post. Browser GET → 404
+ *      because the page only handles POST/PUT/PATCH/DELETE.
+ *   3. method == GET (or omitted), body contains `<form method="post" action="...">`
+ *      whose action does NOT start with /api/, /_/, /internal/, AND is not
+ *      the page's own slug (self-post is a separate sanctioned pattern) →
+ *      get_form_target. Submitting the form will fail unless the action
+ *      target is itself a `method: post` page; the canonical fix is to
+ *      route through an API slug.
+ *
+ * Subtype is encoded as the leading clause of the diagnostic message so the
+ * rule layer can route by regex without an extractor.
+ */
+function validatePageMethodAndForms(structural, content) {
+  const warnings = [];
+  if (!structural || typeof content !== 'string') return warnings;
+
+  const method = (structural.method || '').toLowerCase();
+  const slug = normalizePageSlug(structural.slug);
+  const isApiSlug = isApiPath(slug);
+  const methodLine = findFrontmatterLine(content, 'method');
+  const formatHeader = parseFormatHeader(content);
+
+  const hasLayout = isExplicitLayout(structural?.layout);
+  const rendersPartials = Array.isArray(structural?.renders_used) && structural.renders_used.length > 0;
+  const hasOutput = /\{\{/.test(content);
+  const hasHtmlTags = /<(html|body|div|main|section|article|form|h[1-6]|p|ul|ol|nav|header|footer)\b/i.test(content);
+  // For non-API pages any output expression counts as HTML rendering — the
+  // default format IS html, so `{{ x }}` becomes a visible page body. For
+  // API pages with `format: json`, bare `{{ result | json }}` is the
+  // canonical response body and explicitly NOT HTML rendering. Use a
+  // tighter signal there: only layout / partials / HTML tags count.
+  const looksLikeUiPage = hasLayout || rendersPartials || hasOutput || hasHtmlTags;
+  const apiHasHtmlSignal = hasLayout || rendersPartials || hasHtmlTags;
+
+  if (method && method !== 'get' && ['post', 'put', 'delete', 'patch'].includes(method)) {
+    if (isApiSlug) {
+      // (1) api_renders_html — fires when the API page either emits HTML
+      // (layout, partials, HTML tags — but NOT bare `{{ }}` output, which
+      // is the intended JSON serialization) OR forgets `format: json`.
+      // Both are silent breakage modes for an endpoint that callers
+      // expect to consume as JSON.
+      if (apiHasHtmlSignal || formatHeader !== 'json') {
+        const symptom = apiHasHtmlSignal
+          ? `it renders HTML${hasLayout ? ` (layout: \`${structural.layout}\`)` : ' (layout, partials, or HTML tags)'}`
+          : `\`format: json\` is missing — without it the page defaults to HTML`;
+        warnings.push({
+          check: 'pos-supervisor:NonGetRenderingPage',
+          severity: 'warning',
+          message:
+            `API page (slug \`${slug}\`) has \`method: ${method}\` but ${symptom}. ` +
+            `Pages under \`/api/\`, \`/_/\`, or \`/internal/\` must return JSON: ` +
+            `set \`format: json\` in front matter, drop the layout, and emit the response with ` +
+            `\`{% graphql ... %}\` + \`{{ result | json }}\`.`,
+          line: methodLine >= 0 ? methodLine : 0,
+          column: 0,
+        });
+      }
+    } else if (looksLikeUiPage) {
+      // (2) html_on_post — non-API page that won't serve any browser
+      // navigation because the verb is wrong.
+      warnings.push({
+        check: 'pos-supervisor:NonGetRenderingPage',
+        severity: 'warning',
+        message:
+          `Page has \`method: ${method}\` but renders HTML (layout, partials, or \`{{ ... }}\` output). ` +
+          `Browser GETs to this URL return 404 — only ${method.toUpperCase()} requests reach the handler. ` +
+          `If this page should display content, remove the \`method\` field (defaults to \`get\`). ` +
+          `If it's a form endpoint, move the handler to \`app/lib/commands/\` and have the form ` +
+          `\`POST\` to an API slug.`,
+        line: methodLine >= 0 ? methodLine : 0,
+        column: 0,
+      });
+    }
+  }
+
+  // (3) get_form_target — fires only on GET pages (or pages with no method,
+  // which default to GET). Walks every `<form method="post" action="...">`
+  // in the body and flags non-API actions that don't self-post. Inline
+  // forms that omit `method` default to GET in HTML and are NOT flagged
+  // (no submission risk).
+  if ((method === '' || method === 'get') && content) {
+    for (const form of parsePostForms(content)) {
+      if (!form.action) continue;
+      if (isApiPath(form.action)) continue;
+      if (selfPosts(form.action, slug)) continue;
+      warnings.push({
+        check: 'pos-supervisor:NonGetRenderingPage',
+        severity: 'warning',
+        message:
+          `Form on GET page posts to \`${form.action}\`. Action paths outside \`/api/\`, \`/_/\`, or ` +
+          `\`/internal/\` must correspond to a page with \`method: post\` (or matching verb). The canonical ` +
+          `pattern is to point form actions at an API slug — set \`<form action="/api/${stripLeadingSlash(form.action)}" method="post">\` ` +
+          `and create \`app/views/pages/api/${stripLeadingSlash(form.action)}.liquid\` with \`method: post\` + ` +
+          `\`format: json\`.`,
+        line: form.line,
+        column: form.column,
+      });
+    }
+  }
+
+  return warnings;
+}
+
+/**
+ * Normalize a slug to the canonical leading-slash form for routing checks.
+ * Empty / null input returns '' so `isApiPath('')` is well-defined.
+ */
+function normalizePageSlug(slug) {
+  if (typeof slug !== 'string') return '';
+  let s = slug.trim().toLowerCase();
+  if (!s) return '';
+  if (!s.startsWith('/')) s = `/${s}`;
+  return s;
+}
+
+/**
+ * Internal-API path heuristic. Mirrors the convention documented in the
+ * platformOS Contact-Form tutorial and the linked NonGetRenderingPageRule
+ * gist analysis: `/api/`, `/_/`, `/internal/` (case-insensitive).
+ */
+function isApiPath(path) {
+  if (typeof path !== 'string' || !path) return false;
+  const p = path.startsWith('/') ? path : `/${path}`;
+  return /^\/(api|_|internal)\//i.test(p);
+}
+
+/**
+ * Extract the `format:` frontmatter header (lowercased), or null when not set.
+ * The page's `format` is not currently parsed by `extractAllFromAST`, so we
+ * peek at the YAML head directly. Quote stripping mirrors the `layout:`
+ * extractor in liquid-parser.
+ */
+function parseFormatHeader(content) {
+  const m = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!m) return null;
+  const fm = m[1].match(/^format:\s*(.+?)\s*$/m);
+  if (!fm) return null;
+  return fm[1].replace(/^(['"])(.*)\1$/, '$2').trim().toLowerCase() || null;
+}
+
+/**
+ * Layout truthiness for HTML detection. Treat empty strings, `false`, `null`,
+ * and missing values as "no layout"; everything else counts as an HTML wrap.
+ */
+function isExplicitLayout(layout) {
+  if (layout === undefined || layout === null) return false;
+  if (typeof layout === 'boolean') return layout === true;
+  if (typeof layout !== 'string') return false;
+  const trimmed = layout.trim();
+  if (!trimmed) return false;
+  if (trimmed === 'false' || trimmed === 'null') return false;
+  return true;
+}
+
+/**
+ * Walk the raw content for `<form ... method="post" ... action="..."` (in
+ * either attribute order) and return `{ action, line, column }` for each.
+ * Stays attribute-order-independent because authors flip them frequently.
+ * Single quotes, double quotes, and unquoted attribute values are accepted.
+ */
+function parsePostForms(content) {
+  const out = [];
+  // Accept method= and action= in either order; require both. Allow other
+  // attributes (id, class, data-*) interleaved.
+  const formRe = /<form\b([^>]*)>/gi;
+  let m;
+  while ((m = formRe.exec(content)) !== null) {
+    const attrs = m[1] || '';
+    const methodMatch = attrs.match(/\bmethod\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))/i);
+    if (!methodMatch) continue;
+    const methodVal = (methodMatch[1] ?? methodMatch[2] ?? methodMatch[3] ?? '').toLowerCase();
+    if (!['post', 'put', 'patch', 'delete'].includes(methodVal)) continue;
+    const actionMatch = attrs.match(/\baction\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))/i);
+    if (!actionMatch) continue;
+    const action = (actionMatch[1] ?? actionMatch[2] ?? actionMatch[3] ?? '').trim();
+    if (!action) continue;
+    const offset = m.index;
+    const before = content.slice(0, offset);
+    const line = (before.match(/\n/g) || []).length;
+    const column = offset - (before.lastIndexOf('\n') + 1);
+    out.push({ action, line, column });
+  }
+  return out;
+}
+
+/**
+ * True when `formAction` resolves to the same URL the page itself serves —
+ * i.e. the page is a self-post (form on the page submits back to the same
+ * slug, which then handles the POST). Self-post is a sanctioned
+ * platformOS pattern (the page must be `method: post` to receive it, but
+ * that's a separate concern handled by html_on_post).
+ */
+function selfPosts(formAction, pageSlug) {
+  if (!formAction || !pageSlug) return false;
+  const a = formAction.toLowerCase().replace(/^\/+/, '').replace(/\/+$/, '');
+  const s = pageSlug.toLowerCase().replace(/^\/+/, '').replace(/\/+$/, '');
+  return a === s;
+}
+
+function stripLeadingSlash(s) {
+  return typeof s === 'string' ? s.replace(/^\/+/, '') : s;
 }
 
 /**

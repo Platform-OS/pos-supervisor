@@ -92,6 +92,8 @@ export const moduleInfoTool = {
           name,
           version: scan.version,
           dependencies: scan.dependencies,
+          ...(scan.manifest_source ? { manifest_source: scan.manifest_source } : {}),
+          ...(scan.manifest_warnings ? { manifest_warnings: scan.manifest_warnings } : {}),
           section: 'api',
           // Live scan is the source of truth — every entry includes call_syntax,
           // required_params, optional_params, and returns when the doc block
@@ -114,6 +116,8 @@ export const moduleInfoTool = {
         name,
         version: scan.version,
         dependencies: scan.dependencies,
+        ...(scan.manifest_source ? { manifest_source: scan.manifest_source } : {}),
+        ...(scan.manifest_warnings ? { manifest_warnings: scan.manifest_warnings } : {}),
         section,
         reference: refDoc || `No ${section} documentation available for module '${name}'.`,
         // Include API surface for quick context
@@ -169,6 +173,8 @@ async function buildOverview(name, scan) {
     display_name: scan.display_name,
     version: scan.version,
     dependencies: scan.dependencies,
+    ...(scan.manifest_source ? { manifest_source: scan.manifest_source } : {}),
+    ...(scan.manifest_warnings ? { manifest_warnings: scan.manifest_warnings } : {}),
     installed: true,
 
     // Required setup steps — always surfaced when docs exist so agents don't miss prerequisites

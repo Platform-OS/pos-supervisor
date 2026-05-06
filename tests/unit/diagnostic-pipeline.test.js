@@ -7,6 +7,7 @@ import {
   suppressByPending,
   buildPendingPartialNames,
   buildPendingPageKeys,
+  stampDefaultsOn,
 } from '../../src/core/diagnostic-pipeline.js';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -244,6 +245,79 @@ describe('diagnostic-pipeline: pending suppression via runDiagnosticPipeline', (
       pendingFiles: ['app/views/partials/different.liquid'],
     });
     expect(result.errors).toHaveLength(1);
+  });
+});
+
+// ── verifyMissingPartialsOnDisk: lib/-prefix correctness ────────────────────
+//
+// Regression: the resolver used to strip a leading `lib/` before the disk
+// check, which routed `lib/commands/X` to `app/lib/commands/X.liquid` and
+// silently suppressed the LSP's correct MissingPartial when that bare-form
+// file existed. Net effect: the agent saw "no problem" while platformOS
+// would 500 at runtime because `lib/commands/X` resolves to
+// `app/lib/lib/commands/X.liquid` (the partial search paths are
+// `app/views/partials/` and `app/lib/`, not project root). The resolver
+// now mirrors upstream `DocumentsLocator` exactly — no prefix stripping —
+// so the LSP error survives all the way to the agent.
+
+describe('diagnostic-pipeline: verifyMissingPartialsOnDisk does not strip `lib/` prefix', () => {
+  let tmpDir;
+
+  beforeAll(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'pipeline-libpref-'));
+    mkdirSync(join(tmpDir, 'app/lib/commands/contacts'), { recursive: true });
+    writeFileSync(
+      join(tmpDir, 'app/lib/commands/contacts/create.liquid'),
+      '{% doc %}{% enddoc %}',
+      'utf8',
+    );
+    mkdirSync(join(tmpDir, 'app/views/partials/cards'), { recursive: true });
+    writeFileSync(
+      join(tmpDir, 'app/views/partials/cards/product.liquid'),
+      '<div></div>',
+      'utf8',
+    );
+  });
+
+  afterAll(() => { if (tmpDir) rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('suppresses MissingPartial for the bare `commands/X` form when X.liquid is on disk (LSP cache lag)', () => {
+    const result = makeResult([
+      { check: 'MissingPartial', severity: 'error', message: "'commands/contacts/create' does not exist" },
+    ]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/contacts/new.html.liquid', content: '', projectDir: tmpDir });
+    expect(result.errors).toHaveLength(0);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPartialSuppressed')).toBe(true);
+  });
+
+  it('does NOT suppress MissingPartial for the `lib/commands/X` form — the `lib/` prefix expands to `app/lib/lib/...`', () => {
+    const result = makeResult([
+      { check: 'MissingPartial', severity: 'error', message: "'lib/commands/contacts/create' does not exist" },
+    ]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/contacts/new.html.liquid', content: '', projectDir: tmpDir });
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toContain('lib/commands/contacts/create');
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPartialSuppressed')).toBe(false);
+  });
+
+  it('does NOT suppress MissingPartial for the `lib/queries/X` form even when the bare-form file exists on disk', () => {
+    mkdirSync(join(tmpDir, 'app/lib/queries/products'), { recursive: true });
+    writeFileSync(join(tmpDir, 'app/lib/queries/products/find.liquid'), '{% doc %}{% enddoc %}', 'utf8');
+    const result = makeResult([
+      { check: 'MissingPartial', severity: 'error', message: "'lib/queries/products/find' does not exist" },
+    ]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/products/show.html.liquid', content: '', projectDir: tmpDir });
+    expect(result.errors).toHaveLength(1);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPartialSuppressed')).toBe(false);
+  });
+
+  it('still suppresses real partial cache-lag misses (non-`lib/` paths)', () => {
+    const result = makeResult([
+      { check: 'MissingPartial', severity: 'error', message: "'cards/product' does not exist" },
+    ]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/index.html.liquid', content: '', projectDir: tmpDir });
+    expect(result.errors).toHaveLength(0);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPartialSuppressed')).toBe(true);
   });
 });
 
@@ -568,6 +642,364 @@ describe('verifyOrphanedPartialOnDisk via runDiagnosticPipeline', () => {
       content: '',
       projectDir: tmpDir,
     });
+    expect(result.warnings).toHaveLength(1);
+  });
+});
+
+// ── populateDefaultConfidence (A2) ──────────────────────────────────────────
+
+describe('diagnostic-pipeline: populateDefaultConfidence', () => {
+  it('stamps severity-based defaults when the rule engine left confidence unset', () => {
+    const result = makeResult(
+      [{ check: 'UndefinedObject', severity: 'error', message: 'foo' }],
+      [{ check: 'UnusedAssign', severity: 'warning', message: 'bar' }],
+      [{ check: 'InfoOnly', severity: 'info', message: 'baz' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].confidence).toBe(0.9);
+    expect(result.warnings[0].confidence).toBe(0.7);
+    expect(result.infos[0].confidence).toBe(0.5);
+  });
+
+  it('does not overwrite a confidence value that the rule engine already set', () => {
+    const result = makeResult(
+      [{ check: 'UndefinedObject', severity: 'error', message: 'foo', confidence: 0.42 }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].confidence).toBe(0.42);
+  });
+
+  it('stamps structural default for pos-supervisor: prefixed checks', () => {
+    const result = makeResult(
+      [],
+      [{ check: 'pos-supervisor:RemovedRender', severity: 'warning', message: 'removed' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.warnings[0].confidence).toBe(0.75);
+  });
+
+  it('runs after suppression — items removed from result never gain a default', () => {
+    const result = makeResult(
+      [],
+      [{ check: 'MissingPartial', severity: 'warning', message: "Missing partial 'notes/show'" }],
+    );
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/pages/x.liquid',
+      content: '',
+      pendingFiles: ['app/views/partials/notes/show.liquid'],
+    });
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('falls back to warning-level confidence when severity is unset or unknown', () => {
+    const result = makeResult(
+      [],
+      [{ check: 'Weirdo', message: 'no severity' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.warnings[0].confidence).toBe(0.7);
+  });
+
+  // ── A4: rule_id fallback ───────────────────────────────────────────────
+  it('stamps rule_id as `${check}.unmatched` when no rule fired', () => {
+    const result = makeResult(
+      [{ check: 'UndefinedObject', severity: 'error', message: 'foo' }],
+      [{ check: 'UnusedAssign', severity: 'warning', message: 'bar' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].rule_id).toBe('UndefinedObject.unmatched');
+    expect(result.warnings[0].rule_id).toBe('UnusedAssign.unmatched');
+  });
+
+  it('preserves rule_id set by the rule engine', () => {
+    const result = makeResult(
+      [{ check: 'UndefinedObject', severity: 'error', message: 'foo', rule_id: 'UndefinedObject.context_user' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].rule_id).toBe('UndefinedObject.context_user');
+  });
+
+  it('falls back to `unknown.unmatched` when the diagnostic has no check name', () => {
+    const result = makeResult(
+      [],
+      [{ severity: 'warning', message: 'orphan' }],
+    );
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.warnings[0].rule_id).toBe('unknown.unmatched');
+  });
+});
+
+// ── stampDefaultsOn: post-pipeline stamping (confidence-bug fix) ─────────────
+
+describe('stampDefaultsOn: late-push diagnostics get default confidence', () => {
+  it('stamps diagnostics added AFTER runDiagnosticPipeline has already run', () => {
+    const result = makeResult([{ check: 'UnknownFilter', severity: 'error', message: 'x' }]);
+    runDiagnosticPipeline(result, { filePath: 'app/views/pages/x.liquid', content: '' });
+    expect(result.errors[0].confidence).toBe(0.9);
+
+    // Simulate a late push — e.g. structural-warnings / schema validator.
+    result.warnings.push({
+      check: 'pos-supervisor:HtmlInPage',
+      severity: 'warning',
+      message: 'HTML in page',
+    });
+    // Without the fix the late row would stay at confidence: null.
+    stampDefaultsOn(result);
+    expect(result.warnings[0].confidence).toBe(0.75);           // structural default
+    expect(result.warnings[0].rule_id).toBe('pos-supervisor:HtmlInPage.unmatched');
+  });
+
+  it('is idempotent — re-stamping does not overwrite existing values', () => {
+    const result = makeResult([
+      { check: 'UnknownFilter', severity: 'error', message: 'x', confidence: 0.42, rule_id: 'UnknownFilter.typo' },
+    ]);
+    stampDefaultsOn(result);
+    expect(result.errors[0].confidence).toBe(0.42);
+    expect(result.errors[0].rule_id).toBe('UnknownFilter.typo');
+  });
+});
+
+// ── suppressLspKnownFalsePositives ──────────────────────────────────────────
+//
+// Pins the LSP "Syntax is not supported" suppression on `assign x = a <op> b`
+// boolean comparisons. Upstream pos-cli LSP rejects this construct even
+// though `pos-cli check run` and the platformOS Liquid parser both accept
+// it. Without the suppression, agents are forced to rewrite valid code as a
+// multi-line if/else just to clear the must_fix_before_write gate.
+
+describe('diagnostic-pipeline: suppressLspKnownFalsePositives', () => {
+  function syntaxErr(line, message = 'Syntax is not supported') {
+    return { check: 'LiquidHTMLSyntaxError', severity: 'error', line, message };
+  }
+
+  it('suppresses the LSP false positive on `assign x = a == b` when the file parses cleanly', () => {
+    const content = [
+      '{% doc %}',
+      '  @param {object} object',
+      '{% enddoc %}',
+      '{% liquid',
+      '  assign c = object.errors | default: empty',
+      '  assign object.valid = c == empty',
+      '  return object',
+      '%}',
+    ].join('\n');
+
+    const result = makeResult([syntaxErr(6)]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/lib/commands/contacts/create/check.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const info = result.infos.find(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed');
+    expect(info).toBeDefined();
+    expect(info.message).toContain('line(s) 6');
+    expect(info.message).toContain('@platformos/liquid-html-parser');
+  });
+
+  it('suppresses every "Syntax is not supported" diagnostic in the same file at once', () => {
+    const content = [
+      '{% liquid',
+      '  assign a = 1 == 1',
+      '  assign b = 2 != 3',
+      '%}',
+    ].join('\n');
+
+    const result = makeResult([syntaxErr(2), syntaxErr(3)]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/check.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const info = result.infos.find(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed');
+    expect(info.message).toContain('line(s) 2, 3');
+  });
+
+  it('does NOT suppress when the file has a real syntax error elsewhere (parser fails)', () => {
+    const content = [
+      '{% liquid',
+      '  assign x = 1 == 1',
+      '%}',
+      '{% if foo %}',
+      '  hello',
+      '{# missing endif — strict parse fails here #}',
+    ].join('\n');
+
+    const result = makeResult([syntaxErr(2)]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/broken.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].check).toBe('LiquidHTMLSyntaxError');
+    expect(result.infos.some(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed')).toBe(false);
+  });
+
+  it('does NOT suppress LiquidHTMLSyntaxError diagnostics with a different upstream message', () => {
+    const content = [
+      '{% liquid',
+      '  assign x = 1',
+      '%}',
+    ].join('\n');
+
+    const result = makeResult([
+      { check: 'LiquidHTMLSyntaxError', severity: 'error', line: 1, message: "Invalid syntax for tag 'render'" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/x.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed')).toBe(false);
+  });
+
+  it('does NOT suppress non-LiquidHTMLSyntaxError checks even when the message text matches', () => {
+    const content = '{% liquid\n  assign x = 1\n%}\n';
+
+    const result = makeResult([
+      { check: 'UnknownFilter', severity: 'error', line: 1, message: 'Syntax is not supported' },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/x.liquid',
+      content,
+    });
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].check).toBe('UnknownFilter');
+  });
+
+  it('also handles diagnostics surfaced as warnings, not just errors', () => {
+    const content = '{% liquid\n  assign x = 1 == 1\n%}\n';
+
+    const result = makeResult([], [
+      { check: 'LiquidHTMLSyntaxError', severity: 'warning', line: 2, message: 'Syntax is not supported' },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/x.liquid',
+      content,
+    });
+
+    expect(result.warnings).toHaveLength(0);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:LspSyntaxFalsePositiveSuppressed')).toBe(true);
+  });
+});
+
+// ── verifyPageRoutesOnDisk: in-memory file overlay ──────────────────────────
+//
+// Pins the self-page suppression: when an agent runs validate_code on a
+// page whose in-memory frontmatter declares the very (slug, method) pair
+// the LSP is complaining about, the route index must reflect the
+// in-memory version, not the older on-disk one. Without this overlay the
+// agent sees a MissingPage warning for a route the file IS about to serve
+// the moment it lands on disk — exactly the false positive observed in
+// the DEMO project (POST `/` warning while `app/views/pages/index.liquid`
+// declared `method: post` in-memory).
+
+describe('diagnostic-pipeline: verifyPageRoutesOnDisk respects in-memory overlay', () => {
+  let tmpDir;
+
+  beforeAll(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'pipeline-route-overlay-'));
+    mkdirSync(join(tmpDir, 'app/views/pages'), { recursive: true });
+    // Disk version: GET / only — no method declared.
+    writeFileSync(
+      join(tmpDir, 'app/views/pages/index.liquid'),
+      '<p>old version (no frontmatter)</p>\n',
+      'utf8',
+    );
+  });
+
+  afterAll(() => { if (tmpDir) rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it("suppresses MissingPage for route '/' (POST) when the file under validation declares method: post in-memory", () => {
+    const inMemory = [
+      '---',
+      'method: post',
+      'metadata:',
+      '  title: "Home"',
+      '---',
+      '<p>POST handler in-memory</p>',
+    ].join('\n');
+
+    const result = makeResult([], [
+      { check: 'MissingPage', severity: 'warning', line: 6, column: 0, message: "No page found for route '/' (POST)" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/pages/index.liquid',
+      content: inMemory,
+      projectDir: tmpDir,
+    });
+
+    expect(result.warnings).toHaveLength(0);
+    expect(result.infos.some(i => i.check === 'pos-supervisor:MissingPageSuppressed')).toBe(true);
+  });
+
+  it('still flags MissingPage when the in-memory frontmatter does not cover the reported method', () => {
+    const inMemory = [
+      '---',
+      'method: get',
+      '---',
+      '<p>GET only</p>',
+    ].join('\n');
+
+    const result = makeResult([], [
+      { check: 'MissingPage', severity: 'warning', line: 4, column: 0, message: "No page found for route '/' (POST)" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/pages/index.liquid',
+      content: inMemory,
+      projectDir: tmpDir,
+    });
+
+    expect(result.warnings).toHaveLength(1);
+    // wrong-method enrichment — the route IS served, just for GET.
+    expect(result.warnings[0].hint).toContain('GET');
+  });
+
+  it('treats a brand-new page (not yet on disk) as serving its declared route', () => {
+    const inMemory = [
+      '---',
+      'slug: contact',
+      'method: post',
+      '---',
+      '<p>new page</p>',
+    ].join('\n');
+
+    const result = makeResult([], [
+      { check: 'MissingPage', severity: 'warning', line: 5, column: 0, message: "No page found for route '/contact' (POST)" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/pages/contact.liquid',
+      content: inMemory,
+      projectDir: tmpDir,
+    });
+
+    expect(result.warnings).toHaveLength(0);
+  });
+
+  it('ignores the overlay when the file under validation is not under app/views/pages/ (partial / layout)', () => {
+    // A partial cannot serve a route. Even if it has frontmatter (it shouldn't),
+    // the route index must remain disk-only for non-page files.
+    const inMemory = [
+      '---',
+      'slug: pretend',
+      'method: post',
+      '---',
+      '<p>partial pretending to be a page</p>',
+    ].join('\n');
+
+    const result = makeResult([], [
+      { check: 'MissingPage', severity: 'warning', line: 5, column: 0, message: "No page found for route '/pretend' (POST)" },
+    ]);
+    runDiagnosticPipeline(result, {
+      filePath: 'app/views/partials/pretend.liquid',
+      content: inMemory,
+      projectDir: tmpDir,
+    });
+
     expect(result.warnings).toHaveLength(1);
   });
 });

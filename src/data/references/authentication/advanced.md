@@ -31,7 +31,7 @@ The default permission system uses a flat role-to-actions mapping. For more comp
 Usage:
 
 ```liquid
-{% function can_edit = 'lib/helpers/can_edit_own',
+{% function can_edit = 'helpers/can_edit_own',
   requester: profile,
   do: 'products.update',
   object: product
@@ -118,7 +118,7 @@ When using an external identity provider (Google, GitHub, etc.), the flow is:
 slug: auth/callback
 ---
 {% liquid
-  function result = 'lib/commands/auth/exchange_code', code: context.params.code
+  function result = 'commands/auth/exchange_code', code: context.params.code
 
   if result.error
     include 'modules/core/helpers/redirect_to', url: '/login', alert: 'app.auth.oauth_failed'
@@ -166,7 +166,7 @@ slug: api/v1/orders
 layout: ""
 ---
 {% liquid
-  function profile = 'lib/helpers/verify_api_token'
+  function profile = 'helpers/verify_api_token'
   if profile == blank
     assign error = { "error": "unauthorized" }
     render 'api/error', status: 401, body: error
