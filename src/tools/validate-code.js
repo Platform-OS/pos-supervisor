@@ -197,17 +197,13 @@ explicitly only if you are validating a file that is NOT part of the most recent
       // LSP is warmed up on server start, so it returns complete diagnostics immediately.
       try {
         let checkResult;
-        // Wait for the LSP to reach a terminal state (ready / failed) before
-        // deciding which lint path to take. The previous gate `ctx.lsp?.initialized`
-        // evaluated synchronously and lost the race against LSP warm-up on cold
-        // starts (CI runners with freshly-installed pos-cli, agents calling
-        // validate_code immediately after server boot). The race fell back to
-        // `pos-cli check run` which on Windows returned empty diagnostics and
-        // surfaced as every LSP-driven test silently asserting on zero results.
-        const lspReady = await ctx.awaitLsp();
-        const useLsp = lspReady && ctx.lsp?.initialized;
+        const useLsp = ctx.lsp?.initialized;
 
         if (useLsp) {
+          // LSP path: Always wait for LSP to be fully ready (including warm-up) BEFORE requesting diagnostics.
+          // This ensures the LSP has completed initialization and project indexing.
+          await ctx.awaitLsp();
+
           // Now sync content to LSP server and await per-document diagnostics (~200ms)
           try {
             const lspDiags = await ctx.lsp.awaitDiagnostics(uri, content, LSP_DIAGNOSTICS_TIMEOUT_MS);

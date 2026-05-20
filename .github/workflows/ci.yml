@@ -104,8 +104,12 @@ jobs:
           echo "--- pos-cli --version ---"
           pos-cli --version || true
 
-      - name: Run full test suite
-        run: bun test tests/
+      - name: Run integration suite
+        # tests/unit/ is exercised by the `unit` job above across all three
+        # OSes — re-running it here was pure duplication (~60–90 s on Windows,
+        # less on Ubuntu). The non-unit subtrees still cover everything that
+        # needs pos-cli installed.
+        run: bun test tests/integration/ tests/upstream/ tests/parity/
 
   # ─── Stage 3: HTTP smoke (boot server, probe every load-bearing route) ───
   # Matrix expands across launching shells on Windows. Bun parses its own
