@@ -1,5 +1,77 @@
 # Changelog
 
+## 0.8.1 — 2026-05-20
+
+Windows support — pos-cli and Node.js resolution now works on Linux,
+macOS, and Windows (including Git Bash, cmd.exe, and PowerShell). No
+behaviour change on platforms where 0.8.0 already worked.
+
+### Fixed — pos-cli resolution failed on Windows
+
+The 0.8.0 resolver in `server.js` shelled out to `which pos-cli` /
+`which node` and called `fs.realpath`. That chain fails on Windows for
+three independent reasons: (1) Git Bash's `which` returns MSYS paths
+like `/c/Users/.../pos-cli` that Node's realpath interprets as relative
+paths under cwd, raising `ENOENT`; (2) `where.exe` returns the npm
+`.cmd` shim which is not executable as JS via `node <shim>`; (3) shims
+aren't symlinks on Windows so realpath is a no-op. The net effect was
+`pos_cli.found=false`, LSP never initialized, and only static-mode
+tools were available.
+
+Resolution is now done by `src/core/pos-cli-resolver.js`, which exposes
+two pure async functions:
+
+- `resolvePosCli()` — three ordered strategies:
+  1. `npm root -g` → probe `<root>/@platformos/pos-cli/bin/pos-cli.js`.
+     Most reliable, works on every OS because the npm wrapper is
+     portable.
+  2. PATH walk — enumerate `process.env.PATH` and probe per-platform
+     candidates (`pos-cli`, `pos-cli.cmd`, `pos-cli.ps1`, `pos-cli.bat`).
+     For each hit: try `realpath` (Unix symlinks) then fall back to
+     parsing the npm cmd-shim content. The parser strips `%dp0%` /
+     `$basedir` variable references, walks every path-like token
+     ending in `pos-cli.js`, normalizes separators, and returns the
+     first that exists.
+  3. `createRequire` — local node_modules fallback for monorepo
+     installs.
+- `resolveNode()` — returns `process.execPath` when running under Node,
+  PATH-walks for `node` / `node.exe` when running under Bun (since
+  `process.execPath` is then Bun, not Node — pos-cli requires Node).
+
+Both functions are non-throwing — every external interaction is wrapped
+so a missing tool, broken PATH entry, unreadable shim, or 64 KB+ file
+masquerading as a shim cannot crash server startup.
+
+### Changed — files touched
+
+- `src/server.js` — replaced the inline `which`/`realpath` block with
+  `await Promise.all([resolvePosCli(), resolveNode()])`. The
+  `pos_cli_found` event now carries `source` (`npm-root` / `path-walk`
+  / `local-require`) for diagnostics, and the log line names both the
+  resolver strategy and the Node binary path.
+- `src/http-server.js` — `handlePosCliCommand()` now takes `nodeBin`
+  alongside `posCliPath`. The previous `spawn('node', [posCliPath, …])`
+  is now `spawn(nodeBin, [posCliPath, …])` — the literal `'node'`
+  would fail on Windows if Node was not on the spawning shell's
+  resolved-name table, and would invoke Bun if the host runtime was
+  Bun. `startHttp({…, nodeBin})` plumbed through from `server.js`.
+- `tests/integration/pos-cli/guard.js` — uses the resolver instead of
+  bare `spawnSync('pos-cli', ['--version'])`. The previous guard
+  silently reported "not found" on Windows even when pos-cli was
+  installed, because Node's spawn cannot auto-resolve a `.cmd` shim
+  without `shell: true` (which would mangle stderr for the version
+  check). Honest skip on Windows when pos-cli is truly missing,
+  honest run when it's installed as a `.cmd` shim.
+
+### Added — tests
+
+- `tests/unit/pos-cli-resolver.test.js` — 12 tests covering shim
+  parsing for real Windows `.cmd`, PowerShell `.ps1`, and Unix
+  `/bin/sh` wrapper content; symlink resolution; oversize / garbage
+  rejection; non-throwing contract for `resolveNode()`. Fixtures are
+  real npm-cmd-shim text written to a tmpdir tree mirroring the
+  global-install layout.
+
 ## 0.8.0 — 2026-05-20
 
 Runtime switches from Node.js to Bun, and the lone colon-named hint file

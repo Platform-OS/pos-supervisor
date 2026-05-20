@@ -1,10 +1,10 @@
-import { realpath } from 'node:fs/promises';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, watch } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { PlatformOSLSPClient } from './core/lsp-client.js';
+import { resolvePosCli, resolveNode } from './core/pos-cli-resolver.js';
 import { SchemaIndex } from './core/schema-index.js';
 import { ObjectsIndex } from './core/objects-index.js';
 import { FiltersIndex } from './core/filters-index.js';
@@ -396,6 +396,11 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   log(`Starting pos-supervisor v${VERSION} for ${projectDir}`);
 
   // ── Resolve pos-cli paths ─────────────────────────────────────────────────
+  // Both pos-cli and the Node.js interpreter that runs it are looked up via
+  // src/core/pos-cli-resolver.js — portable across Linux, macOS, and Windows
+  // (including Git Bash + MSYS + cmd.exe + PowerShell). Resolution failure
+  // is non-fatal: lspCmd / checkCmd stay as the bare `'pos-cli'` name and
+  // posCliFound stays false, so static-mode tools still work.
   let lspCmd = 'pos-cli';
   let lspArgs = ['lsp'];
   let checkCmd = 'pos-cli';
@@ -403,35 +408,32 @@ export async function createServer({ projectDir, httpPort = 0 }) {
   let dataDir = null;
   let posCliFound = false;
   let posCliPath = null;
+  let nodeBin = null;
 
   try {
-    const { execFile } = await import('node:child_process');
-    const posCliBin = await new Promise((resolve) => {
-      execFile('which', ['pos-cli'], (err, stdout) => {
-        resolve(err ? '' : stdout.trim());
-      });
-    });
-    const nodeBin = await new Promise((resolve) => {
-      execFile('which', ['node'], (err, stdout) => {
-        resolve(err ? '' : stdout.trim());
-      });
-    });
+    const [posCli, node] = await Promise.all([resolvePosCli(), resolveNode()]);
 
-    if (posCliBin && nodeBin) {
-      const realPosCliPath = await realpath(posCliBin);
-      lspCmd = nodeBin;
-      lspArgs = [realPosCliPath, 'lsp'];
-      checkCmd = nodeBin;
-      checkArgs = [realPosCliPath, 'check', 'run', '-f', 'json'];
-      dataDir = join(
-        dirname(dirname(realPosCliPath)),
-        'node_modules', '@platformos', 'platformos-check-docs-updater', 'data'
-      );
+    if (posCli.found && node) {
+      lspCmd = node;
+      lspArgs = [posCli.jsPath, 'lsp'];
+      checkCmd = node;
+      checkArgs = [posCli.jsPath, 'check', 'run', '-f', 'json'];
+      dataDir = posCli.dataDir;
       posCliFound = true;
-      posCliPath = realPosCliPath;
+      posCliPath = posCli.jsPath;
+      nodeBin = node;
 
-      emit('pos_cli_found', { path: realPosCliPath, dataDir });
-      log(`pos-cli found at ${realPosCliPath}`);
+      emit('pos_cli_found', { path: posCli.jsPath, dataDir, node, source: posCli.source });
+      log(`pos-cli found at ${posCli.jsPath} (via ${posCli.source}); node at ${node}`);
+    } else if (posCli.found && !node) {
+      emit('pos_cli_error', { error: 'pos-cli found but no Node.js interpreter on PATH' });
+      log(`pos-cli at ${posCli.jsPath} but no Node.js interpreter found — LSP will not start`);
+    } else if (!posCli.found && node) {
+      emit('pos_cli_error', { error: 'Node.js found but pos-cli not on PATH or in npm global' });
+      log('pos-cli not found — static tools only');
+    } else {
+      emit('pos_cli_error', { error: 'Neither pos-cli nor Node.js found' });
+      log('Neither pos-cli nor Node.js found — static tools only');
     }
   } catch (e) {
     emit('pos_cli_error', { error: e.message });
@@ -765,7 +767,7 @@ export async function createServer({ projectDir, httpPort = 0 }) {
       };
     }
     const dataRoot = join(__dirname, 'data');
-    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild: syncDisabledRules, onOverridesChanged: () => { syncRuleOverrides(); syncDisabledRules(); }, onCacConfigChanged: syncCacConfig, switchEngineMode, getEngineMode });
+    startHttp(registry, { port: httpPort, log, version: VERSION, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, nodeBin, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild: syncDisabledRules, onOverridesChanged: () => { syncRuleOverrides(); syncDisabledRules(); }, onCacConfigChanged: syncCacConfig, switchEngineMode, getEngineMode });
   }
 
   // ── Graceful shutdown ─────────────────────────────────────────────────────

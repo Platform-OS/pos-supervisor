@@ -26,7 +26,7 @@ import { buildFactGraph } from './core/project-fact-graph.js';
  * HTTP server — REST endpoints for tool discovery, execution, and resources.
  * MCP protocol (JSON-RPC over stdio) is handled by the SDK transport in server.js.
  */
-export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild, onOverridesChanged, onCacConfigChanged, switchEngineMode, getEngineMode }) {
+export function startHttp(registry, { port, log, version, logPath, getStatus, restartLsp, dataRoot, subscribeToEvents, posCliPath, nodeBin, projectDir, sessionsDir, saveSessionSummary, analyticsStore, blobStore, onAnalyticsRebuild, onOverridesChanged, onCacConfigChanged, switchEngineMode, getEngineMode }) {
   if (!port) return null;
 
   const dashboardHtml = buildDashboardHtml();
@@ -150,11 +150,11 @@ export function startHttp(registry, { port, log, version, logPath, getStatus, re
       }
 
       if (url.pathname === '/api/pos-cli/data-clean') {
-        return handlePosCliCommand(posCliPath, projectDir, body, 'data-clean', log, res);
+        return handlePosCliCommand(posCliPath, nodeBin, projectDir, body, 'data-clean', log, res);
       }
 
       if (url.pathname === '/api/pos-cli/deploy') {
-        return handlePosCliCommand(posCliPath, projectDir, body, 'deploy', log, res);
+        return handlePosCliCommand(posCliPath, nodeBin, projectDir, body, 'deploy', log, res);
       }
 
       if (url.pathname === '/api/rules/promote') {
@@ -357,8 +357,9 @@ function handleGetEnvs(projectDir, res) {
   }
 }
 
-function handlePosCliCommand(posCliPath, projectDir, body, command, log, res) {
+function handlePosCliCommand(posCliPath, nodeBin, projectDir, body, command, log, res) {
   if (!posCliPath) return sendJson(res, 503, { error: 'pos-cli not found' });
+  if (!nodeBin) return sendJson(res, 503, { error: 'Node.js interpreter not found' });
   if (!projectDir) return sendJson(res, 503, { error: 'Project directory not configured' });
 
   const { env } = body;
@@ -377,7 +378,7 @@ function handlePosCliCommand(posCliPath, projectDir, body, command, log, res) {
 
   log?.(`pos-cli ${command}: starting with env=${env}`);
 
-  const child = spawn('node', [posCliPath, ...args], {
+  const child = spawn(nodeBin, [posCliPath, ...args], {
     cwd: projectDir,
     env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'],
