@@ -1,0 +1,250 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-progress runs on the same ref when a new commit arrives —
+# CI is the same set of checks, no value in racing two of them.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "20"
+  BUN_VERSION: "1.3.3"
+  # Fixture project used by every smoke probe. Path is relative to repo root,
+  # resolved per-job via ${{ github.workspace }}/tests/fixtures/project.
+  FIXTURE_REL_PATH: tests/fixtures/project
+
+jobs:
+  # ─── Stage 1: unit tests across Linux / Windows / macOS ──────────────────
+  # No pos-cli — exercises pure logic + the resolver's fixture-based unit tests.
+  # The resolver itself is exercised against simulated MSYS / Windows shim
+  # content baked into the test (tests/unit/pos-cli-resolver.test.js).
+  unit:
+    name: Unit (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run unit tests
+        run: bun test tests/unit/
+
+  # ─── Stage 2: integration tests with pos-cli installed ───────────────────
+  # The pos-cli-tagged integration suites (tests/integration/pos-cli/) exercise
+  # the real LSP and `pos-cli check run` paths. The guard in
+  # tests/integration/pos-cli/guard.js uses the resolver — if it can't find
+  # pos-cli, the suite skips honestly. CI must NOT skip; we install pos-cli
+  # explicitly and assert the resolver finds it.
+  integration:
+    name: Integration (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pos-supervisor deps
+        run: bun install --frozen-lockfile
+
+      - name: Install pos-cli globally
+        run: npm install -g @platformos/pos-cli
+
+      - name: Print resolver inputs (diagnostic)
+        shell: bash
+        run: |
+          echo "--- which pos-cli ---"
+          which pos-cli || true
+          echo "--- where.exe pos-cli ---"
+          where.exe pos-cli 2>/dev/null || true
+          echo "--- npm root -g ---"
+          npm root -g
+          echo "--- which node ---"
+          which node || true
+          echo "--- node --version ---"
+          node --version
+          echo "--- pos-cli --version ---"
+          pos-cli --version || true
+
+      - name: Run full test suite
+        run: bun test tests/
+
+  # ─── Stage 3: HTTP smoke (boot server, probe every load-bearing route) ───
+  # Matrix expands across launching shells on Windows. Bun parses its own
+  # `process.env.PATH` independent of shell, but the FORMAT of that PATH
+  # differs (Git Bash returns MSYS-style paths, PowerShell returns native
+  # Windows). The resolver must survive both — that's exactly the regression
+  # surface 0.8.0 missed.
+  smoke-http:
+    name: HTTP smoke (${{ matrix.os }} / ${{ matrix.shell }})
+    needs: integration
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shell: bash
+          - os: windows-latest
+            shell: bash      # Git Bash — the original failure mode
+          - os: windows-latest
+            shell: pwsh      # PowerShell — native Windows path format
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pos-supervisor deps
+        run: bun install --frozen-lockfile
+
+      - name: Install pos-cli globally
+        run: npm install -g @platformos/pos-cli
+
+      - name: Run HTTP smoke
+        env:
+          POS_SUPERVISOR_PROJECT_DIR: ${{ github.workspace }}/${{ env.FIXTURE_REL_PATH }}
+          POS_SUPERVISOR_HTTP_PORT: 13955
+        run: bun scripts/ci-smoke-http.js
+
+  # ─── Stage 4: MCP stdio smoke (handshake + tools/call) ───────────────────
+  # Exercises the path agents actually use: spawn pos-supervisor as a child
+  # process, JSON-RPC over stdio. Validates the McpServer SDK wiring and
+  # that server_status reports pos_cli.found=true under each platform.
+  smoke-mcp:
+    name: MCP stdio smoke (${{ matrix.os }} / ${{ matrix.shell }})
+    needs: integration
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shell: bash
+          - os: windows-latest
+            shell: bash
+          - os: windows-latest
+            shell: pwsh
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pos-supervisor deps
+        run: bun install --frozen-lockfile
+
+      - name: Install pos-cli globally
+        run: npm install -g @platformos/pos-cli
+
+      - name: Run MCP smoke
+        env:
+          POS_SUPERVISOR_PROJECT_DIR: ${{ github.workspace }}/${{ env.FIXTURE_REL_PATH }}
+        run: bun scripts/ci-smoke-mcp.js
+
+  # ─── Stage 5: install path — verify `npm link` produces a working binary ─
+  # Mirrors the documented install in README.md. Catches regressions in the
+  # shebang (#!/usr/bin/env bun) and the npm bin entry. Runs on Windows only,
+  # since the Linux path is already exercised by every other job indirectly.
+  install-path:
+    name: npm link install (windows-latest / ${{ matrix.shell }})
+    needs: integration
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [bash, pwsh]
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install pos-supervisor deps
+        run: bun install --frozen-lockfile
+
+      - name: Install pos-cli globally
+        run: npm install -g @platformos/pos-cli
+
+      - name: npm link pos-supervisor
+        run: npm link
+
+      - name: Probe pos-supervisor on PATH
+        shell: bash
+        run: |
+          which pos-supervisor || where.exe pos-supervisor
+          # Boot it briefly via HTTP port and assert /health responds.
+          POS_SUPERVISOR_PROJECT_DIR="$PWD/tests/fixtures/project" \
+          POS_SUPERVISOR_HTTP_PORT=13966 \
+            pos-supervisor &
+          SERVER_PID=$!
+          # Wait up to 60 s for /health
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:13966/health >/dev/null 2>&1; then
+              echo "pos-supervisor on PATH responded to /health"
+              kill $SERVER_PID 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "pos-supervisor on PATH never responded to /health"
+          kill $SERVER_PID 2>/dev/null || true
+          exit 1
