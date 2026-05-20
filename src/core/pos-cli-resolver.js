@@ -125,8 +125,14 @@ function splitPath(envPath) {
 function tryNpmRootGlobal() {
   return new Promise(resolve => {
     const cmd = isWindows ? 'npm.cmd' : 'npm';
+    // On Windows, post-CVE-2024-27980 Node refuses to spawn `.bat`/`.cmd`
+    // with `shell: false` — the call throws ERR_INVALID_ARG_TYPE rather
+    // than returning a normal callback error. `shell: true` lets cmd.exe
+    // resolve the wrapper as it normally would. Safe here because the
+    // arguments are fixed string literals, not user input.
+    const opts = { timeout: 5000, shell: isWindows };
     try {
-      execFile(cmd, ['root', '-g'], { timeout: 5000, shell: false }, (err, stdout) => {
+      execFile(cmd, ['root', '-g'], opts, (err, stdout) => {
         if (err) return resolve(null);
         const path = (stdout || '').trim();
         resolve(path && existsSync(path) ? path : null);

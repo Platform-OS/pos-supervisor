@@ -35,6 +35,13 @@ export async function startServer(projectDir, { timeoutMs = 60_000 } = {}) {
   let stderr = '';
   let ready = false;
 
+  // Forward server stderr to the test runner's stderr so CI logs include the
+  // spawned process's diagnostics. Without this we are blind on remote runners
+  // — every cross-platform LSP / resolver issue must be guessed at instead of
+  // observed. Filter to lines we actually want (server emits a `[pos-supervisor]`
+  // prefix on every log line) so the test output stays scannable.
+  const FORWARD_STDERR = process.env.POS_SUPERVISOR_TEST_FORWARD_STDERR !== '0';
+
   await new Promise((resolve, reject) => {
     // Wait for the HTTP server AND the LSP to both be in a terminal state
     // — either ready, or explicitly failed. Resolving on "HTTP server
@@ -64,7 +71,15 @@ export async function startServer(projectDir, { timeoutMs = 60_000 } = {}) {
     }
 
     proc.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr += text;
+      if (FORWARD_STDERR) {
+        // Tag each forwarded line so the source is obvious in CI output.
+        for (const line of text.split('\n')) {
+          if (!line) continue;
+          process.stderr.write(`  ↳ [server :${port}] ${line}\n`);
+        }
+      }
       if (!httpUp && stderr.includes('HTTP server listening')) {
         httpUp = true;
         maybeResolve();
