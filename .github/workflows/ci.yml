@@ -16,6 +16,12 @@ concurrency:
 env:
   NODE_VERSION: "20"
   BUN_VERSION: "1.3.3"
+  # Pin pos-cli to a known-working major version. npm's `latest` dist-tag for
+  # @platformos/pos-cli is inconsistent across registries — Windows runners
+  # were resolving to 5.5.0 which lacks both `pos-cli check` and `pos-cli lsp`
+  # subcommands, silently breaking every LSP-driven integration test. 6.x is
+  # the line that ships those binaries.
+  POS_CLI_VERSION: "^6.0.0"
   # Fixture project used by every smoke probe. Path is relative to repo root,
   # resolved per-job via ${{ github.workspace }}/tests/fixtures/project.
   FIXTURE_REL_PATH: tests/fixtures/project
@@ -76,7 +82,7 @@ jobs:
         run: bun install
 
       - name: Install pos-cli globally
-        run: npm install -g @platformos/pos-cli
+        run: npm install -g @platformos/pos-cli@${{ env.POS_CLI_VERSION }}
 
       - name: Print resolver inputs (diagnostic)
         shell: bash
@@ -137,7 +143,7 @@ jobs:
         run: bun install
 
       - name: Install pos-cli globally
-        run: npm install -g @platformos/pos-cli
+        run: npm install -g @platformos/pos-cli@${{ env.POS_CLI_VERSION }}
 
       - name: Run HTTP smoke
         env:
@@ -183,7 +189,7 @@ jobs:
         run: bun install
 
       - name: Install pos-cli globally
-        run: npm install -g @platformos/pos-cli
+        run: npm install -g @platformos/pos-cli@${{ env.POS_CLI_VERSION }}
 
       - name: Run MCP smoke
         env:
@@ -222,7 +228,7 @@ jobs:
         run: bun install
 
       - name: Install pos-cli globally
-        run: npm install -g @platformos/pos-cli
+        run: npm install -g @platformos/pos-cli@${{ env.POS_CLI_VERSION }}
 
       - name: npm link pos-supervisor
         run: npm link

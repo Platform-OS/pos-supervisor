@@ -446,9 +446,13 @@ export async function createServer({ projectDir, httpPort = 0 }) {
       emit('lsp_request', { method, durationMs, success });
       if (!success) log(`LSP ${method} failed (${durationMs}ms)`);
     },
-    onCrash: ({ code, signal, restartCount }) => {
-      emit('lsp_crash', { code, signal, restartCount });
+    onCrash: ({ code, signal, stderr, restartCount }) => {
+      emit('lsp_crash', { code, signal, restartCount, stderr });
       log(`LSP crashed (code=${code}, signal=${signal}, restart #${restartCount})`);
+      // Surface the child's stderr — without it every crash is opaque on
+      // remote runners. Truncate to keep logs scannable.
+      const trimmed = (stderr ?? '').trim();
+      if (trimmed) log(`LSP child stderr: ${trimmed.slice(0, 4000)}`);
     },
   });
 

@@ -23,7 +23,16 @@ const BIN = join(import.meta.dir, '..', '..', '..', 'bin', 'pos-supervisor.js');
 export async function startServer(projectDir, { timeoutMs = 60_000 } = {}) {
   const port = 13700 + Math.floor(Math.random() * 300);
 
-  const proc = spawn('node', [BIN], {
+  // Spawn under Bun, not Node — the production runtime per the bin/ shebang
+  // and the install docs. Spawning under Node previously caused two silent
+  // failures: (1) analytics-store skipped (bun:sqlite unavailable), masking
+  // analytics-store tests, and (2) any future Bun-specific API in the
+  // server would break tests on Linux/macOS dev boxes while shipping fine
+  // for end users. `bun.exe` is the Windows binary name (setup-bun adds it
+  // to PATH); Node spawn appends `.exe` automatically on Windows when the
+  // bare name doesn't resolve.
+  const bunCmd = process.platform === 'win32' ? 'bun.exe' : 'bun';
+  const proc = spawn(bunCmd, [BIN], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: {
       ...process.env,
