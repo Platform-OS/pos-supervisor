@@ -41,7 +41,7 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Run unit tests
         run: bun test tests/unit/
@@ -73,7 +73,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Install pos-supervisor deps
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Install pos-cli globally
         run: npm install -g @platformos/pos-cli
@@ -134,7 +134,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Install pos-supervisor deps
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Install pos-cli globally
         run: npm install -g @platformos/pos-cli
@@ -180,7 +180,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Install pos-supervisor deps
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Install pos-cli globally
         run: npm install -g @platformos/pos-cli
@@ -219,7 +219,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Install pos-supervisor deps
-        run: bun install --frozen-lockfile
+        run: bun install
 
       - name: Install pos-cli globally
         run: npm install -g @platformos/pos-cli
