@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { toPosixPath } from './utils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -28,18 +29,25 @@ function resolveDataDir() {
 
 /**
  * Map a file path to a domain key, or null if no domain applies.
+ *
+ * Substring matches use POSIX-style separators internally so Windows paths
+ * (`C:\…\app\views\pages\home.html.liquid`) resolve the same as Unix paths.
+ * Without the normalization the matches silently return null on Windows,
+ * scanLiquidFiles drops every file, and every project_map / scaffold /
+ * intent-validator / fact-graph test downstream sees an empty index.
  */
 export function getDomainFromPath(absPath) {
+  const p = toPosixPath(absPath);
   // More specific paths first — lib/queries/ and lib/commands/ can live under views/partials/
-  if (absPath.includes('/lib/commands/'))   return 'commands';
-  if (absPath.includes('/lib/queries/'))    return 'queries';
-  if (absPath.includes('/views/pages/'))    return 'pages';
-  if (absPath.includes('/views/layouts/'))  return 'layouts';
-  if (absPath.includes('/views/partials/')) return 'partials';
-  if (absPath.includes('/app/graphql/') || absPath.includes('/graphql/')) return 'graphql';
-  if (absPath.includes('/schema/'))         return 'schema';
-  if (absPath.includes('/translations/'))   return 'translations';
-  if (/\/app\/config\.yml$/.test(absPath))  return 'config';
+  if (p.includes('/lib/commands/'))   return 'commands';
+  if (p.includes('/lib/queries/'))    return 'queries';
+  if (p.includes('/views/pages/'))    return 'pages';
+  if (p.includes('/views/layouts/'))  return 'layouts';
+  if (p.includes('/views/partials/')) return 'partials';
+  if (p.includes('/app/graphql/') || p.includes('/graphql/')) return 'graphql';
+  if (p.includes('/schema/'))         return 'schema';
+  if (p.includes('/translations/'))   return 'translations';
+  if (/\/app\/config\.yml$/.test(p))  return 'config';
   return null;
 }
 

@@ -56,6 +56,34 @@ boundary where a path becomes an identifier:
 - `src/tools/analyze-project.js` — `join('app', 'schema', entry)`
   for the schema-validator file label.
 
+### Fixed — getDomainFromPath returned null for every file on Windows
+
+`src/core/domain-detector.js` `getDomainFromPath(absPath)` matched the
+domain via `absPath.includes('/views/pages/')` etc. — forward slashes
+hardcoded. On Windows `absPath` was native (`C:\…\app\views\pages\
+home.html.liquid`); every match returned null. `scanLiquidFiles`
+then dropped every file (line 287 `if (!domain) return;`), the
+project_map index was empty, and every downstream consumer
+(`ProjectFactGraph`, `scaffold` page counts, `invalidateProjectMap`,
+`scanProject: pages keyed by {slug}:{method}`, scaffold pattern
+detection, relative-render resolution) saw zero entries. Single
+biggest cluster in the 0.8.2 Windows unit run — 20+ tests cascaded
+from this one false negative.
+
+Normalize the input with `toPosixPath()` at function entry, then
+match against POSIX-anchored substrings. The match logic itself stays
+identical and Linux paths are unaffected (the strip is a no-op there).
+
+### Fixed — check-runner unit test used non-portable spawn targets
+
+`tests/unit/check-runner.test.js` spawned `echo` and `false` directly —
+both are cmd.exe builtins on Windows, not standalone binaries.
+Replaced with `process.execPath -e '…'` which works under Bun, Node,
+on Linux, macOS, and Windows. Test directory swapped from `/tmp` to
+`os.tmpdir()` so the cwd resolves to a valid path on every host.
+Same assertions, same parser code under test — purely a test-harness
+portability fix.
+
 ### Fixed — check-runner filtered out every diagnostic on Windows
 
 `src/core/check-runner.js:30` did `filterFile.endsWith(file.path) ||

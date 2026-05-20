@@ -1,12 +1,23 @@
 import { describe, it, expect } from 'bun:test';
+import { tmpdir } from 'node:os';
 import { createCheckRunner } from '../../src/core/check-runner.js';
+
+// Cross-platform shims for the spawned-process tests below.
+//
+// The original tests used `echo` (Unix) and `false` directly — both unavailable
+// as standalone binaries on Windows where they are cmd.exe builtins. Use the
+// current host's interpreter (Bun or Node) with `-e` so we control the spawn
+// target portably. `process.execPath` is the absolute path to that interpreter.
+const EXEC = process.execPath;
+const echoCmd = (output) => ({ cmd: EXEC, args: ['-e', `process.stdout.write(${JSON.stringify(output)})`] });
+const failCmd = () => ({ cmd: EXEC, args: ['-e', 'process.exit(1)'] });
+const TMP = tmpdir();
 
 describe('createCheckRunner', () => {
   it('returns a function', () => {
     const runner = createCheckRunner({
-      cmd: 'echo',
-      args: ['{}'],
-      directory: '/tmp',
+      ...echoCmd('{}'),
+      directory: TMP,
     });
     expect(typeof runner).toBe('function');
   });
@@ -14,7 +25,7 @@ describe('createCheckRunner', () => {
   it('parses valid check output', async () => {
     const fakeOutput = JSON.stringify({
       files: [{
-        path: '/tmp/test.liquid',
+        path: 'test.liquid',
         offenses: [
           { check: 'UndefinedObject', severity: 'warning', message: 'Unknown object "params"', start_row: 2, start_column: 3 },
           { check: 'UnknownFilter', severity: 'error', message: 'Unknown filter "bad"', start_row: 5, start_column: 10 },
@@ -24,12 +35,11 @@ describe('createCheckRunner', () => {
     });
 
     const runner = createCheckRunner({
-      cmd: 'echo',
-      args: [fakeOutput],
-      directory: '/tmp',
+      ...echoCmd(fakeOutput),
+      directory: TMP,
     });
 
-    const result = await runner('/tmp/test.liquid');
+    const result = await runner('test.liquid');
 
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0].check).toBe('UnknownFilter');
@@ -49,9 +59,8 @@ describe('createCheckRunner', () => {
 
   it('handles empty check output gracefully', async () => {
     const runner = createCheckRunner({
-      cmd: 'echo',
-      args: ['{}'],
-      directory: '/tmp',
+      ...echoCmd('{}'),
+      directory: TMP,
     });
 
     const result = await runner();
@@ -62,9 +71,8 @@ describe('createCheckRunner', () => {
 
   it('handles check failure gracefully', async () => {
     const runner = createCheckRunner({
-      cmd: 'false', // always fails
-      args: [],
-      directory: '/tmp',
+      ...failCmd(),
+      directory: TMP,
     });
 
     const result = await runner();
