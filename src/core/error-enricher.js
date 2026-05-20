@@ -58,7 +58,11 @@ export async function enrichError(diagnostic, { uri, lsp, filtersIndex, objectsI
     const params = extractParams(diagnostic.check, diagnostic.message);
     const tmplFp = templateOf(diagnostic.check, diagnostic.message);
     const diag = { check: diagnostic.check, params, message: diagnostic.message, file: filePath, line: diagnostic.line, column: diagnostic.column ?? 0, template_fp: tmplFp };
-    const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, projectDir };
+    // `content` is threaded into facts so rules can detect in-memory patterns
+    // the project graph does not yet reflect (e.g. multi-line graphql calls
+    // inside a {% liquid %} block that the upstream LSP truncates — see
+    // GraphQLVariablesCheck.parser_blind_spot for the prototypical case).
+    const facts = { graph: factGraph, filtersIndex, objectsIndex, tagsIndex, schemaIndex, analyticsStore, projectDir, content };
     const ruleResult = runRules(diag, facts);
     if (ruleResult) {
       result.hint = ruleResult.hint_md;
