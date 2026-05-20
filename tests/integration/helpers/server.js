@@ -20,7 +20,7 @@ const BIN = join(import.meta.dir, '..', '..', '..', 'bin', 'pos-supervisor.js');
  * Start a pos-supervisor server against the given project directory.
  * Returns an object with callTool(), callToolRaw(), and stop().
  */
-export async function startServer(projectDir, { timeoutMs = 20_000 } = {}) {
+export async function startServer(projectDir, { timeoutMs = 60_000 } = {}) {
   const port = 13700 + Math.floor(Math.random() * 300);
 
   const proc = spawn('node', [BIN], {
@@ -36,11 +36,42 @@ export async function startServer(projectDir, { timeoutMs = 20_000 } = {}) {
   let ready = false;
 
   await new Promise((resolve, reject) => {
-    proc.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-      if (stderr.includes('HTTP server listening') && !ready) {
+    // Wait for the HTTP server AND the LSP to both be in a terminal state
+    // — either ready, or explicitly failed. Resolving on "HTTP server
+    // listening" alone raced LSP warm-up: cold pos-cli on CI takes several
+    // seconds to index, while tests would fire immediately and hit the
+    // empty-fallback path inside validate_code. The result was every
+    // LSP-driven test (`validate_code` linting, `LSP contract:*`,
+    // `Enrichment:*`, structural warnings, etc.) silently returning zero
+    // diagnostics on the first run.
+    //
+    // Treat any of these as "LSP is no longer pending":
+    //   - "LSP ready"              — warm-up succeeded
+    //   - "LSP init failed"        — handshake never completed
+    //   - "LSP warm-up failed"     — non-fatal, but means warm-up gave up
+    //   - "pos-cli not found"      — resolver did not find pos-cli; no LSP
+    //   - "Neither pos-cli nor Node.js found"
+    //   - "pos-cli at … but no Node.js interpreter found"
+    const lspTerminalRegex = /(LSP ready|LSP init failed|LSP warm-up failed|pos-cli not found — static tools only|Neither pos-cli nor Node\.js found|pos-cli at .* but no Node\.js interpreter found)/;
+
+    let httpUp = false;
+    let lspSettled = false;
+    function maybeResolve() {
+      if (httpUp && lspSettled && !ready) {
         ready = true;
         resolve();
+      }
+    }
+
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+      if (!httpUp && stderr.includes('HTTP server listening')) {
+        httpUp = true;
+        maybeResolve();
+      }
+      if (!lspSettled && lspTerminalRegex.test(stderr)) {
+        lspSettled = true;
+        maybeResolve();
       }
     });
 
@@ -53,7 +84,7 @@ export async function startServer(projectDir, { timeoutMs = 20_000 } = {}) {
     );
 
     setTimeout(() => {
-      if (!ready) reject(new Error(`Server did not start within ${timeoutMs}ms\n${stderr}`));
+      if (!ready) reject(new Error(`Server did not start within ${timeoutMs}ms (httpUp=${httpUp}, lspSettled=${lspSettled})\n${stderr}`));
     }, timeoutMs);
   });
 
