@@ -13,13 +13,18 @@
  * AND that the bus's own close-time invariant check did not log a mismatch.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll, setDefaultTimeout } from 'bun:test';
 import { join } from 'node:path';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startServer, FIXTURE_DIR, createTempProject } from './helpers/server.js';
 import { readEventLog } from '../../src/core/session-events.js';
 import { replay } from '../../src/core/session-state.js';
+
+// beforeAll spawns a real pos-supervisor server with LSP warm-up, which can
+// exceed the bun:test default 5s budget on a cold start (CI, fresh process,
+// LSP indexing). Other integration files set this to 30s for the same reason.
+setDefaultTimeout(60_000);
 
 // Resolve the bus's session subdirectory. The legacy `saveSessionSummary`
 // writes flat `session-*.json` files at the same level, so we filter for

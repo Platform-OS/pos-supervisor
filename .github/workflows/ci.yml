@@ -14,7 +14,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NODE_VERSION: "20"
+  # Node 22 is required by @platformos/pos-cli 6.x — anything lower fails
+  # `npm install -g` with `Required node version >=22 not satisfied`, and
+  # npm silently resolves to pos-cli 5.x which has no `lsp` / `check`
+  # subcommands. That was the entire mystery of "all LSP tests fail on CI".
+  NODE_VERSION: "22"
   BUN_VERSION: "1.3.3"
   # Pin pos-cli to a known-working major version. npm's `latest` dist-tag for
   # @platformos/pos-cli is inconsistent across registries — Windows runners
