@@ -22,6 +22,7 @@ import { walk, NodeTypes, NamedTags } from '@platformos/liquid-html-parser';
 import { isShopifyObject, isShopifyFilter, getShopifyObject, getShopifyTag } from './knowledge-loader.js';
 import { getDomainFromPath } from './domain-detector.js';
 import { offsetToLineCol, slugFromPath } from './position-utils.js';
+import { toPosixPath } from './utils.js';
 import { classifyGraphqlSourceKind } from './liquid-parser.js';
 
 const HTML_NODE_TYPES = new Set([
@@ -65,6 +66,11 @@ const MISLEADING_FRONT_MATTER_KEYS = {
  */
 export function generateStructuralWarnings(ast, content, filePath, structural, existingChecks, options = {}) {
   const warnings = [];
+  // Normalize the path identifier once at the boundary. Every downstream
+  // helper (isRootIndexPage, slugFromPath, basename extraction, regex
+  // anchors) assumes POSIX-style `/` separators; callers may pass an
+  // absolute Windows path with backslashes.
+  filePath = toPosixPath(filePath);
   const domain = getDomainFromPath(filePath);
 
   // 1. HTML in pages — pages should be controller-only (no inline HTML).

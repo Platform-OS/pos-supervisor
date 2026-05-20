@@ -1,6 +1,27 @@
 import { spawn } from 'node:child_process';
 import { LSP_DIAGNOSTICS_TIMEOUT_MS, LSP_BARRIER_TIMEOUT_MS, DIAGNOSTICS_SETTLE_MS } from './constants.js';
 
+const IS_WINDOWS = process.platform === 'win32';
+
+/**
+ * Canonicalize a `file:` URI for use as an internal Map / Set key.
+ *
+ * Windows file URIs are case-insensitive at the filesystem level; pos-cli
+ * LSP can return URIs with a different drive-letter or directory case than
+ * what we sent (`file:///C:/Users/...` ↔ `file:///c:/Users/...`). JS Map
+ * lookups ARE case-sensitive, so the round-trip would miss and the
+ * diagnostic waiter would never fire — `awaitDiagnostics` would time out
+ * silently and resolve with `[]`. Lowercasing the URI for keying restores
+ * the case-insensitive invariant. On Unix this is a no-op (URIs there are
+ * case-sensitive and the LSP echoes our URI verbatim).
+ *
+ * NOTE: only the internal storage key is normalized. The URI sent on the
+ * wire to the LSP is untouched so the server still sees a well-formed URI.
+ */
+function uriKey(uri) {
+  return IS_WINDOWS ? uri.toLowerCase() : uri;
+}
+
 export class PlatformOSLSPClient {
   #proc       = null;
   #buf        = '';
@@ -125,12 +146,13 @@ export class PlatformOSLSPClient {
     if (msg.method === 'textDocument/publishDiagnostics') {
       const uri = msg.params.uri;
       const diags = msg.params.diagnostics ?? [];
-      this.#diagnostics.set(uri, diags);
-      const waiter = this.#diagWaiters.get(uri);
+      const key = uriKey(uri);
+      this.#diagnostics.set(key, diags);
+      const waiter = this.#diagWaiters.get(key);
       if (waiter?.onDiag) {
         waiter.onDiag(diags);
       } else if (waiter) {
-        this.#diagWaiters.delete(uri);
+        this.#diagWaiters.delete(key);
         clearTimeout(waiter.timer);
         waiter.resolve(diags);
       }
@@ -212,16 +234,17 @@ export class PlatformOSLSPClient {
 
   syncDoc(uri, text) {
     const langId = uri.endsWith('.graphql') ? 'graphql' : 'liquid';
-    const prev = this.#openDocs.get(uri);
+    const key = uriKey(uri);
+    const prev = this.#openDocs.get(key);
     if (prev != null) {
       const ver = prev + 1;
-      this.#openDocs.set(uri, ver);
+      this.#openDocs.set(key, ver);
       this.#notify('textDocument/didChange', {
         textDocument: { uri, version: ver },
         contentChanges: [{ text }],
       });
     } else {
-      this.#openDocs.set(uri, 1);
+      this.#openDocs.set(key, 1);
       this.#notify('textDocument/didOpen', {
         textDocument: { uri, languageId: langId, version: 1, text },
       });
@@ -242,7 +265,7 @@ export class PlatformOSLSPClient {
   }
 
   diags(uri) {
-    return this.#diagnostics.get(uri) ?? [];
+    return this.#diagnostics.get(uriKey(uri)) ?? [];
   }
 
   /**
@@ -262,7 +285,8 @@ export class PlatformOSLSPClient {
    */
   awaitDiagnostics(uri, text, timeoutMs = LSP_DIAGNOSTICS_TIMEOUT_MS) {
     this.syncDoc(uri, text);
-    this.#diagnostics.delete(uri);
+    const key = uriKey(uri);
+    this.#diagnostics.delete(key);
 
     // ── Barrier: hover request as sync fence (ensures LSP processes our content) ──
     const barrierId = ++this.#reqId;
@@ -287,26 +311,26 @@ export class PlatformOSLSPClient {
       let settleTimer = null;
 
       const finish = (diags) => {
-        this.#diagWaiters.delete(uri);
+        this.#diagWaiters.delete(key);
         clearTimeout(mainTimer);
         if (settleTimer) clearTimeout(settleTimer);
         resolve(diags);
       };
 
       const mainTimer = setTimeout(() => {
-        this.#diagWaiters.delete(uri);
+        this.#diagWaiters.delete(key);
         if (settleTimer) clearTimeout(settleTimer);
         resolve(latestDiags ?? []);
       }, timeoutMs);
 
-      this.#diagWaiters.set(uri, {
+      this.#diagWaiters.set(key, {
         timer: mainTimer,
         settleTimer: null,
         onDiag: (diags) => {
           latestDiags = diags;
           if (settleTimer) clearTimeout(settleTimer);
           settleTimer = setTimeout(() => finish(latestDiags), SETTLE_MS);
-          this.#diagWaiters.get(uri).settleTimer = settleTimer;
+          this.#diagWaiters.get(key).settleTimer = settleTimer;
         },
         resolve: (diags) => finish(diags),
       });
