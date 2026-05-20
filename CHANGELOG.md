@@ -1,5 +1,89 @@
 # Changelog
 
+## 0.8.2 — 2026-05-20
+
+Windows path-handling — three classes of latent bug surfaced when CI
+first ran on Windows in 0.8.1. All three caused silent test failures
+(no exceptions, wrong-but-plausible behaviour) and only manifested on
+Windows; Linux and macOS were unaffected. No user-visible API changes
+on the platforms that worked in 0.8.1.
+
+### Fixed — `toUri` produced malformed Windows file URIs
+
+`src/core/utils.js` `toUri` was `\`file://${p}\`` — correct on Unix,
+broken on Windows where it emitted `file://C:\Users\…` instead of the
+LSP-required `file:///C:/Users/…` (three slashes, forward slashes,
+drive letter after the third slash). The pos-cli LSP silently rejected
+the malformed URI and returned zero diagnostics, which collapsed every
+`validate_code`, `LSP contract:*`, `Enrichment:*`, structural-warnings,
+diff-aware, and force-disable test on Windows.
+
+Rewritten to delegate to Node's `pathToFileURL` / `fileURLToPath` from
+`node:url` — the canonical, platform-correct converter. New `fromUri`
+helper for symmetry; replaced four ad-hoc `.replace('file://', '')`
+strip sites in `src/tools/analyze-project.js` and `src/tools/lookup.js`
+that were producing the inverse-direction garbage on Windows
+(`/C:/path` instead of `C:\path`).
+
+New unit suite `tests/unit/utils-uri.test.js` — 10 tests pinning
+round-trip behaviour, pass-through for already-formed URIs, defensive
+handling of malformed inputs, percent-encoding of spaces / non-ASCII.
+
+### Fixed — project-scanner used OS-native separators in identifier keys
+
+`src/core/project-scanner.js` populated `result.graphql['blog_posts/search']`,
+`result.partials['blog_posts/card']`, `result.pages['blog_posts:get']`,
+etc. by passing `readdir(dir, { recursive: true })` output verbatim as
+keys. On Windows that produced `result.graphql['blog_posts\\search']`,
+which broke every key-based lookup downstream (tests, intent validator
+cross-ref resolution, scaffold `adapted_from`, module_info classifier,
+analyze_project integrity checks, scaffold pattern detection).
+
+Added `toPosixPath()` to `src/core/utils.js` and applied at every
+boundary where a path becomes an identifier:
+
+- `src/core/project-scanner.js` — `globFiles`, `globLiquidFiles`,
+  `scanAssets`, `scanAround` normalize at the `readdir` /
+  `relative` boundary so every downstream key is POSIX.
+- `src/core/module-scanner.js` — five `relative()` sites
+  (`scanLib` partials walk + lib walk, `scanGraphQL`,
+  `scanTranslations`, `scanPages`).
+- `src/core/scaffold-generator.js` — `adapted_from` derivation
+  (was using `replace(projectDir + '/', '')` which doesn't match on
+  Windows in either direction).
+- `src/core/diagnostic-pipeline.js` — `hasRenderReferenceOnDisk`
+  normalizes the constructed relPath against `selfPath`.
+- `src/tools/analyze-project.js` — `join('app', 'schema', entry)`
+  for the schema-validator file label.
+
+### Fixed — check-runner filtered out every diagnostic on Windows
+
+`src/core/check-runner.js:30` did `filterFile.endsWith(file.path) ||
+file.path === filterFile` to attribute pos-cli diagnostics to the
+requested file. pos-cli emits POSIX-separated `file.path`; on Windows
+`filterFile` was native (`C:\…\app\views\pages\test.html.liquid`),
+so both comparisons failed and every diagnostic was dropped silently.
+
+Normalized both sides with `toPosixPath()` before comparing. Same
+treatment for `diagnostic._filePath` so downstream consumers see a
+POSIX-style attribute regardless of host. Also replaced
+`filePath.startsWith('/')` in `checkContent` with `path.isAbsolute()`
+— the former returned false for Windows drive-letter absolute paths
+and then `join`d them under `directory`, producing nonsense.
+
+`src/tools/analyze-project.js` `matchesFile()` updated to normalize
+both `_filePath` and the caller-provided paths before comparison.
+
+### Notes
+
+- The CI workflow added in 0.8.1 surfaced these issues exactly as
+  designed. Without the multi-shell Windows matrix none of this would
+  have been observable on a Linux-only dev box.
+- Linux baseline unchanged: full suite holds the pre-fix pass count
+  (`bun test tests/` = 2412 pass / 5 fail, all pre-existing flakes).
+- No new runtime dependencies. The path-normalization helpers are
+  ~10 lines total in `src/core/utils.js`.
+
 ## 0.8.1 — 2026-05-20
 
 Windows support — pos-cli and Node.js resolution now works on Linux,

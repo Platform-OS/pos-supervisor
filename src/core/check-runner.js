@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { writeFile, unlink, copyFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { findProjectRoot } from './utils.js';
+import { findProjectRoot, toPosixPath } from './utils.js';
 import { CHECK_TIMEOUT_MS, CHECK_MAX_BUFFER } from './constants.js';
 
 /**
@@ -26,8 +26,14 @@ function parseCheckResult(json, filterFile = null) {
   const infos = [];
   const checks = new Set();
 
+  // pos-cli check emits POSIX-separated paths in `file.path`. On Windows
+  // `filterFile` may carry native backslashes — normalize both sides so the
+  // endsWith / equality match works regardless of host. Without this every
+  // diagnostic gets filtered out on Windows even when pos-cli reports them.
+  const filterNorm = filterFile ? toPosixPath(filterFile) : null;
   for (const file of json.files) {
-    if (filterFile && !filterFile.endsWith(file.path) && file.path !== filterFile) continue;
+    const filePathNorm = toPosixPath(file.path);
+    if (filterNorm && !filterNorm.endsWith(filePathNorm) && filePathNorm !== filterNorm) continue;
 
     for (const o of file.offenses ?? []) {
       const sev = normSev(o.severity);
@@ -39,7 +45,7 @@ function parseCheckResult(json, filterFile = null) {
         column: (o.start_column ?? o.start?.character ?? 0),
         endLine: o.end_row ?? o.end?.line ?? null,
         endColumn: o.end_column ?? o.end?.character ?? null,
-        _filePath: file.path,
+        _filePath: filePathNorm,
       };
       if (o.check) checks.add(o.check);
 
@@ -106,7 +112,10 @@ export async function checkContent({ cmd, args, directory, filePath, content, lo
   // Write content to the actual target path temporarily so pos-cli check
   // can resolve it within the project context. If the file already exists,
   // we back it up to a temp file on disk (crash-safe) and restore after.
-  const absPath = filePath.startsWith('/') ? filePath : join(directory, filePath);
+  // `filePath` may be absolute (`/home/...` on Unix, `C:\...` on Windows) or
+  // project-relative. `isAbsolute` handles both flavors correctly — the
+  // previous `startsWith('/')` check fails on Windows drive-letter paths.
+  const absPath = isAbsolute(filePath) ? filePath : join(directory, filePath);
   const backupPath = join(tmpdir(), `pos-supervisor-backup-${randomUUID()}`);
   let hadFile = false;
 

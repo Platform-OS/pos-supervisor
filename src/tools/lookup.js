@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { readFile } from 'node:fs/promises';
-import { toUri, sanitizePath } from '../core/utils.js';
+import { toUri, fromUri, sanitizePath } from '../core/utils.js';
 import { ToolError } from '../core/tool-error.js';
 
 export const lookupTool = {
@@ -113,7 +113,7 @@ function formatDefinitions(result) {
   if (!result?.length) return { definitions: [] };
   return {
     definitions: result.map(loc => ({
-      path: (loc.targetUri ?? loc.uri ?? '').replace('file://', ''),
+      path: fromUri(loc.targetUri ?? loc.uri ?? ''),
       line: (loc.targetRange?.start ?? loc.range?.start)?.line ?? null,
     })),
   };
@@ -127,7 +127,7 @@ function formatReferences(result, label) {
     items: items.map(ref => {
       const loc = ref.source?.exists !== false ? ref.source : ref.target;
       return {
-        path: (loc?.uri ?? '').replace('file://', ''),
+        path: fromUri(loc?.uri ?? ''),
         excerpt: loc?.excerpt?.trim() ?? null,
       };
     }),

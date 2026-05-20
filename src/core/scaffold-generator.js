@@ -4,9 +4,10 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { load as yamlLoad, dump as yamlDump } from 'js-yaml';
 import { scanModule } from './module-scanner.js';
+import { toPosixPath } from './utils.js';
 
 // ── CSS class verification ──────────────────────────────────────────────────
 //
@@ -1413,7 +1414,10 @@ async function detectProjectPatterns(projectDir, type) {
   for (const absPath of samplePaths.slice(0, 3)) {
     try {
       const content = readFileSync(absPath, 'utf8');
-      const relPath = absPath.replace(projectDir + '/', '');
+      // `absPath` and `projectDir` use native separators; the result feeds
+      // `adapted_from` which surfaces in tool output and tests, both of which
+      // expect POSIX-style relative paths.
+      const relPath = toPosixPath(relative(projectDir, absPath));
 
       if (/include\s+['"]modules\/user\/helpers\/can_do/.test(content)) {
         profile.authStyle = 'include';

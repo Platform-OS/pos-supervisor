@@ -52,6 +52,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { toLiquidHtmlAST } from '@platformos/liquid-html-parser';
+import { toPosixPath } from './utils.js';
 import { getKnownModulesMissingDocs } from './knowledge-loader.js';
 import { buildAssetIndex, resolveAssetPath } from './asset-index.js';
 import { buildTranslationIndex } from './translation-index.js';
@@ -1181,6 +1182,7 @@ function hasRenderReferenceOnDisk(projectDir, partialName, selfPath) {
   const pattern = new RegExp(`['"]${escaped}['"]`);
 
   const scanDirs = ['app/views/pages', 'app/views/partials', 'app/views/layouts'];
+  const selfPathNorm = toPosixPath(selfPath);
   for (const dir of scanDirs) {
     const fullDir = join(projectDir, dir);
     let entries;
@@ -1188,8 +1190,11 @@ function hasRenderReferenceOnDisk(projectDir, partialName, selfPath) {
 
     for (const entry of entries) {
       if (!entry.endsWith('.liquid')) continue;
-      const relPath = join(dir, entry);
-      if (relPath === selfPath) continue;
+      // `entry` carries native separators on Windows; the comparison against
+      // selfPath (a POSIX-style relPath from upstream callers) needs both
+      // sides normalized.
+      const relPath = toPosixPath(join(dir, entry));
+      if (relPath === selfPathNorm) continue;
       try {
         const content = readFileSync(join(fullDir, entry), 'utf8');
         if (pattern.test(content)) return true;

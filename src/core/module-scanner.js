@@ -7,6 +7,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import yaml from 'js-yaml';
+import { toPosixPath } from './utils.js';
 
 // ── Main entry point ─────────────────────────────────────────────────────────
 
@@ -250,7 +251,7 @@ async function scanPublicApi(publicDir, moduleName) {
       const files = await walkDir(partialsDir);
       for (const f of files) {
         if (!f.endsWith('.liquid')) continue;
-        const rel = relative(partialsDir, f);
+        const rel = toPosixPath(relative(partialsDir, f));
         const name = rel.replace(/\.liquid$/, '');
 
         // If the file sits under a lib/ subtree in views/partials/, classify by
@@ -283,7 +284,7 @@ async function scanPublicApi(publicDir, moduleName) {
   for (const absPath of files) {
     if (!absPath.endsWith('.liquid')) continue;
 
-    const rel = relative(libDir, absPath);
+    const rel = toPosixPath(relative(libDir, absPath));
     const name = rel.replace(/\.liquid$/, '');
     const category = classifyLibFile(rel);
     const info = { name, call_path: `modules/${moduleName}/${name}` };
@@ -363,7 +364,7 @@ async function scanGraphQL(publicDir) {
     for (const f of files) {
       if (!f.endsWith('.graphql')) continue;
 
-      const rel = relative(gqlDir, f);
+      const rel = toPosixPath(relative(gqlDir, f));
       const name = rel.replace(/\.graphql$/, '');
 
       try {
@@ -417,7 +418,7 @@ async function scanTranslations(publicDir) {
     const files = await walkDir(transDir);
     for (const f of files) {
       if (!f.endsWith('.yml') && !f.endsWith('.yaml')) continue;
-      const rel = relative(transDir, f);
+      const rel = toPosixPath(relative(transDir, f));
       const locale = rel.replace(/\.(yml|yaml)$/, '').replace(/\//g, '.');
 
       try {
@@ -503,7 +504,7 @@ async function scanPages(publicDir) {
     for (const f of files) {
       if (!f.endsWith('.liquid')) continue;
 
-      const rel = relative(pagesDir, f);
+      const rel = toPosixPath(relative(pagesDir, f));
       const info = { file: rel };
 
       try {

@@ -8,7 +8,7 @@ import { join, relative, basename, extname } from 'node:path';
 import yaml from 'js-yaml';
 import { parseLiquidFile, extractAllFromAST } from './liquid-parser.js';
 import { getDomainFromPath } from './domain-detector.js';
-import { sanitizePath } from './utils.js';
+import { sanitizePath, toPosixPath } from './utils.js';
 
 /**
  * Scan the entire project and return structured JSON map.
@@ -157,7 +157,9 @@ export async function scanAround(projectDir, absPath) {
   const content = await readFile(absPath, 'utf8').catch(() => null);
   if (!content) return null;
 
-  const relPath = relative(projectDir, absPath);
+  // relPath becomes a Set key + result-map key — must be POSIX-separated so
+  // it matches the keys produced by scanProject on any host.
+  const relPath = toPosixPath(relative(projectDir, absPath));
   const isLiquid = absPath.endsWith('.liquid');
 
   const connectedPaths = new Set([relPath]);
@@ -376,7 +378,7 @@ async function scanAssets(appDir) {
     const entries = await readdir(assetsDir, { withFileTypes: true, recursive: true });
     return entries
       .filter(e => e.isFile())
-      .map(e => relative(assetsDir, join(e.parentPath ?? e.path, e.name)))
+      .map(e => toPosixPath(relative(assetsDir, join(e.parentPath ?? e.path, e.name))))
       .sort();
   } catch {
     return [];
@@ -557,7 +559,11 @@ async function globFiles(dir, ext) {
   if (!existsSync(dir)) return [];
   try {
     const entries = await readdir(dir, { recursive: true });
-    return entries.filter(f => f.endsWith(ext));
+    // Normalize to POSIX separators at the boundary. Every downstream key
+    // (graphql['blog_posts/search'], partials['blog_posts/card'], …) MUST be
+    // forward-slashed regardless of host OS or callers cannot do prefix
+    // matches with literal `/`.
+    return entries.filter(f => f.endsWith(ext)).map(toPosixPath);
   } catch {
     return [];
   }
@@ -567,7 +573,7 @@ async function globLiquidFiles(appDir) {
   if (!existsSync(appDir)) return [];
   try {
     const entries = await readdir(appDir, { recursive: true });
-    return entries.filter(f => f.endsWith('.liquid'));
+    return entries.filter(f => f.endsWith('.liquid')).map(toPosixPath);
   } catch {
     return [];
   }

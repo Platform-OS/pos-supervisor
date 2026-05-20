@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createCheckRunner } from '../core/check-runner.js';
 import { validateSchema } from '../core/schema-validator.js';
 import { validateTranslationYaml } from '../core/translation-validator.js';
-import { toUri, sanitizePath } from '../core/utils.js';
+import { toUri, fromUri, sanitizePath, toPosixPath } from '../core/utils.js';
 import { getProjectMap } from './project-map.js';
 import { ToolError } from '../core/tool-error.js';
 import {
@@ -154,7 +154,9 @@ export const analyzeProjectTool = {
         for (const entry of schemaEntries) {
           if (!entry.endsWith('.yml') && !entry.endsWith('.yaml')) continue;
           schemasScanned++;
-          const relPath = join('app', 'schema', entry);
+          // Output path identifier — must be POSIX so downstream consumers
+          // (fix_order, diagnostic snapshot, tests) can match regardless of host.
+          const relPath = toPosixPath(join('app', 'schema', entry));
           try {
             const content = await readFile(join(schemaDir, entry), 'utf8');
             const schemaResult = validateSchema(content, relPath);
@@ -216,8 +218,8 @@ export const analyzeProjectTool = {
             ]);
 
             lspOverlay[filePath] = {
-              referenced_by: (refs?.items ?? []).map(r => (r.source?.uri ?? '').replace('file://', '')),
-              depends_on: (deps?.items ?? []).map(d => (d.target?.uri ?? '').replace('file://', '')),
+              referenced_by: (refs?.items ?? []).map(r => fromUri(r.source?.uri ?? '')),
+              depends_on: (deps?.items ?? []).map(d => fromUri(d.target?.uri ?? '')),
             };
           } catch {
             // LSP failure is not fatal — projectMap graph covers the file.
@@ -576,10 +578,12 @@ function performIntegrityChecks(projectMap) {
  * pos-cli check returns file paths in various formats — match flexibly.
  */
 function matchesFile(diagnostic, absPath, relPath) {
-  if (diagnostic._filePath) {
-    return diagnostic._filePath === absPath || diagnostic._filePath.endsWith(relPath);
-  }
-  return true;
+  if (!diagnostic._filePath) return true;
+  // `_filePath` arrives POSIX-normalized from check-runner; `absPath` and
+  // `relPath` may carry native separators on Windows. Normalize before
+  // every comparison so the match is host-agnostic.
+  const fp = toPosixPath(diagnostic._filePath);
+  return fp === toPosixPath(absPath) || fp.endsWith(toPosixPath(relPath));
 }
 
 /**
