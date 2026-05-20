@@ -443,7 +443,11 @@ function handleGetHints(dataRoot, url, res) {
   loadAllRules();
 
   if (name) {
-    const file = join(hintsDir, `${name}.md`);
+    // Hint filenames are bare check names (no `pos-supervisor:` prefix) — see
+    // src/core/hint-loader.js. Strip the prefix when resolving the file path
+    // so canonical check IDs still hit the corresponding md.
+    const fileBase = name.replace(/^pos-supervisor:/, '');
+    const file = join(hintsDir, `${fileBase}.md`);
     if (existsSync(file)) {
       try {
         const content = readFileSync(file, 'utf-8');
@@ -471,9 +475,16 @@ function handleGetHints(dataRoot, url, res) {
     // hints dir may be missing on a fresh checkout — still return rule names.
   }
   const ruleNames = getAllChecksWithRules();
-  const staticSet = new Set(staticNames);
   const ruleSet = new Set(ruleNames);
-  const all = Array.from(new Set([...staticNames, ...ruleNames])).sort();
+  // Canonicalize: when a rule registers under `pos-supervisor:<X>` and the
+  // hint filename is bare `<X>.md`, surface the static entry under the
+  // canonical (prefixed) name so the dedup at line 476 merges both sources.
+  const canonicalStaticNames = staticNames.map(n => {
+    const prefixed = `pos-supervisor:${n}`;
+    return ruleSet.has(prefixed) ? prefixed : n;
+  });
+  const staticSet = new Set(canonicalStaticNames);
+  const all = Array.from(new Set([...canonicalStaticNames, ...ruleNames])).sort();
   const checks = all.map(n => {
     const sources = [];
     if (staticSet.has(n)) sources.push('static');

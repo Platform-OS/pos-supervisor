@@ -3292,8 +3292,9 @@ async function loadHint(name) {
         + '[RULE-DRIVEN] hint generated from <code>src/core/rules/' + escHtml(moduleBase) + '.js</code>'
         + '</div>';
     } else if (d.source === 'static') {
+      const staticBase = name.replace(/^pos-supervisor:/, '');
       header = '<div style="color:var(--muted);font-size:11px;margin-bottom:6px">'
-        + '[STATIC] <code>src/data/hints/' + escHtml(name) + '.md</code>'
+        + '[STATIC] <code>src/data/hints/' + escHtml(staticBase) + '.md</code>'
         + '</div>';
     }
     body.innerHTML = header + '<pre>' + escHtml(d.content || '') + '</pre>';
@@ -4677,8 +4678,9 @@ function renderDrilldownPanel(panel, ruleId, check, drill, hint, ruleScore) {
   // Hint preview. Source-aware label: legacy md hints come from data/hints,
   // rule-driven hints are synthesized from the rule registry (no md file).
   if (hint && hint.content) {
-    const ruleSrc = 'src/core/rules/' + baseCheck.replace(/^pos-supervisor:/, '') + '.js';
-    const mdSrc = 'src/data/hints/' + baseCheck + '.md';
+    const bareCheck = baseCheck.replace(/^pos-supervisor:/, '');
+    const ruleSrc = 'src/core/rules/' + bareCheck + '.js';
+    const mdSrc = 'src/data/hints/' + bareCheck + '.md';
     const hintSrc = hint.source === 'rule' ? ruleSrc : mdSrc;
     const titleNote = hint.source === 'rule'
       ? 'Hint reference (rule-driven — generated dynamically by '
@@ -4771,7 +4773,7 @@ function renderDrilldownPanel(panel, ruleId, check, drill, hint, ruleScore) {
   const isRuleDriven = hint && hint.source === 'rule';
   const hintFileCode = isRuleDriven
     ? '<code>src/core/rules/' + escHtml(ruleModule) + '.js</code>'
-    : '<code>src/data/hints/' + escHtml(baseCheck) + '.md</code>';
+    : '<code>src/data/hints/' + escHtml(ruleModule) + '.md</code>';
   html += '<div class="rd-action">';
   if (ruleScore && ruleScore.disabled) {
     html += '<b>This rule is DISABLED</b> by the case base (effectiveness below 15% over 10+ outcomes). ';
