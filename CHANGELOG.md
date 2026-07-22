@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.8.0 — 2026-05-20
+
+Runtime switches from Node.js to Bun, and the lone colon-named hint file
+is normalized to a Windows-portable name. No user-visible behaviour
+change beyond install prerequisites; runtime check IDs (including
+`pos-supervisor:NonGetRenderingPage`) are unchanged.
+
+### Changed — Bun runtime
+
+`bin/pos-supervisor.js` shebang is now `#!/usr/bin/env bun`. `npm link`
+still produces the `pos-supervisor` PATH binary; the symlink target's
+shebang dispatches to Bun. `package.json` updates: `start` script uses
+`bun`, `engines.bun >= 1.0` replaces `engines.node >= 18`. Claude Code
+and OpenCode configs need no change — they keep invoking
+`pos-supervisor` and pick up Bun via the shebang.
+
+Existing users must install Bun once
+(`curl -fsSL https://bun.sh/install | bash`). The existing
+`node_modules` tree (all deps are pure JS) and the existing `npm link`
+symlink keep working — no re-install, no re-link.
+
+### Changed — `src/data/hints/pos-supervisor:NonGetRenderingPage.md` → `NonGetRenderingPage.md`
+
+The `:` in the original filename is reserved on Windows / NTFS and
+broke clones on every Windows-hosted developer machine. The hint
+filename is now bare `NonGetRenderingPage.md`, matching the rest of
+`src/data/hints/`. The runtime check ID emitted by the rule engine and
+structural-warnings layer stays `pos-supervisor:NonGetRenderingPage` —
+nothing in telemetry, test fixtures, or downstream consumers needs to
+change.
+
+The filename ↔ check ID mapping is now: bare filename ←→ runtime ID
+with optional `pos-supervisor:` prefix. The prefix is stripped in:
+
+- `src/core/hint-loader.js` `getHint()` — cache lookup
+- `src/http-server.js` `handleGetHints()` — `GET /api/hints?name=`
+  filename resolution + static/rule name canonicalization for the
+  unfiltered list so dedup merges both sources
+- `src/dashboard.js` — the three `src/data/hints/<X>.md` display paths
+- `src/core/analytics-queries.js` `recommendations()` — the
+  "rewrite hint in …" recommendation string
+
+All other hint files are unaffected (their check IDs have no prefix, so
+the strip is a no-op).
+
 ## 0.7.3 — 2026-04-30
 
 Reporting baseline + sample-size-gated labels — operator-set checkpoint

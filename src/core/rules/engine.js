@@ -141,8 +141,27 @@ export function getAllChecksWithRules() {
   return [..._registry.keys()];
 }
 
+/**
+ * Reset the rule engine to a known-clean state.
+ *
+ * Clears the rule registry AND every flavour of disabled / override set the
+ * engine carries. The previous behaviour cleared only `_registry`, which
+ * leaked override state across consecutive test files: a force-disable set
+ * by test file A would silently skip rules in file B even after B's
+ * beforeEach re-registered them. The leak surfaced as priority-5 rules
+ * never firing and a priority-1000 catch-all "winning" because the higher
+ * rule was being filtered by `ruleIsActive`.
+ *
+ * If the historical "registry-only" semantics are ever needed back, prefer
+ * a separate helper rather than a flag — splitting clear vs. reset reads
+ * better at every call site.
+ */
 export function clearRules() {
   _registry.clear();
+  _disabledRules.clear();
+  _disabledRuleDetails = new Map();
+  _forceEnabled.clear();
+  _forceDisabled.clear();
 }
 
 export function ruleCount() {

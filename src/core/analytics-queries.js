@@ -364,10 +364,11 @@ export function recommendations(store, threshold = 0.3, { since } = {}) {
 
   for (const card of cards) {
     if (card.mislead_rate.mean >= threshold) {
+      const bareCheck = card.check.replace(/^pos-supervisor:/, '');
       recs.push({
         check: card.check,
         mislead_rate: card.mislead_rate.mean,
-        recommendation: `Check \`${card.check}\` misleads ${(card.mislead_rate.mean * 100).toFixed(0)}% of fixes — consider rewriting hint in \`src/data/hints/${card.check}.md\` or its rule in \`src/core/rules/${card.check}.js\``,
+        recommendation: `Check \`${card.check}\` misleads ${(card.mislead_rate.mean * 100).toFixed(0)}% of fixes — consider rewriting hint in \`src/data/hints/${bareCheck}.md\` or its rule in \`src/core/rules/${bareCheck}.js\``,
       });
     }
   }

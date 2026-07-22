@@ -64,12 +64,16 @@ function loadAll() {
  */
 export function getHint(checkName, variant = null, vars = {}) {
   loadAll();
+  // Hint filenames are bare check names (no `pos-supervisor:` prefix) so they
+  // stay portable on Windows / NTFS where `:` is reserved. The runtime check
+  // ID may carry the prefix; strip it before the cache lookup.
+  const key = checkName.replace(/^pos-supervisor:/, '');
   let hint = null;
   if (variant) {
-    hint = cache.get(`${checkName}-${variant}`) ?? null;
+    hint = cache.get(`${key}-${variant}`) ?? null;
   }
   if (!hint) {
-    hint = cache.get(checkName) ?? null;
+    hint = cache.get(key) ?? null;
   }
   if (!hint) return hint;
 

@@ -288,6 +288,100 @@ describe('GraphQLVariablesCheck rule', () => {
       }, {});
       expect(r.rule_id).toBe('GraphQLVariablesCheck.required');
     });
+
+    // Second detection path: scan the in-memory editor content. The
+    // disk-indexed path above only fires for files the project graph
+    // already classified as `liquid_multiline_truncated`. For freshly-
+    // written or in-flight content the graph lags, so the rule must spot
+    // the pattern by reading `facts.content` directly. The content below
+    // is exactly the regression-spiral shape measured on
+    // `app/lib/commands/contacts/create.liquid` in DEMO 2026-04 → 2026-05.
+    describe('in-memory content fallback', () => {
+      const truncatedContent = [
+        '{% liquid',
+        "  graphql result = 'contacts/create',",
+        '    name: name,',
+        '    email: email',
+        '%}',
+      ].join('\n');
+
+      test('fires on in-memory content with multi-line graphql truncation, even with empty graph', () => {
+        const r = runRules({
+          check: 'GraphQLVariablesCheck',
+          params: extractParams('GraphQLVariablesCheck', 'Required parameter name must be passed to GraphQL call'),
+          message: 'Required parameter name must be passed to GraphQL call',
+          file: 'app/lib/commands/contacts/create.liquid',
+        }, { content: truncatedContent });
+        expect(r.rule_id).toBe('GraphQLVariablesCheck.parser_blind_spot');
+        expect(r.hint_md).toContain('parser cannot see it');
+        expect(r.confidence).toBe(0.95);
+      });
+
+      test('fires when graph is partially populated but lacks the source_kind flag', () => {
+        // Graph has the file with a graphql_call but source_kind is missing
+        // (older indexes, or the call is from a fresh write). Content scan
+        // must still catch the truncation.
+        const partialGraph = buildFactGraph({
+          pages: {}, partials: {},
+          commands: {
+            'app/lib/commands/contacts/create.liquid': {
+              path: 'app/lib/commands/contacts/create.liquid',
+              renders: [], function_calls: [],
+              graphql_calls: [{ variable: 'result', queryName: 'contacts/create' /* no source_kind */ }],
+            },
+          },
+          queries: {}, graphql: {}, schema: {}, layouts: {}, translations: {}, assets: [],
+        });
+        const r = runRules({
+          check: 'GraphQLVariablesCheck',
+          params: extractParams('GraphQLVariablesCheck', 'Required parameter name must be passed to GraphQL call'),
+          message: 'Required parameter name must be passed to GraphQL call',
+          file: 'app/lib/commands/contacts/create.liquid',
+        }, { graph: partialGraph, content: truncatedContent });
+        expect(r.rule_id).toBe('GraphQLVariablesCheck.parser_blind_spot');
+      });
+
+      test('does NOT fire on canonical tag-form graphql calls (no truncation pattern)', () => {
+        const cleanContent =
+          "{% graphql result = 'contacts/create', name: name, email: email %}\n";
+        const r = runRules({
+          check: 'GraphQLVariablesCheck',
+          params: extractParams('GraphQLVariablesCheck', 'Required parameter name must be passed to GraphQL call'),
+          message: 'Required parameter name must be passed to GraphQL call',
+          file: 'app/lib/commands/contacts/create.liquid',
+        }, { content: cleanContent });
+        expect(r.rule_id).toBe('GraphQLVariablesCheck.required');
+      });
+
+      test('does NOT fire when the comma-continuation lives outside a {% liquid %} block', () => {
+        // Tag-form syntax can also wrap, but the LSP does not truncate
+        // there. Pattern-match must be scoped to inside {% liquid %}.
+        const tagFormMultiline = [
+          '{% graphql result =',
+          "  'contacts/create',",
+          '  name: name,',
+          '  email: email',
+          '%}',
+        ].join('\n');
+        const r = runRules({
+          check: 'GraphQLVariablesCheck',
+          params: extractParams('GraphQLVariablesCheck', 'Required parameter name must be passed to GraphQL call'),
+          message: 'Required parameter name must be passed to GraphQL call',
+          file: 'app/lib/commands/contacts/create.liquid',
+        }, { content: tagFormMultiline });
+        expect(r.rule_id).toBe('GraphQLVariablesCheck.required');
+      });
+
+      test('does NOT fire for direction=unknown even with truncation pattern present', () => {
+        const r = runRules({
+          check: 'GraphQLVariablesCheck',
+          params: extractParams('GraphQLVariablesCheck', 'Unknown parameter foo passed to GraphQL call'),
+          message: 'Unknown parameter foo passed to GraphQL call',
+          file: 'app/lib/commands/contacts/create.liquid',
+        }, { content: truncatedContent });
+        expect(r.rule_id).toBe('GraphQLVariablesCheck.unknown');
+      });
+    });
   });
 });
 
